@@ -132,6 +132,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eos-early-stop-factor", type=float, default=1.3)
     parser.add_argument("--eos-early-stop-min-step", type=int, default=2000)
     parser.add_argument("--save-every", type=int, default=1000)
+    parser.add_argument(
+        "--skip-final-checkpoint",
+        action="store_true",
+        help="Do not save at the final step unless it is also a periodic save; useful for smoke tests.",
+    )
     parser.add_argument("--eval-every", type=int, default=250)
     # 8 was far too few: hebrew-20k validation was noisy enough that it could not be
     # used for model selection. Pass 0 to evaluate the whole validation set.
@@ -325,6 +330,19 @@ def write_metric(path: Path, record: dict) -> None:
         handle.write(json.dumps(record) + "\n")
 
 
+def ensure_safe_run_directory(run_dir: Path, *, resume: Path | None) -> None:
+    """Refuse to mix a fresh experiment into a directory that already has outputs."""
+    if not run_dir.exists():
+        return
+    entries = list(run_dir.iterdir())
+    if entries and resume is None:
+        preview = ", ".join(entry.name for entry in entries[:5])
+        raise FileExistsError(
+            f"Refusing a fresh run in non-empty {run_dir} ({preview}). "
+            "Choose a new --run-dir, or pass --resume for a matching checkpoint."
+        )
+
+
 @torch.no_grad()
 def evaluate(
     model,
@@ -377,9 +395,12 @@ def main() -> None:
         raise ValueError("--resume and --init-flow-checkpoint are mutually exclusive")
     if args.loss_mode == "fm-lsd" and not 0.0 < args.lsd_fraction < 1.0:
         raise ValueError("--lsd-fraction must be strictly between 0 and 1")
+    if args.save_every < 0:
+        raise ValueError("--save-every must be non-negative")
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = choose_device(args.device)
+    ensure_safe_run_directory(args.run_dir, resume=args.resume)
     args.run_dir.mkdir(parents=True, exist_ok=True)
     (args.run_dir / "arguments.json").write_text(
         json.dumps(vars(args), default=str, indent=2), encoding="utf-8"
@@ -574,7 +595,9 @@ def main() -> None:
                         break
                 else:
                     eos_regressions = 0
-        if step % args.save_every == 0 or step == args.steps:
+        periodic_save = args.save_every > 0 and step % args.save_every == 0
+        final_save = step == args.steps and not args.skip_final_checkpoint
+        if periodic_save or final_save:
             checkpoint = save_checkpoint(
                 model,
                 optimizer,

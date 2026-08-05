@@ -2,16 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
-import unicodedata
 from pathlib import Path
 
-# Score generated speech by transcribing it and comparing to the text we asked for.
-#
-# This exists because validation loss lied. The EOS term improved while generated speech
-# got shorter and unintelligible, so loss ranked the worst model first. Word Error Rate is
-# what the Pocket TTS paper reports, and it cannot be gamed by a model that stops early:
-# stopping early deletes words, which raises WER.
+from hebrew_training.evaluation import normalize_hebrew_for_asr
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,54 +23,35 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-_PUNCT = re.compile(r"[^\w\s֐-׿]", flags=re.UNICODE)
-_SPACE = re.compile(r"\s+")
-
-
-def normalize(text: str) -> str:
-    """Compare words, not typography: drop punctuation, niqqud and spacing differences."""
-    text = unicodedata.normalize("NFC", text)
-    # Hebrew diacritics are not pronounced differently by the ASR and vary in the source.
-    text = "".join(c for c in text if not ("֑" <= c <= "ׇ"))
-    text = _PUNCT.sub(" ", text)
-    return _SPACE.sub(" ", text).strip()
-
-
 def main() -> None:
     args = parse_args()
-    from faster_whisper import WhisperModel
     import jiwer
+    from faster_whisper import WhisperModel
 
-    sample_dirs = sorted(
-        p.parent for p in args.runs_dir.glob("*/samples/step*/samples.json")
-    )
+    sample_dirs = sorted(path.parent for path in args.runs_dir.glob("*/samples/step*/samples.json"))
     if args.only:
-        # Compare with forward slashes so the filter works the same on Windows.
         needle = args.only.replace("\\", "/")
-        sample_dirs = [d for d in sample_dirs if needle in d.as_posix()]
+        sample_dirs = [directory for directory in sample_dirs if needle in directory.as_posix()]
     if not sample_dirs:
         raise SystemExit(f"no sample directories under {args.runs_dir}")
 
     print(f"loading {args.model} on {args.device} ...", flush=True)
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
-
     results = []
     for directory in sample_dirs:
         items = json.loads((directory / "samples.json").read_text(encoding="utf-8"))
-        refs, hyps, per_clip = [], [], []
+        references, hypotheses, per_clip = [], [], []
         for item in items:
             wav = directory / item["file"]
             if not wav.exists():
                 continue
-            segments, _ = model.transcribe(
-                str(wav), language="he", beam_size=args.beam_size
-            )
-            hypothesis = normalize("".join(s.text for s in segments))
-            reference = normalize(item["text"])
+            segments, _ = model.transcribe(str(wav), language="he", beam_size=args.beam_size)
+            hypothesis = normalize_hebrew_for_asr("".join(segment.text for segment in segments))
+            reference = normalize_hebrew_for_asr(item["text"])
             if not reference:
                 continue
-            refs.append(reference)
-            hyps.append(hypothesis)
+            references.append(reference)
+            hypotheses.append(hypothesis)
             per_clip.append(
                 {
                     "file": item["file"],
@@ -86,12 +60,10 @@ def main() -> None:
                     "wer": jiwer.wer(reference, hypothesis),
                 }
             )
-        if not refs:
+        if not references:
             continue
-        # An empty hypothesis gives WER 1.0 (every word deleted), which is the correct
-        # penalty for a model that produced nothing intelligible.
-        wer = jiwer.wer(refs, hyps)
-        cer = jiwer.cer(refs, hyps)
+        wer = jiwer.wer(references, hypotheses)
+        cer = jiwer.cer(references, hypotheses)
         run = directory.parent.parent.name
         step = directory.name
         results.append(
@@ -100,22 +72,20 @@ def main() -> None:
                 "step": step,
                 "wer": wer,
                 "cer": cer,
-                "clips": len(refs),
-                "empty_outputs": sum(1 for h in hyps if not h),
+                "clips": len(references),
+                "empty_outputs": sum(not hypothesis for hypothesis in hypotheses),
                 "per_clip": per_clip,
             }
         )
-        print(f"{run}/{step}: WER {wer:.3f}  CER {cer:.3f}  ({len(refs)} clips)", flush=True)
+        print(f"{run}/{step}: WER {wer:.3f} CER {cer:.3f} ({len(references)} clips)", flush=True)
 
-    args.output.write_text(
-        json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nwrote {args.output}")
     print(f"\n{'run':<18}{'step':<12}{'WER':>8}{'CER':>8}{'empty':>7}")
-    for r in sorted(results, key=lambda r: r["wer"]):
+    for result in sorted(results, key=lambda item: item["wer"]):
         print(
-            f"{r['run']:<18}{r['step']:<12}{r['wer']:>8.3f}{r['cer']:>8.3f}"
-            f"{r['empty_outputs']:>7}"
+            f"{result['run']:<18}{result['step']:<12}{result['wer']:>8.3f}"
+            f"{result['cer']:>8.3f}{result['empty_outputs']:>7}"
         )
 
 

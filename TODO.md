@@ -2,14 +2,15 @@
 
 ## Controlled evaluation
 
-- [ ] Build fixed, equal-sized evaluation groups for seen/unseen speakers and
+- [x] Build fixed, equal-sized evaluation groups for seen/unseen speakers and
   seen/unseen sentences, using fixed generation seeds.
 - [ ] Add a difficult-Hebrew stress set covering numbers, abbreviations, foreign names,
   prefixes, punctuation, and long sentences.
-- [ ] Score WER and CER after applying identical Hebrew normalization to reference and ASR
+- [x] Score WER and CER after applying identical Hebrew normalization to reference and ASR
   output.
-- [ ] Measure the ASR floor on genuine held-out recordings using the same evaluator.
-- [ ] Use equal clip counts and bootstrap confidence intervals across checkpoints.
+- [x] Measure the ASR floor on genuine held-out recordings using the same evaluator:
+  128 clips, WER 0.1231 (95% CI 0.1065-0.1411), CER 0.0698 (0.0559-0.0839).
+- [x] Use equal clip counts and bootstrap confidence intervals across checkpoints.
 - [ ] Add speaker-similarity and human listening checks.
 
 ## Training comparisons
@@ -22,6 +23,7 @@
   - flow only, head multiplier 1;
   - flow only, head multiplier 8;
   - FM/LSD 75/25, head multiplier 8.
+  `run_hebrew_v3_ablation.ps1` automates all three arms and controlled scoring.
 - [ ] Select checkpoints using fixed CER/WER and listening evaluation, not validation MSE.
 
 ## 24-layer experiment

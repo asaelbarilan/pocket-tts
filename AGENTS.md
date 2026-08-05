@@ -152,3 +152,7 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
 - Keep artifacts, datasets, logs, exports, evaluation manifests, and checkpoints out of Git.
 - Do not infer generalization from MSE alone; use fixed held-out audio, Hebrew CER/WER,
   speaker-similarity measurements, and listening tests.
+- The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
+  flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
+- `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation
+  run. The full launcher writes only to `runs/hebrew-v3-8s-fmlsd-m8`.

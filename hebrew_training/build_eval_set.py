@@ -5,123 +5,211 @@ import json
 import random
 import re
 import unicodedata
+from collections import defaultdict
 from pathlib import Path
 
-# Build one fixed evaluation set used to score every checkpoint.
-#
-# The old set was 4 sentences x 3 speakers = 12 clips, which could not separate models:
-# swings of 0.1-0.3 WER between adjacent checkpoints were pure sampling noise. This builds
-# a larger set and, critically, freezes it — the same sentences and the same voice prompts
-# for every model, forever, or the numbers are not comparable.
-#
-# Sentences are taken from held-out validation transcripts rather than written by hand, so
-# they match the real text distribution. Every candidate is checked against the training
-# corpora to make sure it never appeared in training.
+_WS = re.compile(r"\s+")
+_LATIN_OR_DIGIT = re.compile(r"[A-Za-z0-9]")
+_HEBREW = re.compile(r"[\u0590-\u05ff]")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build a fixed WER evaluation set.")
-    parser.add_argument("--artifacts", type=Path, nargs="+", required=True,
-                        help="Artifact dirs; the first supplies the voice prompts.")
+    parser = argparse.ArgumentParser(description="Build fixed controlled Hebrew evaluation groups.")
+    parser.add_argument("--artifacts", type=Path, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--sentences", type=int, default=40)
-    parser.add_argument("--speakers", type=int, default=10)
+    parser.add_argument("--sentences-per-group", type=int, default=8)
+    parser.add_argument("--speakers-per-group", type=int, default=4)
     parser.add_argument("--min-chars", type=int, default=45)
     parser.add_argument("--max-chars", type=int, default=110)
     parser.add_argument("--prompt-min-seconds", type=float, default=4.0)
+    parser.add_argument("--prompt-max-seconds", type=float, default=10.0)
+    parser.add_argument("--asr-floor-clips", type=int, default=0,
+                        help="0 matches the total generated clip count.")
     parser.add_argument("--seed", type=int, default=1234)
     return parser.parse_args()
-
-
-_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
-_WS = re.compile(r"\s+")
 
 
 def clean(text: str) -> str:
     return _WS.sub(" ", unicodedata.normalize("NFC", text)).strip()
 
 
+def load_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return [json.loads(line) for line in path.open(encoding="utf-8")]
+
+
+def is_usable_text(text: str, min_chars: int, max_chars: int) -> bool:
+    return (
+        min_chars <= len(text) <= max_chars
+        and _HEBREW.search(text) is not None
+        and _LATIN_OR_DIGIT.search(text) is None
+    )
+
+
+def choose_prompts(
+    rows: list[dict],
+    speaker_ids: set[str],
+    count: int,
+    minimum_seconds: float,
+    maximum_seconds: float,
+) -> list[dict]:
+    best: dict[str, dict] = {}
+    for row in rows:
+        speaker = row["speaker_id"]
+        audio_path = Path(row["audio_path"])
+        if (
+            speaker not in speaker_ids
+            or not minimum_seconds <= row["duration"] <= maximum_seconds
+            or not audio_path.exists()
+        ):
+            continue
+        if speaker not in best or abs(row["duration"] - 6.0) < abs(best[speaker]["duration"] - 6.0):
+            best[speaker] = row
+    selected = sorted(best.values(), key=lambda row: (abs(row["duration"] - 6.0), row["speaker_id"]))[:count]
+    if len(selected) < count:
+        raise ValueError(f"only {len(selected)} of {count} requested speakers have usable prompts")
+    return [
+        {
+            "speaker_id": row["speaker_id"],
+            "prompt_audio_path": row["audio_path"],
+            "prompt_duration": round(row["duration"], 3),
+        }
+        for row in selected
+    ]
+
+
+def choose_texts(
+    rows: list[dict], count: int, min_chars: int, max_chars: int, rng: random.Random,
+    *, reject_blob: str | None = None,
+) -> list[str]:
+    candidates = {
+        clean(row["text"])
+        for row in rows
+        if is_usable_text(clean(row["text"]), min_chars, max_chars)
+    }
+    if reject_blob is not None:
+        candidates = {text for text in candidates if text not in reject_blob}
+    candidates = sorted(candidates)
+    rng.shuffle(candidates)
+    if len(candidates) < count:
+        raise ValueError(f"only {len(candidates)} of {count} requested texts are usable")
+    return sorted(candidates[:count])
+
+
+def choose_asr_floor(rows: list[dict], count: int, rng: random.Random) -> list[dict]:
+    by_speaker: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        if Path(row["audio_path"]).exists() and clean(row["text"]):
+            by_speaker[row["speaker_id"]].append(row)
+    for speaker_rows in by_speaker.values():
+        rng.shuffle(speaker_rows)
+    speakers = sorted(by_speaker)
+    selected = []
+    offset = 0
+    while len(selected) < count:
+        added = False
+        for speaker in speakers:
+            if offset >= len(by_speaker[speaker]):
+                continue
+            row = by_speaker[speaker][offset]
+            selected.append(
+                {
+                    "speaker_id": speaker,
+                    "audio_path": row["audio_path"],
+                    "text": clean(row["text"]),
+                }
+            )
+            added = True
+            if len(selected) == count:
+                break
+        if not added:
+            break
+        offset += 1
+    if len(selected) < count:
+        raise ValueError(f"only {len(selected)} of {count} requested ASR-floor clips exist")
+    return selected
+
+
 def main() -> None:
     args = parse_args()
     rng = random.Random(args.seed)
+    train_rows = []
+    validation_rows = []
+    for artifact in args.artifacts:
+        train_rows.extend(load_jsonl(artifact / "train.jsonl"))
+        validation_rows.extend(load_jsonl(artifact / "validation.jsonl"))
 
-    def load(path: Path) -> list[dict]:
-        return [json.loads(line) for line in path.open(encoding="utf-8")] if path.exists() else []
+    train_speakers = {row["speaker_id"] for row in train_rows}
+    validation_speakers = {row["speaker_id"] for row in validation_rows}
+    unseen_speakers = validation_speakers - train_speakers
+    if train_speakers & unseen_speakers:
+        raise AssertionError("speaker leakage in controlled evaluation split")
 
-    val_rows, train_rows, val_speaker_sets, train_speakers = [], [], [], set()
-    for art in args.artifacts:
-        v = load(art / "validation.jsonl")
-        t = load(art / "train.jsonl")
-        val_rows.append(v)
-        train_rows.extend(t)
-        val_speaker_sets.append({r["speaker_id"] for r in v})
-        train_speakers |= {r["speaker_id"] for r in t}
+    seen_prompts = choose_prompts(
+        train_rows,
+        train_speakers,
+        args.speakers_per_group,
+        args.prompt_min_seconds,
+        args.prompt_max_seconds,
+    )
+    unseen_prompts = choose_prompts(
+        validation_rows,
+        unseen_speakers,
+        args.speakers_per_group,
+        args.prompt_min_seconds,
+        args.prompt_max_seconds,
+    )
+    train_blob = "\n".join(clean(row["text"]) for row in train_rows)
+    seen_texts = choose_texts(
+        train_rows, args.sentences_per_group, args.min_chars, args.max_chars, rng
+    )
+    unseen_texts = choose_texts(
+        validation_rows,
+        args.sentences_per_group,
+        args.min_chars,
+        args.max_chars,
+        rng,
+        reject_blob=train_blob,
+    )
 
-    # A speaker only counts as held out if no dataset trained on them.
-    held_out = set.intersection(*val_speaker_sets) - train_speakers
-    if len(held_out) < args.speakers:
-        raise SystemExit(f"only {len(held_out)} speakers are held out everywhere")
-
-    # One prompt clip per speaker: the longest available, so the voice is well conditioned.
-    prompts = {}
-    for rows in val_rows:
-        for r in rows:
-            s = r["speaker_id"]
-            if s not in held_out or r["duration"] < args.prompt_min_seconds:
-                continue
-            if not Path(r["audio_path"]).exists():
-                continue
-            if s not in prompts or r["duration"] > prompts[s]["duration"]:
-                prompts[s] = r
-    usable = sorted(prompts, key=lambda s: -prompts[s]["duration"])[: args.speakers]
-    if len(usable) < args.speakers:
-        raise SystemExit(f"only {len(usable)} held-out speakers have a usable prompt wav")
-
-    # Candidate sentences from held-out transcripts, rejected if they appear in any
-    # training text. Substring, not equality: our long clips concatenate sentences.
-    train_blob = "\n".join(clean(r["text"]) for r in train_rows)
-    seen, candidates = set(), []
-    for rows in val_rows:
-        for r in rows:
-            for sentence in _SENT_SPLIT.split(r["text"]):
-                s = clean(sentence)
-                if not (args.min_chars <= len(s) <= args.max_chars):
-                    continue
-                if re.search(r"[A-Za-z0-9]", s):        # keep the set purely Hebrew
-                    continue
-                if not re.search(r"[֐-׿]", s):
-                    continue
-                if s in seen or s in train_blob:
-                    continue
-                seen.add(s)
-                candidates.append(s)
-    if len(candidates) < args.sentences:
-        raise SystemExit(f"only {len(candidates)} usable sentences found")
-    rng.shuffle(candidates)
-    sentences = sorted(candidates[: args.sentences])
-
+    group_specs = (
+        ("seen_speaker_seen_text", "seen", "seen", seen_prompts, seen_texts),
+        ("seen_speaker_unseen_text", "seen", "unseen", seen_prompts, unseen_texts),
+        ("unseen_speaker_seen_text", "unseen", "seen", unseen_prompts, seen_texts),
+        ("unseen_speaker_unseen_text", "unseen", "unseen", unseen_prompts, unseen_texts),
+    )
+    groups = [
+        {
+            "name": name,
+            "speaker_status": speaker_status,
+            "text_status": text_status,
+            "speakers": speakers,
+            "sentences": sentences,
+            "clips": len(speakers) * len(sentences),
+        }
+        for name, speaker_status, text_status, speakers, sentences in group_specs
+    ]
+    total_clips = sum(group["clips"] for group in groups)
+    floor_count = args.asr_floor_clips or total_clips
+    held_out_validation_rows = [
+        row for row in validation_rows if row["speaker_id"] in unseen_speakers
+    ]
     payload = {
-        "sentences": sentences,
-        "speakers": [
-            {
-                "speaker_id": s,
-                "prompt_audio_path": prompts[s]["audio_path"],
-                "prompt_duration": round(prompts[s]["duration"], 2),
-            }
-            for s in usable
-        ],
-        "clips_per_checkpoint": len(sentences) * len(usable),
-        "built_from": [str(a) for a in args.artifacts],
+        "schema_version": 2,
         "seed": args.seed,
+        "artifacts": [str(path.resolve()) for path in args.artifacts],
+        "groups": groups,
+        "clips_per_group": groups[0]["clips"],
+        "clips_per_checkpoint": total_clips,
+        "asr_floor": choose_asr_floor(held_out_validation_rows, floor_count, rng),
     }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"{len(sentences)} sentences x {len(usable)} speakers "
-          f"= {payload['clips_per_checkpoint']} clips per checkpoint")
-    print(f"held-out speakers available: {len(held_out)}, used {len(usable)}")
-    print(f"sentence length: {min(len(s) for s in sentences)}-{max(len(s) for s in sentences)} chars")
     print(f"wrote {args.output}")
-    for s in sentences[:3]:
-        print("  ", s)
+    print(f"4 groups x {groups[0]['clips']} clips = {total_clips} clips/checkpoint")
+    print(f"seen speakers={len(train_speakers)} unseen speakers={len(unseen_speakers)}")
+    print(f"ASR floor={floor_count} genuine held-out clips")
 
 
 if __name__ == "__main__":

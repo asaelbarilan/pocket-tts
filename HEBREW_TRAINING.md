@@ -116,26 +116,52 @@ python -m hebrew_training.train `
   --device cuda
 ```
 
-## Training modes
+## Controlled evaluation and next training run
 
-The corrected launcher defaults to the previously tested flow-only behavior:
+The fixed evaluation manifest has four equal groups: seen/unseen speakers crossed with
+seen/unseen text. Generation seeds, prompts, and sentences are fixed across checkpoints.
+The evaluator reports normalized Hebrew WER/CER with clip-bootstrap confidence intervals.
+On 128 genuine held-out recordings, the ASR floor is WER 0.1231 (95% CI 0.1065-0.1411)
+and CER 0.0698 (0.0559-0.0839). Generated-model error must be interpreted above this floor.
+
+Build it with preserved prompt audio from both artifact sets:
 
 ```powershell
-.\run_hebrew_v2_training.ps1
+python -m hebrew_training.build_eval_set `
+  --artifacts artifacts\hebrew_v2_8s artifacts\hebrew_v2_23s `
+  --output runs\evaluation\hebrew-v3-controlled.json `
+  --sentences-per-group 8 `
+  --speakers-per-group 4 `
+  --asr-floor-clips 128
 ```
 
-The paper-inspired FM/LSD reconstruction is opt-in. The paper uses a head batch multiplier of
-8; keep separate run directories/checkpoints when changing objectives:
+The recommended next command is the short three-arm ablation, not another blind 20,000-step
+run. It starts every arm from the identical released English 6-layer model, trains flow/m1,
+flow/m8, and FM-LSD/m8, then scores all three final checkpoints on the controlled set:
 
 ```powershell
-.\run_hebrew_v2_training.ps1 `
-  -LossMode fm-lsd `
-  -HeadBatchMultiplier 8
+.\run_hebrew_v3_ablation.ps1
 ```
 
-For a controlled comparison, initialize both variants from the same flow checkpoint with
-`--init-flow-checkpoint` and start fresh optimizers. Do not use `--resume` when changing the
-objective.
+For a quick end-to-end check without saving a 1 GB checkpoint:
+
+```powershell
+.\run_hebrew_v3_fmlsd_training.ps1 -Smoke
+```
+
+After the ablation supports FM/LSD, the isolated longer launcher is:
+
+```powershell
+.\run_hebrew_v3_fmlsd_training.ps1
+```
+
+Its defaults are 12,000 steps, head multiplier 8, FM/LSD 75/25, validation on 64 fixed
+latent examples every 250 steps, and checkpoints every 3,000 steps (about 4 GB total).
+It writes `runs/hebrew-v3-8s-fmlsd-m8` and never reuses the completed v2 directory.
+
+Use `--init-flow-checkpoint`/`-InitFlowCheckpoint` to change objectives from an existing
+flow checkpoint while starting a fresh optimizer. Do not use `--resume` unless the source
+checkpoint is already FM/LSD and contains `adaptive_loss_weight.safetensors`.
 
 Checkpoints save FlowLM, optimizer, scheduler, and RNG state. FM/LSD checkpoints additionally
 save `adaptive_loss_weight.safetensors`. Metrics are written to `metrics.jsonl` inside the run
