@@ -75,6 +75,21 @@ target/
 .coverage.*
 
 /weights
+/artifacts/
+/runs/
+/exports/
+/logs/
+/.pytest-tmp/
+/*.log
+/data.html
+/data_report.json
+/eval_set.json
+/train_probe.json
+/papers/
+/docs/*.pdf
+/docs/email_to_kyutai_draft.md
+/run_hebrew_training.ps1
+/monitor_hebrew_training.ps1
 test_en_audio_4000.model
 profile_output*
 *.safetensors

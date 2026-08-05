@@ -134,3 +134,21 @@ The `download_if_necessary()` utility handles `hf://` URLs and caches locally.
 3. **uv Python Preference**: Set to "only-managed" in pyproject.toml because system Python may lack headers.
 4. **CPU-Only PyTorch**: Uses PyTorch CPU index from `download.pytorch.org/whl/cpu` in uv config.
 5. **Web Dependencies**: FastAPI and Uvicorn are included for server functionality.
+
+## Local Hebrew training extension
+
+This repository contains an experimental training reconstruction in `hebrew_training/`.
+Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
+
+- Do not describe this code as Kyutai's original training implementation.
+- Keep Mimi frozen unless a separate codec experiment is explicitly requested.
+- Manifests must use speaker-disjoint `user_id` splits and an explicit different-clip
+  `prompt_audio_path` from the same speaker.
+- Latent caches are model-family-specific. Never use English-normalized cached latents with
+  a French/German/Italian/Portuguese/Spanish 24-layer base.
+- `--loss-mode flow` preserves the earlier reconstruction. `--loss-mode fm-lsd` enables the
+  opt-in 75/25 FM/LSD reconstruction and saves an auxiliary adaptive-weight checkpoint.
+- Use batch size 1 on the RTX 4060 8 GB and run a small smoke test before a long job.
+- Keep artifacts, datasets, logs, exports, evaluation manifests, and checkpoints out of Git.
+- Do not infer generalization from MSE alone; use fixed held-out audio, Hebrew CER/WER,
+  speaker-similarity measurements, and listening tests.

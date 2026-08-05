@@ -30,6 +30,10 @@ Supports Python 3.10, 3.11, 3.12, 3.13 and 3.14. Requires PyTorch 2.5+. Does not
 
 Additional languages may be added in the future.
 
+This repository also contains an **experimental Hebrew training reconstruction**. It is
+not Kyutai's unreleased production training pipeline. See
+[HEBREW_TRAINING.md](HEBREW_TRAINING.md) for its status, limitations, and commands.
+
 ## Trying it from the website, without installing anything
 
 Navigate to the [Kyutai website](https://kyutai.org/pocket-tts) to try it out directly in your browser. You can input text, select different voices, and generate speech without any installation.
