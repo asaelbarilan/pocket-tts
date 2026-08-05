@@ -1,5 +1,5 @@
 param(
-    [int]$Steps = 1000,
+    [int]$Steps = 6000,
     [int]$GradientAccumulation = 8,
     [int]$EvalEvery = 250,
     [int]$EvalSamples = 64,

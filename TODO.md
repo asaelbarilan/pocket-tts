@@ -23,7 +23,7 @@
   - flow only, head multiplier 1;
   - flow only, head multiplier 8;
   - FM/LSD 75/25, head multiplier 8.
-  `run_hebrew_v3_ablation.ps1` automates all three arms and controlled scoring.
+  `run_hebrew_v3_ablation.ps1` automates all three 6,000-step arms and controlled scoring.
 - [ ] Select checkpoints using fixed CER/WER and listening evaluation, not validation MSE.
 
 ## 24-layer experiment

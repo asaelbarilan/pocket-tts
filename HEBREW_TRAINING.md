@@ -135,9 +135,10 @@ python -m hebrew_training.build_eval_set `
   --asr-floor-clips 128
 ```
 
-The recommended next command is the short three-arm ablation, not another blind 20,000-step
-run. It starts every arm from the identical released English 6-layer model, trains flow/m1,
-flow/m8, and FM-LSD/m8, then scores all three final checkpoints on the controlled set:
+The recommended next command is the controlled three-arm ablation, not another blind
+20,000-step run. It starts every arm from the identical released English 6-layer model,
+trains flow/m1, flow/m8, and FM-LSD/m8 for 6,000 optimizer steps each, then scores all three
+final checkpoints on the controlled set:
 
 ```powershell
 .\run_hebrew_v3_ablation.ps1
