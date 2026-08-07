@@ -33,6 +33,8 @@ Additional languages may be added in the future.
 This repository also contains an **experimental Hebrew training reconstruction**. It is
 not Kyutai's unreleased production training pipeline. See
 [HEBREW_TRAINING.md](HEBREW_TRAINING.md) for its status, limitations, and commands.
+For a portable Linux/CUDA setup and guarded student/teacher launch commands, see
+[HEBREW_SERVER_RUNBOOK.md](HEBREW_SERVER_RUNBOOK.md).
 
 ## Trying it from the website, without installing anything
 

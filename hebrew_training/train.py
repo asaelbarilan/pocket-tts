@@ -375,6 +375,7 @@ def evaluate(
             device,
             eos_label_frames=args.eos_label_frames,
             eos_trainable=True,
+            head_batch_multiplier=args.head_batch_multiplier,
             lsd_fraction=args.lsd_fraction if args.loss_mode == "fm-lsd" else 0.0,
             adaptive_loss_weight=adaptive_loss_weight,
         )

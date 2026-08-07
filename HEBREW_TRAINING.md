@@ -36,14 +36,13 @@ excluded from Git. Users must supply speech data for which they have the necessa
 Use Python 3.11 or 3.12 and a CUDA build of PyTorch 2.5 or newer for training:
 
 ```powershell
-git clone https://github.com/asaelbarilan/pocket-tts-hebrew.git
-cd pocket-tts-hebrew
+git clone https://github.com/asaelbarilan/pocket-tts.git
+cd pocket-tts
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -e .
-python -m pip install pyyaml pyarrow
+python -m pip install -e ".[training]"
 ```
 
 Confirm CUDA before training:
@@ -181,3 +180,6 @@ That verifies tensor and gradient compatibility, not Hebrew quality. A foreign-l
 and held-out evaluation.
 
 See [TODO.md](TODO.md) for the next controlled experiments.
+
+For a Linux server handoff, including guarded 6-layer student and 24-layer teacher commands,
+see [HEBREW_SERVER_RUNBOOK.md](HEBREW_SERVER_RUNBOOK.md).
