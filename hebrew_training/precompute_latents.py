@@ -91,12 +91,15 @@ def main() -> None:
                     prompt_audio.shape[-1], int(args.prompt_seconds * model.sample_rate)
                 )
                 with torch.inference_mode():
-                    raw_target = model.mimi.encode_to_latent(audio).transpose(-1, -2).float()
-                    raw_prompt = (
-                        model.mimi.encode_to_latent(prompt_audio[..., :prompt_samples])
-                        .transpose(-1, -2)
-                        .float()
-                    )
+                    # Upstream 891886a made encode_to_latent return time-major [B, T, C].
+                    # It used to return [B, C, T], so this code transposed. Keeping that
+                    # transpose after the merge would silently emit [32, frames] latents
+                    # where train.py expects [frames, 32]. Latents cached before the merge
+                    # are correct and do not need recomputing.
+                    raw_target = model.mimi.encode_to_latent(audio).float()
+                    raw_prompt = model.mimi.encode_to_latent(
+                        prompt_audio[..., :prompt_samples]
+                    ).float()
                     normalized_target = (
                         raw_target - model.flow_lm.emb_mean
                     ) / model.flow_lm.emb_std.clamp_min(1e-6)
