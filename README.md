@@ -14,6 +14,10 @@ Supports Python 3.10, 3.11, 3.12, 3.13 and 3.14. Requires PyTorch 2.5+. Does not
 [📄 Paper](https://arxiv.org/abs/2509.06926) | 
 [📚 Documentation](https://kyutai-labs.github.io/pocket-tts/)
 
+> [!NOTE]
+> **New (August 2026):** We've released the training code! Check out [`training/`](https://github.com/kyutai-labs/pocket-tts/blob/main/training/README.md) to start training your own models.
+> Open a PR to add your model to the [Models trained by the community](#models-trained-by-the-community) section.
+
 
 ## Main takeaways
 * Runs on CPU
@@ -46,6 +50,7 @@ Navigate to the [Kyutai website](https://kyutai.org/pocket-tts) to try it out di
 You can use pocket-tts directly from the command line. We recommend using
 `uv` as it installs any dependencies on the fly in an isolated environment (uv installation instructions [here](https://docs.astral.sh/uv/getting-started/installation/#standalone-installer)).
 You can also use `pip install pocket-tts` to install it manually.
+On Linux, see [CPU-only installation](#cpu-only-installation) to avoid pulling in the CUDA build of PyTorch.
 
 This will generate a wav file `./tts_output.wav` saying the default text with the default voice, and display some speed statistics.
 ```bash
@@ -55,7 +60,7 @@ pocket-tts generate
 ```
 Modify the voice with `--voice` and the text with `--text`. We provide a small catalog of voices.
 Choose a pretrained language model with `--language` when running `generate`, `export-voice`, or `serve` (default: `english`). Non-english languages have also biggers 24 layers variants that are higher quality but slower. You can select them by using for example `--language italian_24l`.
-The `--config` option accepts only a local YAML path for custom weights.
+The `--config` option accepts a local YAML path, an `https://` URL, or an `hf://` path (e.g. `hf://<repo_id>/<path>[@revision]`) for custom weights.
 
 You can take a look at [this page](https://huggingface.co/kyutai/tts-voices) which details the licenses
 for each voice.
@@ -122,6 +127,34 @@ pip install pocket-tts
 uv add pocket-tts
 ```
 
+### CPU-only installation
+
+On Linux, PyPI serves the CUDA build of PyTorch by default, so `pip install pocket-tts` also
+downloads the `nvidia-*` CUDA runtime wheels, even though pocket-tts runs on CPU. This adds
+several gigabytes to the install (with torch 2.13, roughly 3 GB instead of 200 MB). Installing
+from the PyTorch CPU index pulls the CPU build and no NVIDIA packages:
+```bash
+pip install pocket-tts --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+To run the CLI without installing, pass the same index to `uvx`:
+```bash
+uvx --index https://download.pytorch.org/whl/cpu pocket-tts generate
+```
+
+With `uv`, declare the index explicitly in your project:
+```toml
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+```
+
+This is not needed on macOS or Windows, where the default PyTorch wheels are already CPU-only.
+
 You can use this package as a simple Python library to generate audio from text.
 ```python
 from pocket_tts import TTSModel
@@ -163,14 +196,58 @@ audio = model.generate_audio(model_state_copy, "Hello world!")
 
 You can check out the [Python API documentation](https://kyutai-labs.github.io/pocket-tts/API%20Reference/python-api/) for more details and examples.
 
+## Running on GPU
+
+Pocket TTS is designed to run on CPU, and on hardware with strong single-thread CPU performance
+(e.g. Apple Silicon) we did not observe a GPU speedup, notably because we use a batch size of 1
+and a very small model. However, this turns out to be hardware-dependent: measured on a cloud x86
+VM (4 vCPUs) with a Tesla T4, moving the model to GPU gave a consistent ~2.6x speedup over CPU
+(RTF ~2.3-2.5x on CPU vs. ~6.28x on GPU, for both short and long input text). If your CPU is
+thread-limited or otherwise weaker than a modern laptop chip, it's worth trying the GPU.
+
+This is not officially supported (there is no `device` argument on `TTSModel.load_model()`), but
+since `TTSModel` is a regular `nn.Module` you can move it yourself:
+
+```python
+tts_model = TTSModel.load_model()
+tts_model.to("cuda")
+...
+audio = tts_model.generate_audio(voice_state, "Hello world, this is a test.")
+# generate_audio() returns a tensor on the same device as the model, so on GPU you need
+# to move it back to CPU before calling .numpy():
+scipy.io.wavfile.write("output.wav", tts_model.sample_rate, audio.detach().cpu().numpy())
+```
+
+A few things to be aware of if you want to use the GPU:
+- The `generate` CLI command has a `--device` option (defaults to `cpu`, documented in the
+  [CLI reference](docs/CLI%20Commands/generate.md) — note that page's own description ("you may not
+  get a speedup by using a gpu since it's a small model") is what this section is correcting, based
+  on the T4 measurements above); the `serve` command and the Docker image do not expose any device
+  option and will always run on CPU.
+- `pip install pocket-tts` / `uv add pocket-tts` install whatever `torch` build is current on
+  PyPI, which may require a newer CUDA version than your driver supports. In that case
+  `torch.cuda.is_available()` silently returns `False` (you'll only see a `UserWarning` about an
+  outdated driver, not an error). If this happens, install a `torch` build matching your driver's
+  CUDA version explicitly, e.g. `pip install torch --index-url https://download.pytorch.org/whl/cu121`.
+- `quantize=True` (int8 dynamic quantization) only works on CPU; calling it on a model moved to
+  CUDA raises `NotImplementedError: Could not run 'quantized::linear_dynamic' ... 'CUDA' backend`.
+  Separately, the optional `torchao` backend (`pip install pocket-tts[quantize]`) declares
+  `torch>=2.11` — fine with a fresh install (torch 2.11+ is on PyPI as of this writing), but if
+  you've pinned an older `torch` (e.g. to match an older GPU driver's CUDA build, per the point
+  above), adding this extra can pull in a `torchao` that's incompatible with your pinned `torch`
+  and break `quantize=True` even on CPU. Match `torchao`'s `torch` requirement to whatever `torch`
+  you actually have installed.
+
 ## Unsupported features
 
 At the moment, we do not support (but would love pull requests adding):
 
 - [Adding silence in the text input to generate pauses.](https://github.com/kyutai-labs/pocket-tts/issues/6)
 
-We tried running this TTS model on the GPU but did not observe a speedup compared to CPU execution,
-notably because we use a batch size of 1 and a very small model.
+We tried running this TTS model on the GPU but did not observe a speedup compared to CPU execution
+on hardware with very strong single-thread CPU performance, notably because we use a batch size of
+1 and a very small model. See the ["Running on GPU"](#running-on-gpu) section above for measurements
+on other hardware and caveats if you want to try it yourself.
 
 ## Development and local setup
 
@@ -195,6 +272,36 @@ We don't have official support for this yet, but you can try out one of these co
 - [PocketTTS.cpp](https://github.com/VolgaGerm/PocketTTS.cpp) by @VolgaGerm - Single-file C++ runtime using ONNX Runtime, with CLI, HTTP server, and FFI C API.
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by @csukuangfj - Run PocketTTS on **Windows, macOS, Linux**, and embedded boards (Raspberry Pi, Jetson, RK3588, etc.) with bindings for 12 programming languages: **C++, C, Python, JavaScript, Java, C#, Kotlin, Swift, Go, Dart, Rust, Pascal**, plus [WebAssembly](https://huggingface.co/spaces/k2-fsa/web-assembly-en-tts-pocket).
 - [pocket-tts-csharp](https://github.com/TheAjaykrishnanR/pocket-tts-csharp) by @TheAjaykrishnanR - A C# port of Pocket TTS implemented using [TorchSharp](https://github.com/dotnet/TorchSharp) and [TorchSharp.PyBridge](https://github.com/shaltielshmid/TorchSharp.PyBridge) for ease of use as a library in .NET projects.
+
+## Models trained by the community
+
+To use a community model, just use the `--config` argument and point it to the url of the model's yaml file. For example:
+```bash
+uvx pocket-tts generate --config https://raw.githubusercontent.com/kyutai-labs/pocket-tts/refs/heads/main/pocket_tts/config/english_2026-04.yaml
+```
+
+It also works with huggingface urls like `hf://kyutai/pocket-tts/config/english_2026-04.yaml` or local paths like `./english_2026-04.yaml`.
+
+The pre-made voices listed above are embeddings precomputed with our released weights, so they are not available for community models. With `--config`, `--voice` defaults to [alba's audio file](https://huggingface.co/kyutai/tts-voices/blob/main/alba-mackenna/casual.wav), which any model can clone. Pass your own audio file to `--voice` to use another voice.
+
+We recommend inserting the commit hash somehow in the url to avoid breaking changes by the model authors. For example:
+
+```bash
+uvx pocket-tts generate --config https://raw.githubusercontent.com/kyutai-labs/pocket-tts/891886a61a1ed45fd429a0a63bd96181e6cff637/pocket_tts/config/english_2026-04.yaml
+```
+or with `hf://...`
+```bash
+uvx pocket-tts generate --config hf://user/repo/config_file.yaml@commit_hash
+```
+
+### List of community-trained models
+
+- [pocket-tts-czech](https://huggingface.co/vvolhejn/pocket-tts-czech) by @vvolhejn (trained internally at Kyutai):
+```bash
+uvx pocket-tts generate --config hf://vvolhejn/pocket-tts-czech/czech.yaml@7b7760dd0fe994a0800f2fdbc837dc4b8f219d1c
+```
+
+Want your model here? Head to the [training Readme](https://github.com/kyutai-labs/pocket-tts/blob/main/training/README.md) to get started!
 
 ## Projects using Pocket TTS
 

@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 import torch
@@ -43,7 +44,7 @@ _ORIGINS_OF_PREDEFINED_VOICES = {
 
 
 def get_predefined_voice(language: str, name: str) -> str:
-    return f"hf://kyutai/pocket-tts-without-voice-cloning/languages/{language}/embeddings/{name}.safetensors@e041936c75475d350b405bc870bcf7c22da4e9e6"
+    return f"hf://kyutai/pocket-tts-without-voice-cloning/languages/{language}/embeddings/{name}.safetensors@e81d79e8194ad4c7ce879c87a4258ef20cbf2487"
 
 
 def make_cache_directory() -> Path:
@@ -95,9 +96,8 @@ class display_execution_time:
 def download_if_necessary(file_path: str) -> Path:
     if file_path.startswith("http://") or file_path.startswith("https://"):
         cache_dir = make_cache_directory()
-        cached_file = cache_dir / (
-            hashlib.sha256(file_path.encode()).hexdigest() + "." + file_path.split(".")[-1]
-        )
+        suffix = Path(urlparse(file_path).path).suffix
+        cached_file = cache_dir / (hashlib.sha256(file_path.encode()).hexdigest() + suffix)
         if not cached_file.exists():
             response = requests.get(file_path)
             response.raise_for_status()

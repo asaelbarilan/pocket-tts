@@ -17,14 +17,14 @@ This will generate a WAV file `./tts_output.wav` with the default text and voice
 ### Core Options
 
 - `--text TEXT`: Text to generate (default: "Hello world! I am Kyutai Pocket TTS. I'm fast enough to run on small CPUs. I hope you'll like me.")
-- `--voice VOICE`: Path to audio conditioning file (voice to clone). Defaults to a built-in voice chosen from the language: `giovanni` (it) for italian, `lola` (es) for spanish, `juergen` (de) for german, `rafael` (pt) for portuguese, `estelle` (fr) for french, `alba` (en) otherwise. Urls and local paths are supported.
+- `--voice VOICE`: Path to audio conditioning file (voice to clone). Defaults to a built-in voice chosen from the language: `giovanni` (it) for italian, `lola` (es) for spanish, `juergen` (de) for german, `rafael` (pt) for portuguese, `estelle` (fr) for french, `alba` (en) otherwise. With `--config` or `--checkpoint`, defaults to [alba's audio file](https://huggingface.co/kyutai/tts-voices/blob/main/alba-mackenna/casual.wav) instead of the voice name, since the pre-made voices only exist for the released language models. Urls and local paths are supported.
 - `--output-path OUTPUT_PATH`: Output path for generated audio (default: "./tts_output.wav")
 - `--language LANGUAGE`: Language for the TTS model, one of `'english_2026-01'`, `'english_2026-04'`, `'english'`, `'french_24l'`, `'german'`, `'german_24l'`, `'portuguese'`, `'portuguese_24l'`, `'italian'`, `'italian_24l'`, `'spanish'`, `'spanish_24l'` (default: `english`, which is the same model as `'english_2026-04'`). Incompatible with `--config`. The "24l" variants are bigger models, not distilled yet and here only as preview.
 
 ### Generation Parameters
 
-- `--config CONFIG_PATH`: Path to custom config.yaml (for loading local model files). Incompatible with `--language`.
-- `--lsd-decode-steps LSD_DECODE_STEPS`: Number of generation steps (default: 1)
+- `--config CONFIG_PATH`: Path to a custom config.yaml — a local path, an `https://` URL, or an `hf://` path. Incompatible with `--language`.
+- `--sampler-decode-steps SAMPLER_DECODE_STEPS`: Number of generation steps (default: 1)
 - `--temperature TEMPERATURE`: Temperature for generation (default: the model's recommended value from its config — 0.3 for the English model, 0.7 otherwise)
 - `--noise-clamp NOISE_CLAMP`: Noise clamp value (default: None)
 - `--eos-threshold EOS_THRESHOLD`: EOS threshold (default: -4.0)
@@ -32,7 +32,7 @@ This will generate a WAV file `./tts_output.wav` with the default text and voice
 
 ### Performance Options
 
-- `--device DEVICE`: Device to use (default: "cpu", you may not get a speedup by using a gpu since it's a small model)
+- `--device DEVICE`: Device to use (default: "cpu"). Whether GPU helps is hardware-dependent — see the main [README's "Running on GPU" section](../../README.md#running-on-gpu) for measured numbers (no speedup observed on some CPUs with strong single-thread performance like Apple Silicon, but a measured ~2.6x speedup on a cloud x86 VM with a Tesla T4).
 - `--quantize`: Use int8 quantization for the model (default: False). This can reduce memory usage and increase speed, with minimal impact on audio quality.
 - `--quiet`, `-q`: Disable logging output
 
@@ -68,7 +68,7 @@ pocket-tts generate --voice "./my_voice.safetensors"
 
 ```bash
 # Higher quality (more steps)
-pocket-tts generate --lsd-decode-steps 5 --temperature 0.5
+pocket-tts generate --sampler-decode-steps 5 --temperature 0.5
 
 # More expressive (higher temperature)
 pocket-tts generate --temperature 1.0
