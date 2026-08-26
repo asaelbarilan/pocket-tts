@@ -6,6 +6,48 @@ diagnosis and the numbers behind every choice here are in `../../CHANGES.md`.
 
 ---
 
+## The whole pipeline
+
+```bash
+# 2. fetch a subset of the corpus (skip if you already have the audio)
+python -m hebrew_training.fetch_knesset --out data/knesset_plenums --hours 1200
+
+# 3. corpus -> manifests. Merges Whisper segments into ~12 s utterances; read its output.
+PYTHONUTF8=1 python -m hebrew_training.build_official_manifest     --corpus data/knesset_plenums --out-dir data/hebrew_official     --normalize-text --valid-hours 2.0
+
+# 4. alignment -- NOT needed, this corpus ships transcript.aligned.json
+
+# 5. tokenizer, trained on the manifest text from step 3
+uv run training/scripts/train_tokenizer.py tokenizers/hebrew     data/hebrew_official/train_aligned.jsonl --vocab-size 4000
+
+# 6. train: 24-layer teacher, then distil to the 6-layer student
+uv run training/train.py training/configs/lsd_scratch.yaml
+uv run training/train.py training/configs/lsd_depth_distill.yaml
+
+# 7. score by WER, never by loss
+python -m hebrew_training.score_wer --runs-dir runs
+```
+
+Steps 5 and 6 need config edits, not just the commands — see those sections.
+
+### What has actually been run
+
+Be straight with whoever picks this up:
+
+| step | state |
+|---|---|
+| 2 fetch | selection verified against the live repo; a full 102 GiB download has not been run |
+| 3 manifests | validated end-to-end on CrowdRecital (80/80 utterances through Kyutai's `DataLoader`). The segment-merging path added for the Knesset corpora is **not yet exercised on downloaded audio** |
+| 4 alignment | `align_hebrew.py` measured against CrowdRecital timings: 19 ms median word-end error. Not needed for the Knesset corpora |
+| 5 tokenizer | Kyutai's script. **Never run here** |
+| 6 train | Kyutai's trainer. **Never run here, not even a smoke test.** Every number in the hardware table is theirs, not ours |
+| 7 WER | ours, used throughout the earlier run |
+
+The first thing to do on the server is a 100-step run at `max_steps: 100` to prove the
+config loads and the loss moves, before committing to a 40-hour job.
+
+---
+
 ## Why the earlier attempt failed
 
 Not a bug, and not the stop-token tuning we spent three experiments on. Our reimplemented
@@ -45,112 +87,210 @@ Intelligibility is done by 50k. Everything past that buys expressivity.
 
 ---
 
-## Step 1 — corpus
+## Step 1 — corpus: `ivrit-ai/knesset-plenums`
 
-| dataset | hours | sample rate | transcripts | alignment |
-|---|---|---|---|---|
-| `ivrit-ai/crowd-transcribe-v5` | ~316 est. | 32/44.1/48 kHz | human + retranscribe pass | none — align it |
-| CrowdRecital (local) | 50.4 | 48 kHz | human recital | ships `transcript.aligned.json` |
-| `ivrit-ai/knesset-plenums-whisper-training` | 417 GB | 16 kHz | Whisper (automatic) | segment-level only |
-| `ivrit-ai/VoxKnesset` | 2,307 | 16 kHz | **none published** | none |
+Numbers below are read from the repo's own `manifest.csv` (all 1,551 recordings), not
+estimated:
 
-**VoxKnesset cannot be used as-is.** Its parquet has nine columns —
-`speaker_id, age, gender, speaker_place_of_birth, speaker_year_of_aliya, speaker_religion,
-speaker_nationality, speaker_religious_orientation, audio` — and **no transcript**. Word
-alignment was used during curation but is not published, and the `transcripts.parquet` its
-README tells you to load does not exist in any of the three VoxKnesset repos. Observed
-sample: 16 kHz, 497 s long. Without transcripts it is speaker-diarised audio, not TTS data.
+| | |
+|---|---|
+| wall-clock audio | **8,816 h** |
+| inside transcript segments | **5,449 h** |
+| format | 44.1 kHz **stereo** AAC, 128 kbps |
+| transcripts | Whisper, refined against the official Knesset protocol |
+| word alignment | **ships with the data** (`transcript.aligned.json`) |
+| recording `quality_score` | median 0.894, p25 0.861, p10 0.582 |
 
-Mimi runs at **24 kHz**. Anything above downsamples cleanly; 16 kHz must be upsampled and
-the missing 8–12 kHz band never comes back.
+44.1 kHz is the number that matters: Mimi runs at 24 kHz, so this downsamples with nothing
+missing. `ivrit-ai/VoxKnesset` is the same source audio resampled to 16 kHz during its
+curation **and it publishes no transcripts at all** — nine columns of speaker demographics
+plus `audio`. Do not use it. `ivrit-ai/knesset-committees` is the same shape as plenums and
+adds ~339 GiB more; it is a straight `--repo` swap once its gate is accepted.
 
-So the usable high-quality pool is **`crowd-transcribe-v5` + CrowdRecital, roughly 366 h at
-32–48 kHz with human transcripts**. That clears Kyutai's 100 h floor and approaches their
-"200 h gives a model that speaks", but falls short of the 1000 h they want for a strong
-model. To go further you either ask ivrit.ai for VoxKnesset transcripts, or accept
-Whisper-generated transcripts from `knesset-plenums-whisper-training` — which Kyutai warn
-produces "a TTS that is good acoustically but doesn't follow the transcript".
+Other datasets considered and rejected: `crowd-transcribe-v5` (~316 h, but HF parquet with
+audio as bytes — needs an ingestion script nobody has written), CrowdRecital (50 h, fine,
+already works, just small next to 5,449 h).
+
+**Both repos are gated**, one checkbox, auto-approved. Accept, then `hf auth login`:
+<https://huggingface.co/datasets/ivrit-ai/knesset-plenums>
 
 ---
 
-## Step 2 — manifests
+## Step 2 — fetch a subset
+
+Never download all 396 GiB. Selection reads one 147 KiB `manifest.csv` and picks
+recordings before fetching any audio.
+
+```bash
+python -m hebrew_training.fetch_knesset --out data/knesset_plenums --hours 1200
+```
+
+1,200 speech-hours is 324 recordings, ~1,907 h of audio, **~102 GiB**. Check with
+`--dry-run` first. Selection is deterministic and nested — raising `--hours` later only
+downloads what is new — and the whole thing is resumable.
+
+`--min-quality` gates on the recording-level `quality_score` (default 0.8, keeping 1,331 of
+1,551). Budget in **speech** hours, not wall-clock: plenary audio is only ~62% speech, the
+rest is gavel, procedure and dead air.
+
+---
+
+## Step 3 — manifests
 
 Target schema (`training/dataloader.py`):
 
 ```json
-{"path": "...", "start": 0.0, "duration": 4.31, "transcript": "...",
+{"path": "...", "start": 0.0, "duration": 12.6, "transcript": "...",
  "words": [{"word": "...", "start": 0.12, "end": 0.44}]}
 ```
 
-Word times are **relative to `start`**. `words` is optional but costs you the
-word-boundary cutting and the trailing-silence trim if omitted.
-
-For CrowdRecital, which already has timings:
+Word times are **relative to `start`**.
 
 ```bash
-python -m hebrew_training.build_official_manifest \
-    --corpus /path/to/crowd-recital \
-    --out-dir data/hebrew_official \
-    --normalize-text --valid-hours 2.0
+PYTHONUTF8=1 python -m hebrew_training.build_official_manifest     --corpus data/knesset_plenums     --out-dir data/hebrew_official     --normalize-text --valid-hours 2.0
 ```
 
-Validated: 80/80 utterances sampled through `training.dataloader.DataLoader` cleanly.
+### The one thing that is easy to get wrong here
+
+The Knesset corpora ship Whisper **decoder** segments, not utterances: median 1.84 s, p90
+4.40 s, over 702,646 segments measured. The loader's `MIN_CUT_SEC` requires 1.0 s on both
+sides of a cut, so **53.7% of raw segments have no eligible word-boundary cut at all**.
+Those rows silently take the fallback branch, where the voice prompt is read from
+`entry.start` — overlapping the target audio the model is being asked to predict. That is
+prompt leakage, and it is the defect that wrecked the first Hebrew run.
+
+So the builder merges consecutive segments into ~12 s utterances, breaking at silences
+longer than `--merge-gap` (1.5 s), and drops anything under `--min-duration` (4.0 s). The
+defaults are right; the flags exist to be inspected, not tuned. Result: 12.64 s median row,
+retaining ~4,200 h of the 5,449.
+
+**Read these two lines of its output before going further:**
+
+```
+row duration : median 12.64 s, p10 ..., p90 ..., max 30.00
+uncuttable (<2.0 s, prompt would overlap target): 0 (0.00%)
+```
+
+A low median or a non-zero uncuttable count means the merge did not work, and training on
+that manifest will repeat the last failure with a bigger bill.
+
+For CrowdRecital, whose segments are already utterance-length, pass `--merge-gap 0`.
 
 ---
 
-## Step 3 — alignment, for anything without timings
+## Step 4 — alignment: not needed for this corpus
+
+`transcript.aligned.json` already carries per-word `start`, `end` and `probability`; 100% of
+words in the sampled recordings were timed. Skip straight to Step 5.
+
+You need `data_prep/align_hebrew.py` (in the `hebrew-tts-data-tools` repo) only for a corpus
+that arrives without timings:
 
 ```bash
-PYTHONPATH=/path/to/pocket-tts python -m data_prep.align_hebrew \
-    manifest.jsonl manifest_aligned.jsonl \
-    --model imvladikon/wav2vec2-xls-r-300m-hebrew --device cuda --batch-size 8
+PYTHONPATH=/path/to/pocket-tts python -m data_prep.align_hebrew     manifest.jsonl manifest_aligned.jsonl     --model imvladikon/wav2vec2-xls-r-300m-hebrew --device cuda --batch-size 8
 ```
 
-Measured against CrowdRecital's timings: word **ends** within 19 ms median (a quarter of a
-12.5 Hz frame), starts within 74 ms, 5.7% of words untimed. Ends are the accurate side and
-are what the silence trim uses.
-
-Budget roughly 31 GPU-hours for 2,307 h at ~75x realtime, about $8 on L4 spot.
+Measured against CrowdRecital's own timings: word **ends** within 19 ms median (a quarter of
+a 12.5 Hz frame), starts within 74 ms, 5.7% of words untimed. Ends are the accurate side and
+are what the trailing-silence trim uses. Budget ~31 GPU-hours per 2,300 h of audio.
 
 ---
 
-## Step 4 — tokenizer
+## Step 5 — tokenizer
+
+The released configs point at an English SentencePiece model. Hebrew needs its own, and the
+text-conditioning path is learned from scratch either way, so this is not optional.
 
 ```bash
-uv run training/scripts/train_tokenizer.py   # see its --help for corpus flags
+uv run training/scripts/train_tokenizer.py tokenizers/hebrew     data/hebrew_official/train_aligned.jsonl --vocab-size 4000
 ```
 
-Retrain on the final Hebrew text. A Hebrew vocabulary means the text-conditioning path is
-learned from scratch even when starting from released weights, so this is not optional.
+Writes `tokenizers/hebrew.model` and `.vocab`. It reads the manifest directly, so run it
+**after** Step 3 — the tokenizer must see the normalized text the trainer will feed it, not
+the raw transcripts.
+
+This is a subword tokenizer for text conditioning. It is unrelated to the character-level
+CTC vocabulary in the aligner; the two are different objects and neither substitutes for the
+other.
+
+Then wire it up. `pocket_tts/config/hebrew.yaml` in this repo already does it — copied from
+`english.yaml` with two changes:
+
+| field | value | why |
+|---|---|---|
+| `flow_lm.lookup_table.tokenizer_path` | `tokenizers/hebrew.model` | the file you just built |
+| `flow_lm.lookup_table.n_bins` | must equal `--vocab-size` | silent shape mismatch otherwise |
+
+`weights_path` stays pointed at the released English model on purpose. `training/args.py`
+uses it for the **Mimi codec always**, and for the FlowLM only when `start_from_pretrained`
+is true — and both training configs set that false. So Mimi is borrowed (it is a
+language-agnostic audio codec) and the FlowLM is fresh. That is the intended arrangement.
 
 ---
 
-## Step 5 — train
+## Step 6 — train
 
-Two stages, as Kyutai ship them. Their note: training in two steps "works better than
-training a 6-layer model from scratch."
+Two stages. Kyutai's note: training in two steps "works better than training a 6-layer model
+from scratch."
+
+**Stage 1 — the 24-layer teacher.** In `training/configs/lsd_scratch.yaml`:
+
+```yaml
+model_config: pocket_tts/config/hebrew.yaml     # was english.yaml
+model_overrides:
+  flow_lm.transformer.num_layers: 24            # leave as-is: this is what makes it the teacher
+data:
+  train_jsonl: data/hebrew_official/train_aligned.jsonl
+  valid_jsonl: data/hebrew_official/valid_aligned.jsonl
+batch_size: 64                                  # see the batch note below
+grad_accum_steps: 1
+max_steps: 400000                               # 50000 if you only need intelligibility
+```
 
 ```bash
-# Stage 1: 24-layer teacher
 uv run training/train.py training/configs/lsd_scratch.yaml
+```
 
-# Stage 2: distil to the 6-layer student, baking in CFG
+**Stage 2 — distil to the 6-layer student**, baking CFG in. In `lsd_depth_distill.yaml`:
+
+```yaml
+model_config: pocket_tts/config/hebrew.yaml           # the 6-layer student
+distill_teacher_config: pocket_tts/config/hebrew.yaml # same file...
+distill_teacher_overrides:
+  flow_lm.transformer.num_layers: 24                  # ...plus this, making it the teacher
+distill_teacher_weights: runs/lsd_scratch/checkpoint_00400000.pt   # <- Stage 1's output
+data:
+  train_jsonl: data/hebrew_official/train_aligned.jsonl
+  valid_jsonl: data/hebrew_official/valid_aligned.jsonl
+```
+
+```bash
 uv run training/train.py training/configs/lsd_depth_distill.yaml
 ```
 
-Edit in `lsd_scratch.yaml`:
+The teacher is not a second model you find somewhere — it is Stage 1's own checkpoint. The
+student has the same `d_model`, so the flow head and every non-backbone weight are copied
+from it and the head stays frozen; only the 6-layer backbone is trained, to reproduce the
+24-layer backbone's activations.
 
-- `data.train_jsonl` / `valid_jsonl` — your manifests
-- `batch_size` / `grad_accum_steps` — **effective batch must reach 64**. One GPU in a single
-  pass wants ~56 GiB; a consumer card runs `batch_size: 16` with `grad_accum_steps: 4` in
-  ~16 GiB.
-- `max_steps` — 50k if you only need intelligibility; 400k for the published quality.
+### What not to touch
 
-Leave `lr: 2e-4`, `flow_batch_multiplier: 4`, `text_dropout: 0.2`, `voice_dropout: 0.2` and
-the `lsd` flow type alone. Those are the decisive settings.
+`lr: 2e-4`, `flow_batch_multiplier: 4`, `text_dropout: 0.2`, `voice_dropout: 0.2`, and
+`flow.type: lsd`. These are the settings Kyutai call decisive, and all four were wrong in
+the earlier attempt (see the table at the top). Do not port anything from
+`hebrew_training/train.py` onto these configs — that trainer was our reimplementation and it
+is superseded.
 
-`start_from_pretrained` defaults to **true** in `args.py` but both shipped configs set it
-false. From scratch is right at 1000+ h; at 39 h it was not.
+`text_dropout` and `voice_dropout` are correctly **0.0** in the distillation config, not a
+typo: the teacher's targets are computed fully-conditioned, so dropping conditioning there
+would ask the student to predict a conditioned target from a null input.
+
+### Effective batch
+
+**`batch_size` x GPUs x `grad_accum_steps` must reach 64.** Below that, per Kyutai, "the
+quality transition arrives late or not at all" — our earlier run sat at 8. One GPU in a
+single pass wants ~56 GiB; halve `batch_size` and double `grad_accum_steps` until it fits.
+A consumer card runs 16 x 4 in ~16 GiB. On 8 GPUs use `batch_size: 8`.
 
 ### Hardware and cost
 
@@ -198,7 +338,7 @@ the wrong venue for this unless you are already committed to it.
 
 ---
 
-## Step 6 — evaluate
+## Step 7 — evaluate
 
 Score by **WER**, not loss. On this project validation loss, EOS loss and clip duration each
 ranked checkpoints differently from what the audio actually sounded like; EOS loss turned
@@ -222,6 +362,11 @@ between adjacent checkpoints on sampling noise alone.
 
 - **Windows**: `load_entries` opens manifests without an encoding, so cp1252 kills any
   Hebrew manifest. Set `PYTHONUTF8=1`. One-line upstream fix; they accept bugfix PRs.
+  Not an issue on a Linux server, which is where this belongs anyway.
+- **m4a decoding.** The loader reads audio through `sphn`, which seeks into whatever file a
+  manifest names — no transcode step, the same way Kyutai point HiFiTTS-2 manifests at whole
+  chapter mp3s. Confirm `sphn.read` opens one `audio.m4a` before building 1,200 h of
+  manifests against them; if it cannot, transcode to wav/flac and re-run step 3.
 - **Latents are model-specific.** `emb_mean` differs between models by a median factor of
   730x, so latents cached for one config are meaningless to another.
 - `pip install sphn transformers soundfile` — the training and alignment code needs these
