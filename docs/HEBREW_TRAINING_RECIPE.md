@@ -322,10 +322,25 @@ Italian, Spanish and Portuguese too). So `start_from_pretrained: true` on the te
 is mechanically possible, and you would inherit a backbone that already knows how to turn
 Mimi latents into speech.
 
-The one thing that cannot survive the language change is the text table.
-`flow_lm.conditioner.embed.weight` is `[n_bins + 1, 1024]` — one row per piece of the
-**English** tokenizer. A Hebrew tokenizer of the same size keeps every shape while changing
-every meaning, so `load_state_dict(strict=True)` succeeds and warns about nothing.
+The one thing that cannot survive the language change is the text table. In plain terms:
+
+> The model keeps a dictionary — 4,000 rows, one per text piece, each row storing what that
+> piece sounds like. Row 300 is `▁not`. Your Hebrew tokenizer also has 4,000 pieces, but row
+> 300 is now some Hebrew piece. Loading the weights copies row 300 onto row 300, because all
+> the loader checks is that both lists are 4,000 long. They are. So it succeeds — and row 300
+> now holds the sound of `▁not` labelled as Hebrew. Every row is wrong, and nothing warns you.
+>
+> The fix is to copy **by name instead of by position**. For each Hebrew piece, ask whether
+> the English list contained that exact piece. If yes, copy its row. If no, leave it fresh
+> for training to learn. Hebrew words were not in the English list, so they start fresh;
+> punctuation, digits and spaces were, so they keep what they learned.
+>
+> This matters because the dictionary is the small part. The big part is the 24 layers that
+> turn text into speech, and none of that is English-specific — it copies over intact. You
+> keep the expensive part and relearn only the dictionary.
+
+Concretely: `flow_lm.conditioner.embed.weight` is `[n_bins + 1, 1024]`, one row per piece of
+the **English** tokenizer, and `load_state_dict(strict=True)` matches on shape alone.
 
 Rewrite that one tensor first, and the trainer needs no patching:
 
