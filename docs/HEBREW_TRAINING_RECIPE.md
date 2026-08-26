@@ -48,6 +48,7 @@ Be straight with whoever picks this up:
 | 4 alignment | `align_hebrew.py` measured against CrowdRecital timings: 19 ms median word-end error. Not needed for the Knesset corpora |
 | 5 tokenizer | Kyutai's script. **Never run here** |
 | 6 train | Kyutai's trainer. **Never run here, not even a smoke test.** Every number in the hardware table is theirs, not ours |
+| 6b warm-start (optional) | `warm_start_checkpoint.py` run end-to-end against the released 6-layer English model; the 24-layer file was verified by its header, not downloaded |
 | 7 WER | ours, used throughout the earlier run |
 
 The first thing to do on the server is a 100-step run at `max_steps: 100` to prove the
@@ -311,6 +312,51 @@ The teacher is not a second model you find somewhere — it is Stage 1's own che
 student has the same `d_model`, so the flow head and every non-backbone weight are copied
 from it and the head stays frozen; only the 6-layer backbone is trained, to reproduce the
 24-layer backbone's activations.
+
+### Alternative: warm-start from the released 24-layer teacher
+
+Kyutai release 24-layer teachers, not only the 6-layer models —
+`languages/english_2026-04_24l/model.safetensors` carries 24 transformer layers and the flow
+head (verified from the checkpoint, and there are `_24l` releases for French, German,
+Italian, Spanish and Portuguese too). So `start_from_pretrained: true` on the teacher config
+is mechanically possible, and you would inherit a backbone that already knows how to turn
+Mimi latents into speech.
+
+The one thing that cannot survive the language change is the text table.
+`flow_lm.conditioner.embed.weight` is `[n_bins + 1, 1024]` — one row per piece of the
+**English** tokenizer. A Hebrew tokenizer of the same size keeps every shape while changing
+every meaning, so `load_state_dict(strict=True)` succeeds and warns about nothing.
+
+Rewrite that one tensor first, and the trainer needs no patching:
+
+```bash
+python -m hebrew_training.warm_start_checkpoint     --tokenizer tokenizers/hebrew.model     --out weights/hebrew_24l_warmstart.safetensors
+```
+
+Rows are matched on the piece **string**, so anything in both vocabularies keeps its learned
+embedding and the rest are drawn from the old table's mean and standard deviation. This is
+the same transplant `hebrew_training/model_utils.py:install_tokenizer` did for the earlier
+run. The script prints how many pieces actually transferred — read it, and do not be
+reassured by a high number if your vocabulary is small, since byte-fallback pieces are
+shared by every SentencePiece model and inflate the count.
+
+Then point a copy of `hebrew.yaml` at the result:
+
+```yaml
+weights_path: weights/hebrew_24l_warmstart.safetensors
+flow_lm:
+  transformer:
+    num_layers: 24
+  lookup_table:
+    n_bins: 4000          # must equal your tokenizer's vocab size
+```
+
+and set `start_from_pretrained: true` in `lsd_scratch.yaml`.
+
+**This is not a route Kyutai measured.** Both their shipped configs train from scratch, and
+their published 2,000 h result is from scratch. At ~4,200 available hours, from scratch is
+the documented path and warm-starting is an experiment — worth running against a
+from-scratch baseline at 50k steps, not worth adopting blind.
 
 ### What not to touch
 
