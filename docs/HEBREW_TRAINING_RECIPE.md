@@ -49,17 +49,27 @@ Intelligibility is done by 50k. Everything past that buys expressivity.
 
 | dataset | hours | sample rate | transcripts | alignment |
 |---|---|---|---|---|
-| `ivrit-ai/VoxKnesset` | 2,307 | 16 kHz | human-verified | not published |
+| `ivrit-ai/crowd-transcribe-v5` | ~316 est. | 32/44.1/48 kHz | human + retranscribe pass | none — align it |
 | CrowdRecital (local) | 50.4 | 48 kHz | human recital | ships `transcript.aligned.json` |
-| `ivrit-ai/crowd-transcribe-v5` | ~316 est. | 32/44.1/48 kHz | human + retranscribe pass | not published |
+| `ivrit-ai/knesset-plenums-whisper-training` | 417 GB | 16 kHz | Whisper (automatic) | segment-level only |
+| `ivrit-ai/VoxKnesset` | 2,307 | 16 kHz | **none published** | none |
+
+**VoxKnesset cannot be used as-is.** Its parquet has nine columns —
+`speaker_id, age, gender, speaker_place_of_birth, speaker_year_of_aliya, speaker_religion,
+speaker_nationality, speaker_religious_orientation, audio` — and **no transcript**. Word
+alignment was used during curation but is not published, and the `transcripts.parquet` its
+README tells you to load does not exist in any of the three VoxKnesset repos. Observed
+sample: 16 kHz, 497 s long. Without transcripts it is speaker-diarised audio, not TTS data.
 
 Mimi runs at **24 kHz**. Anything above downsamples cleanly; 16 kHz must be upsampled and
-the missing 8–12 kHz band never comes back. VoxKnesset supplies the hours but caps
-bandwidth — accept a band-limited-sounding v1, or mix in the higher-rate corpora and accept
-fewer hours.
+the missing 8–12 kHz band never comes back.
 
-VoxKnesset segments average **125 s** against Kyutai's `max_duration_sec: 30`, so they must
-be split into utterances at word boundaries — which requires alignment first.
+So the usable high-quality pool is **`crowd-transcribe-v5` + CrowdRecital, roughly 366 h at
+32–48 kHz with human transcripts**. That clears Kyutai's 100 h floor and approaches their
+"200 h gives a model that speaks", but falls short of the 1000 h they want for a strong
+model. To go further you either ask ivrit.ai for VoxKnesset transcripts, or accept
+Whisper-generated transcripts from `knesset-plenums-whisper-training` — which Kyutai warn
+produces "a TTS that is good acoustically but doesn't follow the transcript".
 
 ---
 
@@ -142,15 +152,49 @@ the `lsd` flow type alone. Those are the decisive settings.
 `start_from_pretrained` defaults to **true** in `args.py` but both shipped configs set it
 false. From scratch is right at 1000+ h; at 39 h it was not.
 
-### Cost
+### Hardware and cost
 
-| stage | steps | L4 GPU-hours | on-demand | spot |
+Kyutai trained the released models on **8x H100**. Their measured scaling, with our
+50k-step column derived from the same rates (50k is where WER flattens; 200k is where
+acoustic quality lifts):
+
+| GPUs | steps/s | VRAM/GPU | to 50k | to 200k | GPU-hours for 200k |
+|---|---|---|---|---|---|
+| 1x L4 23GB | 0.35 | 15.9 GiB | 40 h | 158 h | 158 |
+| 1x L40S 46GB | 0.77 | 42.0 GiB | 18 h | 72 h | 72 |
+| 1x H100 80GB | 1.36 | 55.6 GiB | 10 h | 41 h | 41 |
+| 2x H100 | 2.24 | 32.6 GiB | 6 h | 25 h | 50 |
+| 4x H100 | 3.94 | 20.0 GiB | 3.5 h | 14 h | 56 |
+| 8x H100 | 6.20 | 14.9 GiB | 2.5 h | 9 h | 72 |
+
+**Adding GPUs costs more, not less.** The right-hand column is what you pay for: 8 GPUs
+finish 4.6x sooner than one but consume 1.76x the GPU-hours, because the per-GPU batch
+shrinks. Kyutai say the same: "Scaling falls off because the per-GPU batch shrinks, not
+because of communication." Buy parallelism to save wall-clock, never to save money.
+
+Per-GPU-hour rates, checked August 2026:
+
+| provider | H100 80GB | notes |
+|---|---|---|
+| Vast.ai | from $1.49 | marketplace, variable reliability |
+| RunPod | $1.99 PCIe / $2.69 SXM | |
+| Lambda | $3.99 | |
+| GCP | $10.98 | `a3-highgpu-8g` only, $87.83/hr for the whole 8-GPU node |
+
+Total cost at RunPod SXM ($2.69):
+
+| target | 1x H100 | 2x H100 | 4x H100 | 8x H100 |
 |---|---|---|---|---|
-| teacher | 200k | 158 | $133 | $40 |
-| distil | 200k | ~53 | $45 | $13 |
+| 50k steps (intelligible) | $27 / 10 h | $32 / 6 h | $38 / 3.5 h | $54 / 2.5 h |
+| 200k steps (quality lift) | $110 / 41 h | $135 / 25 h | $151 / 14 h | $194 / 9 h |
 
-50k teacher steps — enough for intelligibility — is ~40 h, about $33 on-demand or $10 spot.
-On GCP the L4 is `g2-standard-8`; H100 is only sold as an 8-GPU node at $87.83/hr.
+Distillation adds roughly 3 h on 8x H100, proportionally more on fewer.
+
+**For a half-day budget: 50k steps on 1-2 H100s, about $30.** If you want the full 200k
+acoustic-quality run inside half a day, that is 4-8 H100s at $150-195.
+
+GCP is 4-7x the price of the specialist providers here and forces an 8-GPU node, so it is
+the wrong venue for this unless you are already committed to it.
 
 ---
 
