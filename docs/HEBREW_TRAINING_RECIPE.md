@@ -308,10 +308,54 @@ data:
 uv run training/train.py training/configs/lsd_depth_distill.yaml
 ```
 
-The teacher is not a second model you find somewhere — it is Stage 1's own checkpoint. The
-student has the same `d_model`, so the flow head and every non-backbone weight are copied
-from it and the head stays frozen; only the 6-layer backbone is trained, to reproduce the
-24-layer backbone's activations.
+### What distillation actually does
+
+Kyutai document this in one line (`training/README.md:155`); the rest is only in the code.
+It does two separate things at once.
+
+**1. It shrinks 24 layers to 6.** The teacher is not a second model you find somewhere — it
+is Stage 1's own checkpoint. The student starts seeded from it, not randomly: `shrink()`
+copies every non-backbone tensor verbatim plus the teacher's bottom and top layers. The flow
+head and the EOS head are then **frozen at the teacher's weights and never trained**. Only
+the backbone learns, against plain MSE against the teacher's backbone output.
+
+**2. It bakes in classifier-free guidance.** The regression target is not the teacher's
+normal output. Each step runs the teacher twice — once fully conditioned, once with
+conditioning nulled — and combines them:
+
+```
+z_t = z_null + distill_cfg_coef * (z_cond - z_null)
+```
+
+The student learns to hit that guided point directly. So at inference it needs **one**
+forward pass where the teacher needs two, at the quality of guided sampling.
+
+### The process, concretely
+
+1. **Finish Stage 1.** You need `runs/lsd_scratch/checkpoint_00400000.pt`. Nothing about
+   distillation can start before the teacher is trained.
+2. **No new data work.** Same manifests, same tokenizer, same audio. Only the config changes.
+3. **Edit the five lines above** in `lsd_depth_distill.yaml` — the two config paths, the
+   override, the teacher checkpoint, and your manifests.
+4. **Leave `distill_cfg_coef: 2.0` alone.** At 0 nothing distils; 1.0 would be pure depth
+   distillation with no guidance baked in.
+5. **Leave `text_dropout: 0.0` and `voice_dropout: 0.0`.** Not a typo — the teacher's targets
+   are always fully conditioned, so dropping the student's conditioning would ask it to
+   predict a conditioned target from a null input. The trainer warns if you set them.
+6. **Run it.** `uv run training/train.py training/configs/lsd_depth_distill.yaml`
+7. **Sample the student with `--cfg 1`.** Guidance is already in the weights; sampling at
+   cfg 2 applies it twice. (`lsd_scratch.yaml` sets `sample_cfg_coef: 2.0` because a *teacher*
+   must be sampled guided — the student's default is 1.0.)
+
+Notes worth knowing before it fails on you:
+
+- **Both models sit in VRAM.** The frozen 24-layer teacher runs two forward passes per step
+  alongside the student. Budget accordingly; the shipped `batch_size: 16` assumes this.
+- `distill_teacher_use_ema` defaults to **true**, so the target is the teacher's EMA shadow,
+  falling back to raw weights if the checkpoint has none. Leave it.
+- WER and speaker similarity reach parity by ~40k steps; the config's 200k is there because
+  prosody keeps settling. If you only need a working voice, stop early.
+- Cost: ~3 h on 8x H100, proportionally more on fewer.
 
 ### Alternative: warm-start from the released 24-layer teacher
 
