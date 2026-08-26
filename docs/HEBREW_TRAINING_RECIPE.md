@@ -219,8 +219,25 @@ are what the trailing-silence trim uses. Budget ~31 GPU-hours per 2,300 h of aud
 
 ## Step 5 — tokenizer
 
-The released configs point at an English SentencePiece model. Hebrew needs its own, and the
-text-conditioning path is learned from scratch either way, so this is not optional.
+### Is this actually necessary? No — but do it anyway
+
+The released tokenizer is SentencePiece **BPE**, not character-level. It does not break on
+Hebrew: byte fallback covers everything, round-trip decoding is exact, zero UNK. That is why
+the earlier CrowdRecital run learned Hebrew at all with an English tokenizer.
+
+What it does instead is silently degenerate to one token per character:
+
+| | chars | tokens | tokens/char | distinct pieces used |
+|---|---|---|---|---|
+| Hebrew sentence | 127 | 128 | **1.01** | 25 |
+| comparable English | 166 | 53 | 0.32 | 43 |
+
+Only 508 of the 4,000 vocabulary entries are reachable by Hebrew text at all; the remaining
+87% are English subwords. So you pay 3.2x the text-conditioning sequence length and leave
+most of the lookup table dead.
+
+Training a Hebrew tokenizer is a two-minute CPU job that removes both costs. It is cheap
+insurance, not a blocker — if something else is broken, this is not it.
 
 ```bash
 uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
