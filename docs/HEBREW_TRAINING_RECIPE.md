@@ -13,12 +13,19 @@ diagnosis and the numbers behind every choice here are in `../../CHANGES.md`.
 python -m hebrew_training.fetch_knesset --out data/knesset_plenums --hours 1200
 
 # 3. corpus -> manifests. Merges Whisper segments into ~12 s utterances; read its output.
-PYTHONUTF8=1 python -m hebrew_training.build_official_manifest     --corpus data/knesset_plenums --out-dir data/hebrew_official     --normalize-text --valid-hours 2.0
+PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
+    --corpus data/knesset_plenums --out-dir data/hebrew_official \
+    --normalize-text --valid-hours 2.0
 
-# 4. alignment -- NOT needed, this corpus ships transcript.aligned.json
+# 4. alignment -- NOT needed here, this corpus ships transcript.aligned.json.
+#    If needed (a corpus without word timings), the model we tested:
+# PYTHONPATH=$(pwd) python -m data_prep.align_hebrew \
+#     in.jsonl out.jsonl --model imvladikon/wav2vec2-xls-r-300m-hebrew \
+#     --device cuda --batch-size 8
 
 # 5. tokenizer, trained on the manifest text from step 3
-uv run training/scripts/train_tokenizer.py tokenizers/hebrew     data/hebrew_official/train_aligned.jsonl --vocab-size 4000
+uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
+    data/hebrew_official/train_aligned.jsonl --vocab-size 4000
 
 # 6. train: 24-layer teacher, then distil to the 6-layer student
 uv run training/train.py training/configs/lsd_scratch.yaml
@@ -147,7 +154,10 @@ Target schema (`training/dataloader.py`):
 Word times are **relative to `start`**.
 
 ```bash
-PYTHONUTF8=1 python -m hebrew_training.build_official_manifest     --corpus data/knesset_plenums     --out-dir data/hebrew_official     --normalize-text --valid-hours 2.0
+PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
+    --corpus data/knesset_plenums \
+    --out-dir data/hebrew_official \
+    --normalize-text --valid-hours 2.0
 ```
 
 ### The one thing that is easy to get wrong here
@@ -183,11 +193,22 @@ For CrowdRecital, whose segments are already utterance-length, pass `--merge-gap
 `transcript.aligned.json` already carries per-word `start`, `end` and `probability`; 100% of
 words in the sampled recordings were timed. Skip straight to Step 5.
 
-You need `data_prep/align_hebrew.py` (in the `hebrew-tts-data-tools` repo) only for a corpus
-that arrives without timings:
+**If needed** — a corpus that arrives without word timings — use
+`data_prep/align_hebrew.py` from the `hebrew-tts-data-tools` repo with
+`imvladikon/wav2vec2-xls-r-300m-hebrew`, which is the model we measured:
 
 ```bash
-PYTHONPATH=/path/to/pocket-tts python -m data_prep.align_hebrew     manifest.jsonl manifest_aligned.jsonl     --model imvladikon/wav2vec2-xls-r-300m-hebrew --device cuda --batch-size 8
+PYTHONPATH=/path/to/pocket-tts python -m data_prep.align_hebrew \
+    manifest.jsonl manifest_aligned.jsonl \
+    --model imvladikon/wav2vec2-xls-r-300m-hebrew --device cuda --batch-size 8
+```
+
+Check a candidate model before spending GPU hours on it — `--check-model` prints its
+vocabulary and warns if the CTC head is not Hebrew:
+
+```bash
+python -m data_prep.align_hebrew in.jsonl out.jsonl \
+    --model imvladikon/wav2vec2-xls-r-300m-hebrew --check-model
 ```
 
 Measured against CrowdRecital's own timings: word **ends** within 19 ms median (a quarter of
@@ -202,7 +223,8 @@ The released configs point at an English SentencePiece model. Hebrew needs its o
 text-conditioning path is learned from scratch either way, so this is not optional.
 
 ```bash
-uv run training/scripts/train_tokenizer.py tokenizers/hebrew     data/hebrew_official/train_aligned.jsonl --vocab-size 4000
+uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
+    data/hebrew_official/train_aligned.jsonl --vocab-size 4000
 ```
 
 Writes `tokenizers/hebrew.model` and `.vocab`. It reads the manifest directly, so run it
