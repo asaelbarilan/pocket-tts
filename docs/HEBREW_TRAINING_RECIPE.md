@@ -560,24 +560,33 @@ Start this alongside the training run. It scores each new checkpoint from step 4
 fixed Hebrew sentences and appends WER/CER to `hebrew_eval.jsonl` in the run directory:
 
 ```bash
-python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew     --voice prompts/hebrew_voice.wav --watch
+python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew --watch
 ```
 
-Then render it — a WER/CER-over-step chart with every clip playable beside its step, so a
-number that looks good can be checked by ear immediately:
+It writes `hebrew_eval.html` beside the results and **rewrites it after every checkpoint**,
+so a browser left open on the page is never more than one checkpoint behind. Serve the run
+directory once and leave it:
 
 ```bash
-python -m hebrew_training.build_wer_dashboard --run-dir runs/finetune_hebrew
 python -m http.server 8000 --directory runs/finetune_hebrew   # open hebrew_eval.html
 ```
 
-Re-run `build_wer_dashboard` whenever you want to refresh the page. Both are resumable and
-skip checkpoints already scored, so they can be started midway through a run or restarted
-after a crash. Pass `--run-dir` more than once to overlay runs on the same axes. For the
-distilled student add `--cfg 1.0`, since guidance is baked into its weights.
+The chart is WER and CER against step with the best checkpoint circled, above a table with
+every clip playable beside its step and the ASR's transcription under it — so a number that
+looks good can be checked by ear immediately.
 
-The voice prompt matters: the model clones it, so a noisy prompt makes every generation
-sound noisy regardless of how well training is going. Use a clean Hebrew clip.
+The voice the model clones is cut automatically from the run's own `valid_jsonl`: the first
+row longer than `--voice-sec` (5 s), cached at `hebrew_eval/voice_prompt.wav` so every
+checkpoint is judged against the same voice. Delete that file to re-pick, or pass `--voice`
+for a specific clip. It comes from the validation split, so it is a voice the model was not
+trained on.
+
+This is a second process, with its own GPU memory for the model plus Whisper — start it
+alongside training, not inside it. It is resumable and skips checkpoints already scored, so
+it can be started midway through a run or restarted after a crash. `build_wer_dashboard.py`
+renders the page standalone if you want it without the watcher, and `--run-dir` repeats to
+overlay runs. For the distilled student add `--cfg 1.0`, since guidance is baked into its
+weights.
 
 **Five sentences is a progress signal, not a measurement.** Our earlier 12-clip scores swung
 0.1-0.3 between adjacent checkpoints on sampling noise alone. Use it to see the shape of the

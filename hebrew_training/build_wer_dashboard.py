@@ -107,11 +107,15 @@ def clip_cell(run_dir_name: str, clip: dict) -> str:
             f'<div class="hyp">{html.escape(clip.get("hypothesis") or "—")}</div></td>')
 
 
-def main() -> None:
-    args = parse_args()
-    runs = [(d.name, load(d)) for d in args.run_dir]
+def render(run_dirs: list[Path], output: Path | None = None) -> tuple[Path, int]:
+    """Write the dashboard for `run_dirs`; returns (path, checkpoints charted).
+
+    Importable so watch_eval.py can refresh the page after each checkpoint without
+    shelling out.
+    """
+    runs = [(d.name, load(d)) for d in run_dirs]
     scored = [(n, r) for n, r in runs if r]
-    output = args.output or (args.run_dir[0] / "hebrew_eval.html")
+    output = output or (run_dirs[0] / "hebrew_eval.html")
 
     summary_rows = []
     for name, rows in scored:
@@ -126,7 +130,7 @@ def main() -> None:
 
     # Audio lives under each run dir; the page sits in the first one, so only that run's
     # clips are playable from here. Others still chart.
-    primary = args.run_dir[0]
+    primary = run_dirs[0]
     detail = []
     for name, rows in scored:
         prefix = "" if Path(name) == Path(primary.name) else None
@@ -195,9 +199,14 @@ checkpoint: a progress signal, not a measurement — confirm the winner with
 {''.join(detail)}
 """
     output.write_text(page, encoding="utf-8")
-    total = sum(len(r) for _, r in scored)
-    print(f"wrote {output} ({total} scored checkpoints across {len(scored)} run(s))")
-    print(f"serve it: python -m http.server 8000 --directory {primary}")
+    return output, sum(len(r) for _, r in scored)
+
+
+def main() -> None:
+    args = parse_args()
+    output, total = render(args.run_dir, args.output)
+    print(f"wrote {output} ({total} scored checkpoints)")
+    print(f"serve it: python -m http.server 8000 --directory {args.run_dir[0]}")
 
 
 if __name__ == "__main__":

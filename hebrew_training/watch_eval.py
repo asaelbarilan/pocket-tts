@@ -10,12 +10,17 @@ This closes that gap. It watches a run directory, and for every checkpoint at or
 directory. `build_wer_dashboard.py` renders that file as a chart with the audio beside it.
 
     # follow a live run, scoring each checkpoint as it lands
-    python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew \
-        --voice prompts/hebrew_voice.wav --watch
+    python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew --watch
 
     # or score whatever is already on disk and exit
-    python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew \
-        --voice prompts/hebrew_voice.wav
+    python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew
+
+The voice the model clones is cut from the run's own validation manifest -- the first
+row long enough -- and cached at <run>/hebrew_eval/voice_prompt.wav, so every checkpoint
+is judged against the same voice. Pass --voice to supply your own.
+
+hebrew_eval.html is rewritten after every checkpoint, so a browser left open on it is
+never more than one checkpoint behind.
 
 Resumable: a checkpoint already present in hebrew_eval.jsonl is skipped, so this can be
 killed and restarted, and a --watch run can be started midway through training.
@@ -47,9 +52,12 @@ _STEP = re.compile(r"checkpoint_(\d+)\.pt$")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--voice", type=Path, required=True,
-                        help="Hebrew voice prompt wav. The model clones this; a noisy prompt "
+    parser.add_argument("--voice", type=Path,
+                        help="Hebrew voice prompt wav. Omit and one is cut from the run's own "
+                             "validation manifest. The model clones this, so a noisy prompt "
                              "makes every generation sound noisy.")
+    parser.add_argument("--voice-sec", type=float, default=5.0,
+                        help="Prompt length. Matches max_voice_prompt_sec in the configs.")
     parser.add_argument("--sentences", type=Path,
                         help="One sentence per line. Defaults to five Knesset-style lines.")
     parser.add_argument("--min-step", type=int, default=4000,
@@ -70,7 +78,57 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watch", action="store_true",
                         help="Keep polling for new checkpoints instead of exiting.")
     parser.add_argument("--poll-seconds", type=float, default=120.0)
+    parser.add_argument("--no-dashboard", action="store_true",
+                        help="Skip rewriting hebrew_eval.html after each checkpoint.")
     return parser.parse_args()
+
+
+def pick_voice_prompt(run_dir: Path, seconds: float) -> Path:
+    """Cut a voice prompt from the run's own validation manifest.
+
+    Any row longer than the prompt works, so this takes the first that qualifies -- stable
+    across restarts, and from the validation split so the prompt voice is one the model was
+    not trained on. Written once to <run>/hebrew_eval/voice_prompt.wav and reused, so every
+    checkpoint is scored against the same voice; delete that file to choose again.
+    """
+    import soundfile
+
+    from training.args import load_args
+    from training.dataloader import _load_window
+
+    out = run_dir / "hebrew_eval" / "voice_prompt.wav"
+    if out.exists():
+        return out
+
+    args = load_args(run_dir / "args.yaml")
+    manifest = Path(args.data.valid_jsonl)
+    if not manifest.exists():
+        raise SystemExit(
+            f"no --voice given and {manifest} (data.valid_jsonl) does not exist. "
+            "Pass --voice with a clean Hebrew wav."
+        )
+    # A prompt shorter than the window would be padded with whatever follows it in the file.
+    needed = seconds + 0.5
+    with manifest.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if float(row.get("duration", 0)) < needed:
+                continue
+            try:
+                wav = _load_window(row["path"], float(row.get("start", 0.0)), seconds, 24000)
+            except Exception:  # noqa: BLE001 -- an unreadable row is not a reason to stop
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            soundfile.write(str(out), wav, 24000)
+            print(f"voice prompt: {seconds:.1f}s from {row['path']} at {row.get('start', 0)}s "
+                  f"-> {out}", flush=True)
+            return out
+    raise SystemExit(
+        f"no row in {manifest} is longer than {needed:.1f}s. Pass --voice explicitly."
+    )
 
 
 def checkpoint_step(path: Path) -> int | None:
@@ -177,11 +235,15 @@ def main() -> None:
          if line.strip()]
         if args.sentences else list(DEFAULT_SENTENCES)
     )
-    if not args.voice.exists():
+    if args.voice is None:
+        args.voice = pick_voice_prompt(args.run_dir, args.voice_sec)
+    elif not args.voice.exists():
         raise SystemExit(f"voice prompt not found: {args.voice}")
     results = args.run_dir / "hebrew_eval.jsonl"
 
     from faster_whisper import WhisperModel
+
+    from hebrew_training.build_wer_dashboard import render
 
     print(f"loading {args.asr} ...", flush=True)
     asr = WhisperModel(args.asr, device=args.device, compute_type=args.compute_type)
@@ -202,13 +264,20 @@ def main() -> None:
             print(f"  WER {record['wer']:.3f}  CER {record['cer']:.3f}  "
                   f"empty {record['empty_outputs']}/{len(sentences)}  "
                   f"mean {record['mean_seconds']:.1f}s", flush=True)
+            if not args.no_dashboard:
+                # Rewritten per checkpoint so a browser left open on the page is never more
+                # than one checkpoint stale. It is a few hundred KB of string work.
+                page, total = render([args.run_dir])
+                print(f"  dashboard: {page} ({total} checkpoints)", flush=True)
         if not args.watch:
             break
         time.sleep(args.poll_seconds)
 
     print(f"\n{results} holds every scored checkpoint")
-    print("render it with: python -m hebrew_training.build_wer_dashboard "
-          f"--run-dir {args.run_dir}")
+    if not args.no_dashboard:
+        page, _ = render([args.run_dir])
+        print(f"dashboard: {page}")
+        print(f"serve it:  python -m http.server 8000 --directory {args.run_dir}")
 
 
 if __name__ == "__main__":
