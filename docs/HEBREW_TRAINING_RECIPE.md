@@ -194,6 +194,35 @@ that manifest will repeat the last failure with a bigger bill.
 
 For CrowdRecital, whose segments are already utterance-length, pass `--merge-gap 0`.
 
+### How long should a row be? Match their data, not their paper
+
+Three sources disagree, so measure rather than infer:
+
+| source | audio length |
+|---|---|
+| paper, Table 14 (TTS) | 60 s |
+| `max_duration_sec` in the shipped configs | 30 s |
+| **HiFiTTS-2, what the released model was actually trained on** | **median 9.16 s, p90 15.4 s, max exactly 20.00 s** |
+| Mimi's transformer context (`context: 250` at 12.5 Hz) | 20 s |
+| our merged Hebrew rows | median 12.64 s, cap 30 s |
+
+The HiFiTTS-2 row is measured from 21,416 utterances of NVIDIA's own manifest. Their
+utterances stop dead at 20.00 s, which is exactly Mimi's context window — so the 30 s config
+cap never binds on Kyutai's own data, and the paper's 60 s describes neither.
+
+Our 12.64 s median sits comfortably inside their real distribution, a little longer than
+their 9.16 s. That is fine. The tail is the question: rows between 20 and 30 s exceed Mimi's
+context window, and no released model was trained on anything that long.
+
+If you want to match their operating point exactly, cap at 20 s in both places:
+
+```bash
+python -m hebrew_training.build_official_manifest ... --max-duration 20
+```
+
+and set `data.max_duration_sec: 20.0` in the training config. It costs little — the merge
+target is 12 s, so only the tail moves — and it keeps every row inside the codec's context.
+
 ---
 
 ## Step 4 — alignment: not needed for this corpus
