@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import sphn
 import torch
+from torchcodec.decoders import AudioDecoder
 
 from pocket_tts.data.audio_utils import convert_audio
 
@@ -57,12 +58,34 @@ def load_entries(path: str, rank: int, world_size: int) -> list[str]:
 
 
 def _load_window(path: str, start_sec: float, duration_sec: float, sample_rate: int) -> np.ndarray:
-    wav, sr = sphn.read(path, start_sec=start_sec, duration_sec=duration_sec)
+    wav, sr = _read_audio_window(path, start_sec, duration_sec, sample_rate)
     wav = wav.mean(axis=0)  # mono
     if sr != sample_rate:
         resampled = convert_audio(torch.from_numpy(wav)[None], int(sr), int(sample_rate), 1)
         wav = resampled[0].numpy()
     return wav
+
+
+def _read_audio_window(
+    path: str, start_sec: float, duration_sec: float, sample_rate: int
+) -> tuple[np.ndarray, int]:
+    suffix = Path(path).suffix.lower()
+    if suffix in {".wav", ".ogg", ".opus"}:
+        return sphn.read(path, start_sec=start_sec, duration_sec=duration_sec)
+    # sphn only decodes wav/ogg; m4a (AAC) and mka (Opus-in-Matroska) are
+    # decoded on the fly with torchcodec (FFmpeg) so the source audio is
+    # used as-is. Dispatch by extension to avoid a guaranteed sphn failure.
+    return _torchcodec_read_window(path, start_sec, duration_sec, sample_rate)
+
+
+def _torchcodec_read_window(
+    path: str, start_sec: float, duration_sec: float, sample_rate: int
+) -> tuple[np.ndarray, int]:
+    decoder = AudioDecoder(path, sample_rate=sample_rate, num_channels=1)
+    samples = decoder.get_samples_played_in_range(
+        start_seconds=start_sec, stop_seconds=start_sec + duration_sec
+    )
+    return samples.data.numpy(), sample_rate
 
 
 class DataLoader:

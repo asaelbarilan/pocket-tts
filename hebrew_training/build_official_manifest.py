@@ -77,9 +77,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus", type=Path, required=True,
                         help="Root holding one directory per recording.")
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--audio-glob", default="audio.wav,audio.m4a",
+    parser.add_argument("--audio-glob", default="audio.wav,audio.m4a,audio.mka",
                         help="Comma-separated candidates; the first that matches wins. "
-                             "CrowdRecital ships audio.wav, the Knesset corpora audio.m4a.")
+                             "CrowdRecital ships audio.mka, the Knesset corpora audio.m4a.")
     parser.add_argument("--align-glob", default="transcript.aligned.json")
     parser.add_argument("--metadata-glob", default="metadata.json")
     parser.add_argument("--speaker-field", default="user_id",
