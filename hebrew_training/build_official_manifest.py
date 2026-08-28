@@ -52,11 +52,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import random
 import re
+import shutil
 import statistics
 import sys
+import tempfile
 import unicodedata
+from array import array
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 _WS = re.compile(r"\s+")
@@ -65,53 +70,115 @@ _HEBREW = re.compile(r"[֐-׿]")
 # Resolved from this file, not the working directory: the earlier relative default broke
 # whenever the command was run from anywhere but the repo root. Assumes the two repos are
 # checked out side by side, which is what the recipe tells you to do.
-DEFAULT_NORMALIZER = (
-    Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
-)
+DEFAULT_NORMALIZER = Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build Kyutai-format training manifests from an aligned Hebrew corpus."
     )
-    parser.add_argument("--corpus", type=Path, required=True,
-                        help="Root holding one directory per recording.")
+    parser.add_argument(
+        "--corpus", type=Path, required=True, help="Root holding one directory per recording."
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--audio-glob", default="audio.wav,audio.m4a,audio.mka",
-                        help="Comma-separated candidates; the first that matches wins. "
-                             "CrowdRecital ships audio.mka, the Knesset corpora audio.m4a.")
+    parser.add_argument(
+        "--audio-glob",
+        default="audio.wav,audio.m4a,audio.mka",
+        help="Comma-separated candidates; the first that matches wins. "
+        "CrowdRecital ships audio.mka, the Knesset corpora audio.m4a.",
+    )
     parser.add_argument("--align-glob", default="transcript.aligned.json")
     parser.add_argument("--metadata-glob", default="metadata.json")
-    parser.add_argument("--speaker-field", default="user_id",
-                        help="metadata.json key identifying the speaker. Falls back to the "
-                             "recording directory name, which for the Knesset corpora means "
-                             "the split is recording-disjoint but not speaker-disjoint.")
-    parser.add_argument("--min-duration", type=float, default=4.0,
-                        help="Post-merge floor. Must stay above 2 x MIN_CUT_SEC (2.0 s) or "
-                             "the loader cannot cut the row and leaks the prompt.")
-    parser.add_argument("--max-duration", type=float, default=30.0,
-                        help="Should match data.max_duration_sec in the training config.")
-    parser.add_argument("--merge-target", type=float, default=12.0,
-                        help="Stop merging once a group reaches this length.")
-    parser.add_argument("--merge-jitter", type=float, default=0.3,
-                        help="Draw each group's target uniformly from target*(1 +/- this), the "
-                             "way prepare_ivritai.py's DurationController did. 0 fixes the "
-                             "target and narrows the duration distribution.")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="Seeds the merge jitter, so a rebuild is reproducible.")
-    parser.add_argument("--merge-gap", type=float, default=1.5,
-                        help="Break a merge at a silence longer than this. 0 disables merging, "
-                             "which is right only for already-utterance-length corpora.")
-    parser.add_argument("--min-quality", type=float, default=0.6,
-                        help="Median word probability required to keep a segment.")
+    parser.add_argument(
+        "--speaker-field",
+        default="user_id",
+        help="metadata.json key identifying the speaker. Falls back to the "
+        "recording directory name, which for the Knesset corpora means "
+        "the split is recording-disjoint but not speaker-disjoint.",
+    )
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=4.0,
+        help="Post-merge floor. Must stay above 2 x MIN_CUT_SEC (2.0 s) or "
+        "the loader cannot cut the row and leaks the prompt.",
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        default=30.0,
+        help="Should match data.max_duration_sec in the training config.",
+    )
+    parser.add_argument(
+        "--merge-target",
+        type=float,
+        default=12.0,
+        help="Stop merging once a group reaches this length.",
+    )
+    parser.add_argument(
+        "--merge-jitter",
+        type=float,
+        default=0.3,
+        help="Draw each group's target uniformly from target*(1 +/- this), the "
+        "way prepare_ivritai.py's DurationController did. 0 fixes the "
+        "target and narrows the duration distribution.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Seeds the merge jitter, so a rebuild is reproducible."
+    )
+    parser.add_argument(
+        "--merge-gap",
+        type=float,
+        default=1.5,
+        help="Break a merge at a silence longer than this. 0 disables merging, "
+        "which is right only for already-utterance-length corpora.",
+    )
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=0.6,
+        help="Median word probability required to keep a segment.",
+    )
     parser.add_argument("--valid-hours", type=float, default=2.0)
-    parser.add_argument("--normalize-text", action="store_true",
-                        help="Apply the Hebrew TTS normalizer (number expansion etc).")
-    parser.add_argument("--normalizer-dir", type=Path, default=DEFAULT_NORMALIZER,
-                        help="The normalizer package from the hebrew-tts-data-tools repo. "
-                             "Defaults to a checkout sitting beside this one.")
+    parser.add_argument(
+        "--normalize-text",
+        action="store_true",
+        help="Apply the Hebrew TTS normalizer (number expansion etc).",
+    )
+    parser.add_argument(
+        "--normalizer-dir",
+        type=Path,
+        default=DEFAULT_NORMALIZER,
+        help="The normalizer package from the hebrew-tts-data-tools repo. "
+        "Defaults to a checkout sitting beside this one.",
+    )
     parser.add_argument("--limit-recordings", type=int)
-    return parser.parse_args()
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of processes for the per-recording work. Output is reproducible "
+        "and independent of worker count.",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        type=Path,
+        default=Path(tempfile.gettempdir()),
+        help="Parent for a temporary manifest spool (default: the system temporary directory). "
+        "Use local storage; the temporary tree is removed after use.",
+    )
+    parser.add_argument(
+        "--max-spool-gib",
+        type=float,
+        default=200.0,
+        help="Hard limit on JSON payload stored in the temporary spool (default: 200 GiB).",
+    )
+    args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    if args.max_spool_gib <= 0:
+        parser.error("--max-spool-gib must be positive")
+    return args
 
 
 def clean(text: str) -> str:
@@ -178,11 +245,9 @@ def normalize_words(words: list[dict], normalize) -> list[dict]:
             continue
         step = (end - start) / len(parts)
         for index, part in enumerate(parts):
-            out.append({
-                "word": part,
-                "start": start + index * step,
-                "end": start + (index + 1) * step,
-            })
+            out.append(
+                {"word": part, "start": start + index * step, "end": start + (index + 1) * step}
+            )
     return out
 
 
@@ -209,10 +274,7 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
             stats["low_quality"] += 1
             continue
 
-        timed = [
-            w for w in words
-            if w.get("start") is not None and w.get("end") is not None
-        ]
+        timed = [w for w in words if w.get("start") is not None and w.get("end") is not None]
         if not timed:
             stats["no_words"] += 1
             continue
@@ -352,98 +414,264 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
     return rows, stats
 
 
+_WORKER_NORMALIZE = None
+_WORKER_ARGS = None
+_WORKER_SPOOL_DIR = None
+_WORKER_MAX_SPOOL_BYTES = 0
+_WORKER_SPOOL_BYTES = None
+_WORKER_SPOOL_LOCK = None
+
+
+def _init_worker(
+    args: argparse.Namespace, spool_dir: Path, max_spool_bytes: int, spool_bytes, spool_lock
+) -> None:
+    """Load the normalizer once per worker process (lambdas do not pickle)."""
+    global _WORKER_ARGS, _WORKER_MAX_SPOOL_BYTES, _WORKER_NORMALIZE
+    global _WORKER_SPOOL_BYTES, _WORKER_SPOOL_DIR, _WORKER_SPOOL_LOCK
+    _WORKER_ARGS = args
+    _WORKER_SPOOL_DIR = spool_dir
+    _WORKER_MAX_SPOOL_BYTES = max_spool_bytes
+    _WORKER_SPOOL_BYTES = spool_bytes
+    _WORKER_SPOOL_LOCK = spool_lock
+    if args.normalize_text:
+        _WORKER_NORMALIZE = load_normalizer(args.normalizer_dir)
+
+
+def _recording_rng(seed: int, recording: Path) -> random.Random:
+    # str hashing is salted per process, so use a digest for cross-process stability.
+    digest = hashlib.sha256(f"{seed}:{recording.name}".encode()).digest()
+    return random.Random(digest)
+
+
+def _write_spool(
+    index: int, rows: list[dict], spool_dir: Path, max_spool_bytes: int, spool_bytes, spool_lock
+) -> tuple[Path, str | None, float, array]:
+    path = spool_dir / f"{index:09d}.jsonl"
+    reserved = 0
+    durations = array("d")
+    speaker = rows[0]["speaker"] if rows else None
+    seconds = 0.0
+    try:
+        with path.open("wb") as handle:
+            for row in rows:
+                if row["speaker"] != speaker:
+                    raise RuntimeError(f"recording {index} contains multiple speakers")
+                payload = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+                with spool_lock:
+                    wanted = spool_bytes.value + len(payload)
+                    if wanted > max_spool_bytes:
+                        raise RuntimeError(
+                            f"manifest spool exceeded {max_spool_bytes / 2**30:.1f} GiB; "
+                            "free local space, raise --max-spool-gib, or use a smaller corpus"
+                        )
+                    spool_bytes.value = wanted
+                reserved += len(payload)
+                handle.write(payload)
+                duration = float(row["duration"])
+                durations.append(duration)
+                seconds += duration
+    except BaseException:
+        with spool_lock:
+            spool_bytes.value -= reserved
+        path.unlink(missing_ok=True)
+        raise
+    return path, speaker, seconds, durations
+
+
+def _process_recording(
+    index: int, recording: Path
+) -> tuple[int, Path, str | None, float, int, array, dict]:
+    rows, stats = segment_rows(
+        recording, _WORKER_ARGS, _WORKER_NORMALIZE, _recording_rng(_WORKER_ARGS.seed, recording)
+    )
+    path, speaker, seconds, durations = _write_spool(
+        index,
+        rows,
+        _WORKER_SPOOL_DIR,
+        _WORKER_MAX_SPOOL_BYTES,
+        _WORKER_SPOOL_BYTES,
+        _WORKER_SPOOL_LOCK,
+    )
+    return index, path, speaker, seconds, len(durations), durations, stats
+
+
 def main() -> None:
     args = parse_args()
-    normalize = load_normalizer(args.normalizer_dir) if args.normalize_text else None
-    rng = random.Random(args.seed)
-
     recordings = sorted(p for p in args.corpus.iterdir() if p.is_dir())
     if args.limit_recordings:
         recordings = recordings[: args.limit_recordings]
 
-    all_rows: list[dict] = []
+    if not args.spool_dir.is_dir():
+        raise SystemExit(f"--spool-dir is not a directory: {args.spool_dir}")
+    configured_spool_bytes = int(args.max_spool_gib * 2**30)
+    free_bytes = shutil.disk_usage(args.spool_dir).free
+    max_spool_bytes = min(configured_spool_bytes, int(free_bytes * 0.9))
+    if max_spool_bytes < configured_spool_bytes:
+        print(
+            f"note: limiting the spool to {max_spool_bytes / 2**30:.1f} GiB, 90% of the "
+            f"{free_bytes / 2**30:.1f} GiB free on {args.spool_dir}"
+        )
+
+    spool_dir = Path(tempfile.mkdtemp(prefix="pocket-tts-manifest-", dir=args.spool_dir))
+    context = multiprocessing.get_context()
+    spool_bytes = context.Value("Q", 0, lock=False)
+    spool_lock = context.Lock()
+    results: list[tuple[Path, str | None, float, int] | None] = [None] * len(recordings)
+    duration_counts: dict[float, int] = {}
+    uncuttable = 0
     totals = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
-    for recording in recordings:
-        rows, stats = segment_rows(recording, args, normalize, rng)
-        all_rows.extend(rows)
+
+    def add_stats(stats: dict) -> None:
         for key, value in stats.items():
             totals[key] += value
-    if not all_rows:
-        raise SystemExit("no usable utterances found")
 
-    # Speaker-disjoint split, deterministic: whole speakers go to validation until the
-    # hour budget is met, so no voice appears on both sides.
-    seconds_by_speaker: dict[str, float] = {}
-    for row in all_rows:
-        seconds_by_speaker[row["speaker"]] = (
-            seconds_by_speaker.get(row["speaker"], 0.0) + row["duration"]
-        )
-    budget = args.valid_hours * 3600
-    ordered = sorted(seconds_by_speaker, key=stable_bucket)
-    valid_speakers: set[str] = set()
-    accumulated = 0.0
-    for speaker in ordered:
-        if accumulated >= budget:
-            break
-        if seconds_by_speaker[speaker] > budget * 1.5:
-            continue
-        valid_speakers.add(speaker)
-        accumulated += seconds_by_speaker[speaker]
+    def collect(result) -> None:
+        nonlocal uncuttable
+        index, path, speaker, seconds, count, durations, stats = result
+        results[index] = (path, speaker, seconds, count)
+        for duration in durations:
+            duration_counts[duration] = duration_counts.get(duration, 0) + 1
+            uncuttable += duration < 2.0
+        add_stats(stats)
 
-    # A whole Knesset sitting runs several hours, so every candidate can exceed the
-    # oversize guard above and leave validation empty -- which the trainer only reports
-    # much later, as "no entries for rank 0" out of load_entries. Take the smallest
-    # speaker rather than shipping an empty valid split.
-    if not valid_speakers:
-        smallest = min(ordered, key=lambda s: seconds_by_speaker[s])
-        valid_speakers.add(smallest)
-        accumulated = seconds_by_speaker[smallest]
+    try:
+        if args.workers == 1:
+            normalize = load_normalizer(args.normalizer_dir) if args.normalize_text else None
+            for index, recording in enumerate(recordings):
+                rows, stats = segment_rows(
+                    recording, args, normalize, _recording_rng(args.seed, recording)
+                )
+                path, speaker, seconds, durations = _write_spool(
+                    index, rows, spool_dir, max_spool_bytes, spool_bytes, spool_lock
+                )
+                collect((index, path, speaker, seconds, len(durations), durations, stats))
+        else:
+            initargs = (args, spool_dir, max_spool_bytes, spool_bytes, spool_lock)
+            with ProcessPoolExecutor(
+                max_workers=args.workers,
+                mp_context=context,
+                initializer=_init_worker,
+                initargs=initargs,
+            ) as pool:
+                recording_iter = iter(enumerate(recordings))
+                pending = {}
+                for index, recording in recording_iter:
+                    future = pool.submit(_process_recording, index, recording)
+                    pending[future] = recording
+                    if len(pending) >= args.workers * 2:
+                        done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                        for completed in done:
+                            pending.pop(completed)
+                            collect(completed.result())
+                while pending:
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    for completed in done:
+                        pending.pop(completed)
+                        collect(completed.result())
+
+        if not totals["kept"]:
+            raise SystemExit("no usable utterances found")
+
+        # Speaker-disjoint split, deterministic: whole speakers go to validation until the
+        # hour budget is met, so no voice appears on both sides.
+        seconds_by_speaker: dict[str, float] = {}
+        for result in results:
+            assert result is not None
+            _, speaker, seconds, _ = result
+            if speaker is not None:
+                seconds_by_speaker[speaker] = seconds_by_speaker.get(speaker, 0.0) + seconds
+        budget = args.valid_hours * 3600
+        ordered = sorted(seconds_by_speaker, key=stable_bucket)
+        valid_speakers: set[str] = set()
+        accumulated = 0.0
+        for speaker in ordered:
+            if accumulated >= budget:
+                break
+            if seconds_by_speaker[speaker] > budget * 1.5:
+                continue
+            valid_speakers.add(speaker)
+            accumulated += seconds_by_speaker[speaker]
+
+        # A whole Knesset sitting runs several hours, so every candidate can exceed the
+        # oversize guard above and leave validation empty.
+        if not valid_speakers:
+            smallest = min(ordered, key=lambda s: seconds_by_speaker[s])
+            valid_speakers.add(smallest)
+            accumulated = seconds_by_speaker[smallest]
+            print(
+                f"note: no speaker fit under {args.valid_hours} h; validation is the single "
+                f"smallest ({smallest}, {accumulated / 3600:.2f} h)"
+            )
+
+        train_speakers = set(seconds_by_speaker) - valid_speakers
+        assert not (train_speakers & valid_speakers), "speaker leaked across split"
+        assert train_speakers and valid_speakers, "one side of the split is empty"
+
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        train_count = valid_count = 0
+        train_seconds = valid_seconds = 0.0
+        train_path = args.out_dir / "train_aligned.jsonl"
+        valid_path = args.out_dir / "valid_aligned.jsonl"
+        with train_path.open("wb") as train_handle, valid_path.open("wb") as valid_handle:
+            for result in results:
+                assert result is not None
+                path, speaker, seconds, count = result
+                is_valid = speaker in valid_speakers
+                with path.open("rb") as source:
+                    shutil.copyfileobj(source, valid_handle if is_valid else train_handle)
+                path.unlink()
+                if is_valid:
+                    valid_count += count
+                    valid_seconds += seconds
+                else:
+                    train_count += count
+                    train_seconds += seconds
+        assert train_count + valid_count == totals["kept"]
+
+        print(f"recordings scanned : {len(recordings)}")
+        print(f"utterances kept    : {totals['kept']}")
         print(
-            f"note: no speaker fit under {args.valid_hours} h; validation is the single "
-            f"smallest ({smallest}, {accumulated / 3600:.2f} h)"
+            f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
+            f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}"
+        )
+        print(
+            f"train : {train_count:6d} utterances, {train_seconds / 3600:6.2f} h, "
+            f"{len(train_speakers)} speakers"
+        )
+        print(
+            f"valid : {valid_count:6d} utterances, {valid_seconds / 3600:6.2f} h, "
+            f"{len(valid_speakers)} speakers"
         )
 
-    train = [r for r in all_rows if r["speaker"] not in valid_speakers]
-    valid = [r for r in all_rows if r["speaker"] in valid_speakers]
-    assert not ({r["speaker"] for r in train} & valid_speakers), "speaker leaked across split"
-    assert train and valid, "one side of the split is empty"
+        # Compute exact quantiles from bounded unique-duration counts rather than retaining
+        # one heavyweight Python object per row.
+        ordered_durations = sorted(duration_counts.items())
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    for name, rows in (("train_aligned.jsonl", train), ("valid_aligned.jsonl", valid)):
-        with (args.out_dir / name).open("w", encoding="utf-8", newline="\n") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        def duration_at(index: int) -> float:
+            seen = 0
+            for duration, count in ordered_durations:
+                seen += count
+                if seen > index:
+                    return duration
+            raise AssertionError("duration index is out of range")
 
-    def hours(rows: list[dict]) -> float:
-        return sum(r["duration"] for r in rows) / 3600
-
-    print(f"recordings scanned : {len(recordings)}")
-    print(f"utterances kept    : {totals['kept']}")
-    print(
-        f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
-        f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}"
-    )
-    print(
-        f"train : {len(train):6d} utterances, {hours(train):6.2f} h, "
-        f"{len({r['speaker'] for r in train})} speakers"
-    )
-    print(f"valid : {len(valid):6d} utterances, {hours(valid):6.2f} h, {len(valid_speakers)} speakers")
-
-    # The check that matters: rows shorter than 2 x MIN_CUT_SEC cannot be cut by the
-    # loader and fall back to a prompt window that overlaps the target. If this line
-    # shows a low median or a non-zero uncuttable count, the merge settings are wrong.
-    lengths = sorted(r["duration"] for r in all_rows)
-    uncuttable = sum(1 for d in lengths if d < 2.0)
-    print(
-        f"row duration : median {statistics.median(lengths):.2f} s, "
-        f"p10 {lengths[len(lengths) // 10]:.2f}, p90 {lengths[9 * len(lengths) // 10]:.2f}, "
-        f"max {lengths[-1]:.2f}"
-    )
-    print(
-        f"uncuttable (<2.0 s, prompt would overlap target): {uncuttable} "
-        f"({100 * uncuttable / len(lengths):.2f}%)"
-    )
-    print(f"wrote {args.out_dir}/train_aligned.jsonl and valid_aligned.jsonl")
+        row_count = totals["kept"]
+        middle = row_count // 2
+        median = duration_at(middle)
+        if row_count % 2 == 0:
+            median = (duration_at(middle - 1) + median) / 2
+        print(
+            f"row duration : median {median:.2f} s, "
+            f"p10 {duration_at(row_count // 10):.2f}, "
+            f"p90 {duration_at(9 * row_count // 10):.2f}, max {ordered_durations[-1][0]:.2f}"
+        )
+        print(
+            f"uncuttable (<2.0 s, prompt would overlap target): {uncuttable} "
+            f"({100 * uncuttable / row_count:.2f}%)"
+        )
+        print(f"wrote {train_path} and {valid_path}")
+    finally:
+        shutil.rmtree(spool_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
