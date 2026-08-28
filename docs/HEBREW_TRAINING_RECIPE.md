@@ -554,6 +554,36 @@ ranked checkpoints differently from what the audio actually sounded like; EOS lo
 out to be training step in disguise (partial correlation with WER collapses from −0.82 to
 +0.10 once step is controlled for).
 
+### Score every checkpoint as it lands, and watch the curve
+
+Start this alongside the training run. It scores each new checkpoint from step 4000 on five
+fixed Hebrew sentences and appends WER/CER to `hebrew_eval.jsonl` in the run directory:
+
+```bash
+python -m hebrew_training.watch_eval --run-dir runs/finetune_hebrew     --voice prompts/hebrew_voice.wav --watch
+```
+
+Then render it — a WER/CER-over-step chart with every clip playable beside its step, so a
+number that looks good can be checked by ear immediately:
+
+```bash
+python -m hebrew_training.build_wer_dashboard --run-dir runs/finetune_hebrew
+python -m http.server 8000 --directory runs/finetune_hebrew   # open hebrew_eval.html
+```
+
+Re-run `build_wer_dashboard` whenever you want to refresh the page. Both are resumable and
+skip checkpoints already scored, so they can be started midway through a run or restarted
+after a crash. Pass `--run-dir` more than once to overlay runs on the same axes. For the
+distilled student add `--cfg 1.0`, since guidance is baked into its weights.
+
+The voice prompt matters: the model clones it, so a noisy prompt makes every generation
+sound noisy regardless of how well training is going. Use a clean Hebrew clip.
+
+**Five sentences is a progress signal, not a measurement.** Our earlier 12-clip scores swung
+0.1-0.3 between adjacent checkpoints on sampling noise alone. Use it to see the shape of the
+curve and to catch a run going wrong early; confirm the winning checkpoint with
+`score_wer.py` over a few hundred clips before shipping it.
+
 ### The trainer computes no WER — score it yourself
 
 Nothing in `training/train.py` touches WER, CER or an ASR. It writes a validation loss and,
