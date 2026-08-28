@@ -520,6 +520,33 @@ ranked checkpoints differently from what the audio actually sounded like; EOS lo
 out to be training step in disguise (partial correlation with WER collapses from −0.82 to
 +0.10 once step is controlled for).
 
+### First, measure the ruler
+
+Do this **before** training, on genuine held-out human Hebrew audio:
+
+```bash
+python -m hebrew_training.score_asr_floor --eval-set eval/hebrew.json --output eval/floor.json
+```
+
+This runs `ivrit-ai/whisper-large-v3-turbo-ct2` against real recordings with known
+transcripts. Whatever WER it reports is error the ASR makes on *correct* speech — a floor
+your TTS can approach but never beat, because a perfect model still gets marked wrong
+wherever the ASR mishears.
+
+It matters because the headline numbers are not comparable. Kyutai's 0.94% is Granite ASR on
+LibriSpeech test-clean: clean, read, English audiobooks, the easiest ASR benchmark there is.
+Their Czech 10-12% is Whisper on parliamentary speech. They say so themselves:
+
+> When training on a new language, not all of these metrics transfer directly: Word error
+> rate: you need an ASR that supports your language.
+
+So an unknown share of that 10-12% is the ASR misreading good audio, not the TTS speaking
+badly. **We have never run this script and have no Hebrew floor number.** Without it you
+cannot tell a bad model from a bad ruler. Judge the TTS against `floor + delta`, not against
+zero, and expect Knesset-style speech to score worse than audiobooks whatever the model does.
+
+### Then score the checkpoints
+
 ```bash
 python -m hebrew_training.score_wer --runs-dir runs
 ```
