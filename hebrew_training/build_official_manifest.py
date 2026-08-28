@@ -50,6 +50,13 @@ from pathlib import Path
 _WS = re.compile(r"\s+")
 _HEBREW = re.compile(r"[֐-׿]")
 
+# Resolved from this file, not the working directory: the earlier relative default broke
+# whenever the command was run from anywhere but the repo root. Assumes the two repos are
+# checked out side by side, which is what the recipe tells you to do.
+DEFAULT_NORMALIZER = (
+    Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -82,8 +89,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--valid-hours", type=float, default=2.0)
     parser.add_argument("--normalize-text", action="store_true",
                         help="Apply the Hebrew TTS normalizer (number expansion etc).")
-    parser.add_argument("--normalizer-dir", type=Path,
-                        default=Path("../hebrew-tts-data-tools/normalizer"))
+    parser.add_argument("--normalizer-dir", type=Path, default=DEFAULT_NORMALIZER,
+                        help="The normalizer package from the hebrew-tts-data-tools repo. "
+                             "Defaults to a checkout sitting beside this one.")
     parser.add_argument("--limit-recordings", type=int)
     return parser.parse_args()
 
@@ -97,7 +105,15 @@ def stable_bucket(key: str) -> float:
 
 
 def load_normalizer(directory: Path):
-    """Optional: the same Hebrew normalizer the earlier pipeline used."""
+    """The same Hebrew normalizer the earlier pipeline used -- number expansion,
+    word replacements, punctuation handling. Only the slicing was replaced; this was not."""
+    if not directory.exists():
+        raise SystemExit(
+            f"--normalize-text needs the normalizer, and {directory} does not exist.\n"
+            "Clone it beside this repo:\n"
+            "    git clone https://github.com/asaelbarilan/hebrew-tts-data-tools\n"
+            "or pass --normalizer-dir explicitly."
+        )
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory.resolve()))
     from hebrew_tts_normalizer import (  # type: ignore
