@@ -15,6 +15,12 @@ Row schema (see `get_entry` in training/dataloader.py):
 window for the voice prompt. Word times are RELATIVE to `start`, because align_data.py
 keys on (path, start) and aligns inside that window.
 
+`words` IS THE TEXT. training/dataloader.py:150 builds what it trains on by joining
+`words`, and reads `transcript` only in the fallback branch where no word-boundary cut
+exists. So anything done to the text -- normalization above all -- has to be done to
+`words`, or it is silently discarded. `transcript` here is derived from `words` so the two
+cannot drift apart.
+
 WHY SEGMENTS ARE MERGED
 -----------------------
 CrowdRecital ships utterance-length segments. The ivrit-ai Knesset corpora ship Whisper
@@ -146,6 +152,40 @@ def load_normalizer(directory: Path):
     return lambda text: normalize_tts_text(text, options=options, word_replacements=replacements)
 
 
+def normalize_words(words: list[dict], normalize) -> list[dict]:
+    """Normalize the word list itself, not just the joined transcript.
+
+    This is not optional polish. training/dataloader.py:150 builds the text it trains on
+    from `words`, and only falls back to `transcript` when there is no usable word-boundary
+    cut. So normalizing `transcript` alone -- which is what this script did until now --
+    was thrown away on every ordinary sample, and the model would have been trained on
+    "1995" instead of "אלף תשע מאות תשעים וחמש".
+
+    A normalized word can expand into several ("1995" -> five words). The expansion is
+    spoken across the original word's span, so the span is divided evenly between them.
+    That is an approximation, but the loader only uses word times to pick a cut point and
+    to trim trailing silence, and both stay correct at the group's outer boundaries.
+    """
+    out: list[dict] = []
+    for word in words:
+        text = clean(normalize(word["word"]))
+        if not text:
+            continue
+        parts = text.split()
+        start, end = float(word["start"]), float(word["end"])
+        if len(parts) == 1:
+            out.append({**word, "word": parts[0]})
+            continue
+        step = (end - start) / len(parts)
+        for index, part in enumerate(parts):
+            out.append({
+                "word": part,
+                "start": start + index * step,
+                "end": start + (index + 1) * step,
+            })
+    return out
+
+
 def find_audio(recording: Path, globs: str) -> Path | None:
     """First matching audio file. Corpora differ: audio.wav here, audio.m4a there."""
     for pattern in (g.strip() for g in globs.split(",") if g.strip()):
@@ -273,9 +313,16 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
             stats["bad_duration"] += 1
             continue
 
-        text = clean(" ".join(segment["text"] for segment in group))
+        words = [word for segment in group for word in segment["words"]]
         if normalize is not None:
-            text = clean(normalize(text))
+            words = normalize_words(words, normalize)
+        if not words:
+            stats["no_hebrew"] += 1
+            continue
+
+        # Derived from `words` so the two can never disagree -- and because `words` is what
+        # the loader actually trains on.
+        text = clean(" ".join(word["word"] for word in words))
         if not text:
             stats["no_hebrew"] += 1
             continue
@@ -288,8 +335,7 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
                 "start": round(float(word["start"]) - start, 4),
                 "end": round(float(word["end"]) - start, 4),
             }
-            for segment in group
-            for word in segment["words"]
+            for word in words
         ]
 
         rows.append(
