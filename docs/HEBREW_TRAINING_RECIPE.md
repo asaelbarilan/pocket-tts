@@ -554,6 +554,23 @@ ranked checkpoints differently from what the audio actually sounded like; EOS lo
 out to be training step in disguise (partial correlation with WER collapses from −0.82 to
 +0.10 once step is controlled for).
 
+### The trainer computes no WER — score it yourself
+
+Nothing in `training/train.py` touches WER, CER or an ASR. It writes a validation loss and,
+every `sample_freq` steps, a handful of wavs. Scoring is entirely a separate pass with
+`score_wer.py`, run against the finished run directory. On this project loss ranked
+checkpoints differently from what the audio sounded like three separate times, so the
+validation curve is not a substitute.
+
+The Hebrew configs set `sample_freq: 2500` (upstream default is 10000, which on a run that
+plateaus by 15k gives samples at 10k and 20k only) and `ckpt_freq: 2500`.
+
+`num_ckpt_keep` is the one to watch. Upstream keeps **3**, which at `ckpt_freq: 2500` is the
+last 7500 steps of a 250k run — the checkpoint worth keeping is deleted long before the end.
+On the earlier Hebrew run the best-sounding checkpoint was step 8000. `finetune_hebrew.yaml`
+sets 40, covering the first 100k steps, at roughly 2.5 GB each. Lower it if disk is tight;
+never back to 3.
+
 ### First, measure the ruler
 
 Do this **before** training, on genuine held-out human Hebrew audio:

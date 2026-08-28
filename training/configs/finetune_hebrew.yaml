@@ -48,7 +48,15 @@ ema_decay: 0.999
 log_freq: 50
 valid_freq: 2500
 ckpt_freq: 2500
-num_ckpt_keep: 3
+# Upstream keeps 3. At ckpt_freq 2500 that is only the last 7500 steps, and this config's
+# own comment says WER plateaus by ~15k -- so the checkpoint you want would be deleted long
+# before the run ends. On the earlier Hebrew run the best-sounding checkpoint was step 8000.
+# 40 covers the first 100k steps at roughly 2.5 GB each (the released 24-layer file is
+# 1.24 GB, and a .pt carries raw plus EMA weights); drop it if disk is tight, never to 3.
+num_ckpt_keep: 40
+# Upstream default is 10000, which on a run that plateaus by 15k gives samples at 10k and
+# 20k only. Match valid_freq so there is something to listen to and to score.
+sample_freq: 2500
 sample_cfg_coef: 2.0
 
 # The trainer synthesizes exactly these every sample_freq steps. args.py defaults them to
