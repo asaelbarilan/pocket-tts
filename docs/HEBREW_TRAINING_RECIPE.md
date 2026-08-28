@@ -545,6 +545,27 @@ badly. **We have never run this script and have no Hebrew floor number.** Withou
 cannot tell a bad model from a bad ruler. Judge the TTS against `floor + delta`, not against
 zero, and expect Knesset-style speech to score worse than audiobooks whatever the model does.
 
+### Set `sample_sentences` to Hebrew before you start training
+
+`args.py:101` defaults them to English:
+
+```
+"The quick brown fox jumps over the lazy dog."
+```
+
+The trainer synthesizes exactly these every `sample_freq` steps. Leave them and every sample
+your friend listens to for the whole run is English text pushed through a Hebrew tokenizer —
+unusable for judging progress, and unscoreable. Add a Hebrew list to the training config:
+
+```yaml
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
+  - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית."
+```
+
+`score_wer.py` refuses to score a run whose `sample_sentences` are not Hebrew rather than
+reporting a number that looks real.
+
 ### Then score the checkpoints
 
 ```bash
@@ -555,8 +576,14 @@ Uses `ivrit-ai/whisper-large-v3-turbo-ct2`. Kyutai's own reference eval runs
 `--temp 0.3 --cfg 2.0 --n-steps 1 --eos-threshold -1`, and note that `flow_matching` configs
 need `--n-steps >= 16`.
 
+`score_wer.py` reads both sample layouts: Kyutai's flat
+`runs/<run>/samples/step00010000_<i>.wav` (recovering the text from `sample_sentences` in the
+run's `args.yaml`, which is why the previous section matters) and our older
+`runs/<run>/samples/step<N>/samples.json`.
+
 Use a fixed eval set of at least a few hundred clips. Our early 12-clip scores swung 0.1–0.3
-between adjacent checkpoints on sampling noise alone.
+between adjacent checkpoints on sampling noise alone — and the trainer's own three sample
+sentences are far below that, so treat them as a listening check, not a measurement.
 
 ---
 
