@@ -429,6 +429,31 @@ is superseded.
 typo: the teacher's targets are computed fully-conditioned, so dropping conditioning there
 would ask the student to predict a conditioned target from a null input.
 
+### Multiple GPUs — already handled, do not write anything
+
+DDP is implemented upstream. `train.py:140` wraps the model in
+`DistributedDataParallel` whenever it detects torchrun, `distributed.py` initialises the
+nccl process group from `LOCAL_RANK`, and `load_entries` shards the manifest across ranks by
+line index (`idx % world_size != rank`). Nothing needs porting or patching.
+
+```bash
+# one GPU
+uv run training/train.py training/configs/lsd_scratch.yaml
+
+# eight GPUs
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/lsd_scratch.yaml
+```
+
+The same applies to the distillation stage — swap the config.
+
+Two consequences to keep in mind:
+
+- **`batch_size` is per GPU**, so adding GPUs multiplies the effective batch. On 8 GPUs set
+  `batch_size: 8` to land on 64, not 64.
+- Each rank reads a different slice of the manifest, and the loader asserts its slice is
+  non-empty. Not a concern at ~136k rows, but it is why a tiny debug manifest fails on 8 GPUs
+  and works on 1.
+
 ### Effective batch
 
 **`batch_size` x GPUs x `grad_accum_steps` must reach 64.** Below that, per Kyutai, "the
