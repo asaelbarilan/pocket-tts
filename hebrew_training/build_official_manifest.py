@@ -32,8 +32,13 @@ That is the same prompt leakage prepare_data_v2 was written to remove.
 So consecutive segments are merged into utterances of ~12 s before a row is emitted, and
 merging stops at a gap longer than --merge-gap (parliamentary audio is 63.7% speech; the
 rest is gavel, procedure and dead air, and merging across it would train the model on
-silence). Measured on the same 120 recordings, --merge-gap 1.5 --min-duration 4 yields a
-12.64 s median row and retains ~5,494 h of the plenum corpus.
+silence). Measured on the same 120 recordings, --merge-gap 1.5 --min-duration 4 yields an
+11.88 s median row and retains ~5,490 h of the plenum corpus.
+
+This is the same job prepare_ivritai.py's generate_slices did for the earlier dataset --
+including drawing each group's target around the aim rather than fixing it, which
+DurationController did there and --merge-jitter does here. The difference is only the
+output: that wrote physical wav files, this writes offsets into the untouched source.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import re
 import statistics
 import sys
@@ -81,6 +87,12 @@ def parse_args() -> argparse.Namespace:
                         help="Should match data.max_duration_sec in the training config.")
     parser.add_argument("--merge-target", type=float, default=12.0,
                         help="Stop merging once a group reaches this length.")
+    parser.add_argument("--merge-jitter", type=float, default=0.3,
+                        help="Draw each group's target uniformly from target*(1 +/- this), the "
+                             "way prepare_ivritai.py's DurationController did. 0 fixes the "
+                             "target and narrows the duration distribution.")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Seeds the merge jitter, so a rebuild is reproducible.")
     parser.add_argument("--merge-gap", type=float, default=1.5,
                         help="Break a merge at a silence longer than this. 0 disables merging, "
                              "which is right only for already-utterance-length corpora.")
@@ -182,18 +194,32 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
     return kept
 
 
-def merge_segments(segments: list[dict], args) -> list[list[dict]]:
+def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[dict]]:
     """Group consecutive segments into utterance-length runs.
 
-    A group closes when it reaches --merge-target, when the next segment would push it
-    past --max-duration, or when the silence before the next segment exceeds --merge-gap.
-    See the module docstring for why this is required and not a tuning knob.
+    A group closes when it reaches its target length, when the next segment would push it
+    past --max-duration, or when the silence before it exceeds --merge-gap. See the module
+    docstring for why merging is required and not a tuning knob.
+
+    Each group draws its own target around --merge-target rather than using it fixed, which
+    is what prepare_ivritai.py's DurationController did. Measured over 120 plenum
+    recordings, jitter 0.3 widens the p10-p90 duration spread from 9.70 s to 10.65 s for the
+    same total hours. A narrow duration distribution was implicated in the earlier run's
+    overfitting (docs/eos-overfitting-research.md), so the spread is worth having free.
     """
     if args.merge_gap <= 0:
         return [[segment] for segment in segments]
 
+    def next_target() -> float:
+        if args.merge_jitter <= 0:
+            return args.merge_target
+        low = max(args.min_duration, args.merge_target * (1 - args.merge_jitter))
+        high = min(args.max_duration, args.merge_target * (1 + args.merge_jitter))
+        return rng.uniform(low, high)
+
     groups: list[list[dict]] = []
     current: list[dict] = []
+    target = next_target()
     for segment in segments:
         if not current:
             current = [segment]
@@ -202,18 +228,20 @@ def merge_segments(segments: list[dict], args) -> list[list[dict]]:
         span = segment["end"] - current[0]["start"]
         if gap <= args.merge_gap and span <= args.max_duration:
             current.append(segment)
-            if current[-1]["end"] - current[0]["start"] >= args.merge_target:
+            if current[-1]["end"] - current[0]["start"] >= target:
                 groups.append(current)
                 current = []
+                target = next_target()
         else:
             groups.append(current)
             current = [segment]
+            target = next_target()
     if current:
         groups.append(current)
     return groups
 
 
-def segment_rows(recording: Path, args, normalize) -> tuple[list[dict], dict]:
+def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[list[dict], dict]:
     """One manifest row per merged run of aligned segments."""
     stats = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
     audio = find_audio(recording, args.audio_glob)
@@ -238,7 +266,7 @@ def segment_rows(recording: Path, args, normalize) -> tuple[list[dict], dict]:
         return [], stats
 
     rows = []
-    for group in merge_segments(clean_segments(segments, args, stats), args):
+    for group in merge_segments(clean_segments(segments, args, stats), args, rng):
         start = group[0]["start"]
         duration = group[-1]["end"] - start
         if not args.min_duration <= duration <= args.max_duration:
@@ -281,6 +309,7 @@ def segment_rows(recording: Path, args, normalize) -> tuple[list[dict], dict]:
 def main() -> None:
     args = parse_args()
     normalize = load_normalizer(args.normalizer_dir) if args.normalize_text else None
+    rng = random.Random(args.seed)
 
     recordings = sorted(p for p in args.corpus.iterdir() if p.is_dir())
     if args.limit_recordings:
@@ -289,7 +318,7 @@ def main() -> None:
     all_rows: list[dict] = []
     totals = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
     for recording in recordings:
-        rows, stats = segment_rows(recording, args, normalize)
+        rows, stats = segment_rows(recording, args, normalize, rng)
         all_rows.extend(rows)
         for key, value in stats.items():
             totals[key] += value
