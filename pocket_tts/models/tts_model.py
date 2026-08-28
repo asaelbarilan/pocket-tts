@@ -8,7 +8,6 @@ import threading
 import time
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import safetensors
 import safetensors.torch
@@ -30,6 +29,8 @@ from pocket_tts.default_parameters import (
 )
 from pocket_tts.models.flow_lm import FlowLMModel
 from pocket_tts.models.mimi import build_mimi
+from pocket_tts.models.model_state import _import_model_state, _is_safetensors_source
+from pocket_tts.models.text_chunking import prepare_text_prompt, split_into_best_sentences
 from pocket_tts.modules.stateful_module import StatefulModule, increment_steps, init_states
 from pocket_tts.quantization import RECOMMENDED_CONFIG, apply_dynamic_int8
 from pocket_tts.utils.config import CONFIGS_DIR, Config, load_config
@@ -256,9 +257,9 @@ class TTSModel(nn.Module):
         cls,
         language: str | None = None,
         config: str | Path | None = None,
-        temp: float | int | None = None,
+        temp: float | None = None,
         sampler_decode_steps: int = DEFAULT_SAMPLER_DECODE_STEPS,
-        noise_clamp: float | int | None = DEFAULT_NOISE_CLAMP,
+        noise_clamp: float | None = DEFAULT_NOISE_CLAMP,
         eos_threshold: float = DEFAULT_EOS_THRESHOLD,
         quantize: bool = False,
         checkpoint: str | Path | None = None,
@@ -957,174 +958,3 @@ class TTSModel(nn.Module):
         gen_len_sec = token_count / self._TOKENS_PER_SECOND_ESTIMATE + self._GEN_SECONDS_PADDING
         frame_rate = self.config.mimi.frame_rate
         return math.ceil(gen_len_sec * frame_rate)
-
-
-def prepare_text_prompt(
-    text: str, pad_with_spaces_for_short_inputs: bool, remove_semicolons: bool
-) -> tuple[str, int]:
-    text = text.strip()
-    if text == "":
-        raise ValueError("Text prompt cannot be empty")
-    text = text.replace("\n", " ").replace("\r", " ").replace("  ", " ")
-    if remove_semicolons:
-        text = text.replace(";", ",")
-    number_of_words = len(text.split())
-    if number_of_words <= 4:
-        frames_after_eos_guess = 3
-    else:
-        frames_after_eos_guess = 1
-
-    # Make sure it starts with an uppercase letter
-    if not text[0].isupper():
-        text = text[0].upper() + text[1:]
-
-    # Let's make sure it ends with some kind of punctuation
-    # If it ends with a letter or digit, we add a period.
-    if text[-1].isalnum():
-        text = text + "."
-
-    # The model does not perform well when there are very few tokens, so
-    # we can add empty spaces at the beginning to increase the token count.
-    if pad_with_spaces_for_short_inputs and len(text.split()) < 5:
-        text = " " * 8 + text
-
-    return text, frames_after_eos_guess
-
-
-def _find_boundary_indices(list_of_tokens: list[int], boundary_tokens: list[int]) -> list[int]:
-    """Find token indices where text should be split based on boundary tokens.
-
-    Returns a list of boundary positions used to slice segments. Each consecutive
-    pair (indices[i], indices[i+1]) defines one segment. The first element is
-    always 0 and the last is always len(list_of_tokens).
-    """
-    indices = [0]
-    previous_was_boundary = False
-    for idx, token in enumerate(list_of_tokens):
-        if token in boundary_tokens:
-            previous_was_boundary = True
-        else:
-            if previous_was_boundary:
-                indices.append(idx)
-            previous_was_boundary = False
-    indices.append(len(list_of_tokens))
-    return indices
-
-
-def _segments_from_boundaries(
-    list_of_tokens: list[int], boundary_indices: list[int], tokenizer
-) -> list[tuple[int, str]]:
-    """Decode token segments between boundary indices into (token_count, text) pairs."""
-    segments = []
-    for i in range(len(boundary_indices) - 1):
-        start = boundary_indices[i]
-        end = boundary_indices[i + 1]
-        text = tokenizer.sp.decode(list_of_tokens[start:end])
-        segments.append((end - start, text))
-    return segments
-
-
-def split_into_best_sentences(
-    tokenizer,
-    text_to_generate: str,
-    max_tokens: int,
-    pad_with_spaces_for_short_inputs: bool,
-    remove_semicolons: bool,
-) -> list[str]:
-    text_to_generate, _ = prepare_text_prompt(
-        text_to_generate, pad_with_spaces_for_short_inputs, remove_semicolons
-    )
-    text_to_generate = text_to_generate.strip()
-    tokens = tokenizer(text_to_generate)
-    list_of_tokens = tokens.tokens[0].tolist()
-
-    _, *end_of_sentence_tokens = tokenizer(".!...?").tokens[0].tolist()
-    sentence_boundaries = _find_boundary_indices(list_of_tokens, end_of_sentence_tokens)
-    nb_tokens_and_sentences = _segments_from_boundaries(
-        list_of_tokens, sentence_boundaries, tokenizer
-    )
-
-    # Sub-split oversized sentences on commas, semicolons, and colons to prevent skipped words
-    _, *fallback_tokens = tokenizer(",;:").tokens[0].tolist()
-    refined_segments = []
-    for nb_tokens, text in nb_tokens_and_sentences:
-        if nb_tokens <= max_tokens:
-            refined_segments.append((nb_tokens, text))
-        else:
-            sub_tokens = tokenizer(text.strip()).tokens[0].tolist()
-            sub_boundaries = _find_boundary_indices(sub_tokens, fallback_tokens)
-            sub_segments = _segments_from_boundaries(sub_tokens, sub_boundaries, tokenizer)
-            if len(sub_segments) > 1:
-                refined_segments.extend(sub_segments)
-            else:
-                refined_segments.append((nb_tokens, text))
-
-    max_nb_tokens_in_a_chunk = max_tokens
-    chunks = []
-    current_chunk = ""
-    current_nb_of_tokens_in_chunk = 0
-    for nb_tokens, sentence in refined_segments:
-        if current_chunk == "":
-            current_chunk = sentence
-            current_nb_of_tokens_in_chunk = nb_tokens
-            continue
-
-        if current_nb_of_tokens_in_chunk + nb_tokens > max_nb_tokens_in_a_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = sentence
-            current_nb_of_tokens_in_chunk = nb_tokens
-        else:
-            current_chunk += " " + sentence
-            current_nb_of_tokens_in_chunk += nb_tokens
-
-    if current_chunk != "":
-        chunks.append(current_chunk.strip())
-
-    for chunk in chunks:
-        chunk_tokens = tokenizer(chunk.strip()).tokens[0].tolist()
-        if len(chunk_tokens) > max_tokens:
-            logger.warning(
-                "Chunk has %d tokens (max %d), generation may skip words: '%.50s...'",
-                len(chunk_tokens),
-                max_tokens,
-                chunk,
-            )
-
-    return chunks
-
-
-def export_model_state(model_state: dict[str, dict[str, torch.Tensor]], dest: str | Path):
-    dict_to_store = {}
-    for module_name, module_state in model_state.items():
-        for key, tensor_value in module_state.items():
-            dict_to_store[f"{module_name}/{key}"] = tensor_value
-    safetensors.torch.save_file(dict_to_store, dest)
-
-
-def _is_safetensors_source(source: str | Path) -> bool:
-    source_text = str(source)
-    if source_text.startswith(("http://", "https://")):
-        source_text = urlsplit(source_text).path
-    elif source_text.startswith("hf://"):
-        source_text = source_text.rsplit("@", 1)[0]
-    return source_text.endswith(".safetensors")
-
-
-def _import_model_state(
-    source: str | Path, device: torch.device
-) -> dict[str, dict[str, torch.Tensor]]:
-    result = {}
-    with safetensors.safe_open(source, framework="pt") as f:
-        for key in f.keys():
-            module_name, tensor_key = key.split("/")
-            result.setdefault(module_name, {})
-            if tensor_key == "current_end":
-                # we used the shape[0] as step index before for torch.compile() compatibility,
-                # but it's not needed anymore
-                tensor = f.get_tensor(key)
-                result[module_name]["offset"] = torch.full(
-                    (1,), fill_value=tensor.shape[0], dtype=torch.long, device=device
-                )
-            else:
-                result[module_name][tensor_key] = f.get_tensor(key).to(device)
-    return result

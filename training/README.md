@@ -20,28 +20,28 @@ uv run training/scripts/prepare_data.py --hours 200
 Training:
 
 ```bash
-uv run training/train.py training/configs/lsd_scratch.yaml
+uv run training/train.py training/configs/scratch.yaml
 ```
 
 Generate samples:
 
 ```bash
 uv run pocket-tts generate --config pocket_tts/config/english.yaml \
-    --checkpoint runs/lsd_scratch/checkpoint_00050000.pt \
+    --checkpoint runs/scratch/checkpoint_00050000.pt \
     --voice some_speaker.wav --text "Hello there."
 ```
 
 Congratulations, you've trained your first Pocket TTS!
 
 With the 200 hours that we used, you should get intelligible speech, but to get a model that's on par with the production Pocket TTS, you'll want 2000 hours or more.
-You can try to rerun with `--hours 2000` and edit `lsd_scratch.yaml` to point to the new manifest.
+You can try to rerun with `--hours 2000` and edit `scratch.yaml` to point to the new manifest.
 
 Now in detail:
 
 ## Installation
 
 Requirements:
-- Linux - we don't provide official support for Windows/Mac training, but will accept bugfix PRs
+- Linux - we don't provide official support for Windows/Mac training, we don't have the hardware or time to support those plaforms.
 - One NVIDIA GPU (the default batch size wants ~56 GB; a consumer GPU runs `batch_size: 16` with
   `grad_accum_steps: 4` in ~16 GB); you can use more GPUs to train faster
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/)
@@ -144,15 +144,22 @@ both have to be swapped for that language.
 
 ```bash
 # If you have a single GPU:
-uv run training/train.py training/configs/lsd_scratch.yaml
+uv run training/train.py training/configs/scratch.yaml
 # If you have multiple GPUs, launch using Torchrun:
-uv run torchrun --nproc-per-node 8 training/train.py training/configs/lsd_scratch.yaml
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/scratch.yaml
 ```
 
 The training is configured using a single YAML file.
 The official Pocket TTS training happens in two steps, corresponding to the two YAMLs we provide:
-- `lsd_scratch.yaml`: trains a 24-layer teacher from scratch
-- `lsd_depth_distill.yaml`: distils that teacher into a 6-layer student. This also bakes in classifier-free guidance (CFG), see [paper](https://arxiv.org/abs/2207.12598) or [explanation](https://youtu.be/iv-5mZ_9CPY?t=1797).
+- `scratch.yaml`: trains a 24-layer teacher from scratch
+- `depth_distill.yaml`: distils that teacher into a 6-layer student. This also bakes in classifier-free guidance (CFG), see [paper](https://arxiv.org/abs/2207.12598) or [explanation](https://youtu.be/iv-5mZ_9CPY?t=1797).
+
+Two more configs cover finetuning: `finetune.yaml` continues a released model
+on more data in the same language (new voices, a new domain), and
+`finetune_language.yaml` starts the teacher from
+released weights for a new language, initialising the text embedding fresh (the
+tokenizer differs) while the backbone transfers. On Czech the latter reached the
+same WER as a scratch run about 2.5x sooner.
 
 Training the model in two steps like this works better than training a 6-layer model from scratch.
 
@@ -171,10 +178,10 @@ Regarding timing, this is how long training takes (all with effective batch size
 |---|---|---|---|---|---|
 | 1 x L4-23GB | 16 x4 | 0.35 | 15.9 GiB | ~158 h | ~315 h |
 | 1 x L40S-46GB | 64 | 0.77 | 42.0 GiB | ~72 h | ~144 h |
-| 1 x H100-80GB | 64 | 1.36 | 55.6 GiB | ~41 h | ~82 h |
-| 2 x H100-80GB | 32 | 2.24 | 32.6 GiB | ~25 h | ~50 h |
-| 4 x H100-80GB | 16 | 3.94 | 20.0 GiB | ~14 h | ~28 h |
-| 8 x H100-80GB | 8 | 6.20 | 14.9 GiB | ~9 h | ~18 h |
+| 1 x H100-80GB | 64 | 1.91 | 55.6 GiB | ~29 h | ~58 h |
+| 2 x H100-80GB | 32 | 3.35 | 32.6 GiB | ~17 h | ~33 h |
+| 4 x H100-80GB | 16 | 5.25 | 20.1 GiB | ~11 h | ~21 h |
+| 8 x H100-80GB | 8 | 6.85 | 14.8 GiB | ~8 h | ~16 h |
 
 Scaling falls off because the per-GPU batch shrinks, not because of
 communication. Distillation adds ~3 h on 8 H100 GPUs.
@@ -222,7 +229,7 @@ In our example, we use the LibriSpeech dataset for evaluation.
 Run:
 
 ```bash
-uv run training/eval/librispeech.py runs/lsd_scratch \
+uv run training/eval/librispeech.py runs/scratch \
     --librispeech-root /data/LibriSpeech/test-clean --use-ema
 ```
 
@@ -260,7 +267,7 @@ To generate audio, you can use the usual `pocket-tts generate` command and pass 
 
 ```bash
 uv run pocket-tts generate --config my_config.yaml \
-    --checkpoint runs/lsd_ft/checkpoint_00124000.pt \
+    --checkpoint runs/finetune/checkpoint_00124000.pt \
     --voice voice.wav --text "The quick brown fox jumps over the lazy dog."
 ```
 
@@ -268,7 +275,7 @@ Or, from Python:
 
 ```python
 model = TTSModel.load_model(
-    config="my_config.yaml", checkpoint="runs/lsd_ft/checkpoint_00124000.pt"
+    config="my_config.yaml", checkpoint="runs/finetune/checkpoint_00124000.pt"
 )
 state = model.get_state_for_audio_prompt("voice.wav")
 audio = model.generate_audio(state, "The quick brown fox jumps over the lazy dog.")
