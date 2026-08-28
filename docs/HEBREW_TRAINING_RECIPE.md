@@ -289,22 +289,25 @@ Czech parliamentary speech at ~1,000 h is the closest published analogue to Hebr
 speech at ~4,200 h. Same destination, reached about 2.5x sooner. There is no reason to pay
 for the scratch run.
 
+`training/configs/finetune_hebrew.yaml` in this repo is ready to run. It is
+`finetune_language.yaml` with the Hebrew paths filled in and Hebrew `sample_sentences`;
+**every training parameter is upstream's, verified identical**. Nothing to edit unless your
+manifests live elsewhere.
+
 ```bash
-uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_language.yaml
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_hebrew.yaml
 ```
 
-What the config does, and the three lines to change:
+The parameters that matter, and none of them should be touched:
 
-```yaml
-model_config: pocket_tts/config/english_2026-04_24l.yaml   # the released 24-layer teacher
-model_overrides:
-  flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model   # <- yours
-start_from_pretrained: true
-reset_text_embedding: true    # the tokenizer is not the one these weights were trained with
-data:
-  train_jsonl: data/hebrew_official/train_aligned.jsonl          # <- yours
-  valid_jsonl: data/hebrew_official/valid_aligned.jsonl          # <- yours
-```
+| | value | note |
+|---|---|---|
+| `lr` | 2e-4 | "the text embedding starts random, so the backbone has to move with it" |
+| `schedule` | **constant** | not `cosine` — that is the scratch config |
+| `max_steps` | 250000 | "WER plateaus by ~15k; the rest is acoustic quality" |
+| `batch_size` | 64 | per GPU; on 8 GPUs drop to 8 |
+| `start_from_pretrained` | true | |
+| `reset_text_embedding` | true | the whole trick, see below |
 
 `reset_text_embedding` is the whole trick, and it is the dictionary problem from above:
 `builders.py:170` drops the `conditioner.embed.*` keys before loading, so the text table
@@ -314,8 +317,10 @@ starts fresh while all 24 backbone layers transfer. Their note on why `lr` stays
 Note `max_steps: 250000` with "WER plateaus by ~15k; the rest is acoustic quality" — so a
 usable Hebrew voice is a far shorter run than the headline number suggests.
 
-Then distil as normal, pointing `distill_teacher_weights` at this run's checkpoint instead
-of a scratch one.
+Then distil with `training/configs/depth_distill_hebrew.yaml`, also generated from
+upstream's and also parameter-identical. The one thing to check before launching it is that
+`distill_teacher_weights` names a checkpoint `runs/finetune_hebrew/` actually produced — the
+default assumes the full 250k steps.
 
 #### Our `warm_start_checkpoint.py` is superseded — mostly
 
