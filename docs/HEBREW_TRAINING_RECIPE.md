@@ -27,9 +27,11 @@ PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
 uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
     data/hebrew_official/train_aligned.jsonl --vocab-size 4000
 
-# 6. train: 24-layer teacher, then distil to the 6-layer student
-uv run training/train.py training/configs/lsd_scratch.yaml
-uv run training/train.py training/configs/lsd_depth_distill.yaml
+# 6. train. Finetune from the released 24-layer teacher -- Kyutai measured this as
+#    ~2.5x faster to the same WER than scratch on 976h of Czech. Add torchrun for multi-GPU.
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_language.yaml
+# then distil that into the 6-layer student
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/depth_distill.yaml
 
 # 7. score by WER, never by loss
 python -m hebrew_training.score_wer --runs-dir runs
@@ -46,9 +48,9 @@ Be straight with whoever picks this up:
 | 2 fetch | selection verified against the live repo; a full 102 GiB download has not been run |
 | 3 manifests | validated end-to-end on CrowdRecital (80/80 utterances through Kyutai's `DataLoader`). The segment-merging path added for the Knesset corpora is **not yet exercised on downloaded audio** |
 | 4 alignment | `align_hebrew.py` measured against CrowdRecital timings: 19 ms median word-end error. Not needed for the Knesset corpora |
-| 5 tokenizer | Kyutai's script. **Never run here** |
+| 5 tokenizer | Kyutai's script. **Never run here** (`--vocab-size` now defaults to 4000, so it needs no override) |
 | 6 train | Kyutai's trainer. **Never run here, not even a smoke test.** Every number in the hardware table is theirs, not ours |
-| 6b warm-start (optional) | `warm_start_checkpoint.py` run end-to-end against the released 6-layer English model; the 24-layer file was verified by its header, not downloaded |
+| 6b finetune path | Kyutai's `finetune_language.yaml`, added upstream `8c98c9b` and measured by them on Czech. **Never run here.** Supersedes our `warm_start_checkpoint.py` |
 | 7 WER | ours, used throughout the earlier run |
 
 The first thing to do on the server is a 100-step run at `max_steps: 100` to prove the
@@ -92,6 +94,11 @@ Metric milestones from scratch, so you know when to stop:
 | prosody settled | 300–400k |
 
 Intelligibility is done by 50k. Everything past that buys expressivity.
+
+**Those are English numbers on audiobook speech. Do not expect them for Hebrew.** Kyutai's
+own new-language result is 976 h of Czech parliamentary speech settling at **10-12% WER** —
+an order of magnitude off the 0.94% English figure, on a corpus very like ours. Judge the
+run against 10-12%, not against 1%.
 
 ---
 
@@ -270,10 +277,63 @@ language-agnostic audio codec) and the FlowLM is fresh. That is the intended arr
 
 ## Step 6 — train
 
-Two stages. Kyutai's note: training in two steps "works better than training a 6-layer model
-from scratch."
+### Recommended: finetune from the released teacher, not from scratch
 
-**Stage 1 — the 24-layer teacher.** In `training/configs/lsd_scratch.yaml`:
+**Kyutai added an official config for exactly this case** (`finetune_language.yaml`,
+upstream `8c98c9b`), and they measured it on a language much closer to ours than English:
+
+> on 976 h of Czech this hit **12% WER by 10k steps where a scratch run was still at 46%**,
+> and both settled around 10-12%
+
+Czech parliamentary speech at ~1,000 h is the closest published analogue to Hebrew Knesset
+speech at ~4,200 h. Same destination, reached about 2.5x sooner. There is no reason to pay
+for the scratch run.
+
+```bash
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_language.yaml
+```
+
+What the config does, and the three lines to change:
+
+```yaml
+model_config: pocket_tts/config/english_2026-04_24l.yaml   # the released 24-layer teacher
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model   # <- yours
+start_from_pretrained: true
+reset_text_embedding: true    # the tokenizer is not the one these weights were trained with
+data:
+  train_jsonl: data/hebrew_official/train_aligned.jsonl          # <- yours
+  valid_jsonl: data/hebrew_official/valid_aligned.jsonl          # <- yours
+```
+
+`reset_text_embedding` is the whole trick, and it is the dictionary problem from above:
+`builders.py:170` drops the `conditioner.embed.*` keys before loading, so the text table
+starts fresh while all 24 backbone layers transfer. Their note on why `lr` stays at 2e-4:
+"the text embedding starts random, so the backbone has to move with it."
+
+Note `max_steps: 250000` with "WER plateaus by ~15k; the rest is acoustic quality" — so a
+usable Hebrew voice is a far shorter run than the headline number suggests.
+
+Then distil as normal, pointing `distill_teacher_weights` at this run's checkpoint instead
+of a scratch one.
+
+#### Our `warm_start_checkpoint.py` is superseded — mostly
+
+It predates upstream `8c98c9b` and solved the same problem offline. Use
+`reset_text_embedding: true` instead: it is supported, simpler, and it is what Kyutai
+measured.
+
+The one thing our script still does that theirs does not: Kyutai **discard** the text table
+outright, while ours transplants rows matched on the piece string, so punctuation, digits and
+spaces keep their learned embeddings. That is a small, unmeasured edge over a validated
+default. Take the validated default.
+
+### Alternative: train the teacher from scratch
+
+Only if you have a reason not to finetune. Kyutai's note on the two-stage shape still
+applies: training in two steps "works better than training a 6-layer model from scratch."
+
+**Stage 1 — the 24-layer teacher.** In `training/configs/scratch.yaml`:
 
 ```yaml
 model_config: pocket_tts/config/hebrew.yaml     # was english.yaml
@@ -288,24 +348,24 @@ max_steps: 400000                               # 50000 if you only need intelli
 ```
 
 ```bash
-uv run training/train.py training/configs/lsd_scratch.yaml
+uv run training/train.py training/configs/scratch.yaml
 ```
 
-**Stage 2 — distil to the 6-layer student**, baking CFG in. In `lsd_depth_distill.yaml`:
+**Stage 2 — distil to the 6-layer student**, baking CFG in. In `depth_distill.yaml`:
 
 ```yaml
 model_config: pocket_tts/config/hebrew.yaml           # the 6-layer student
 distill_teacher_config: pocket_tts/config/hebrew.yaml # same file...
 distill_teacher_overrides:
   flow_lm.transformer.num_layers: 24                  # ...plus this, making it the teacher
-distill_teacher_weights: runs/lsd_scratch/checkpoint_00400000.pt   # <- Stage 1's output
+distill_teacher_weights: runs/finetune_language/checkpoint_00250000.pt  # <- your teacher run
 data:
   train_jsonl: data/hebrew_official/train_aligned.jsonl
   valid_jsonl: data/hebrew_official/valid_aligned.jsonl
 ```
 
 ```bash
-uv run training/train.py training/configs/lsd_depth_distill.yaml
+uv run training/train.py training/configs/depth_distill.yaml
 ```
 
 ### What distillation actually does
@@ -332,19 +392,21 @@ forward pass where the teacher needs two, at the quality of guided sampling.
 
 ### The process, concretely
 
-1. **Finish Stage 1.** You need `runs/lsd_scratch/checkpoint_00400000.pt`. Nothing about
-   distillation can start before the teacher is trained.
+1. **Finish the teacher run.** Point `distill_teacher_weights` at its checkpoint —
+   `runs/finetune_language/checkpoint_*.pt` if you took the recommended path, or
+   `runs/scratch/checkpoint_00400000.pt` if you trained from scratch. Nothing about
+   distillation can start before the teacher exists.
 2. **No new data work.** Same manifests, same tokenizer, same audio. Only the config changes.
-3. **Edit the five lines above** in `lsd_depth_distill.yaml` — the two config paths, the
+3. **Edit the five lines above** in `depth_distill.yaml` — the two config paths, the
    override, the teacher checkpoint, and your manifests.
 4. **Leave `distill_cfg_coef: 2.0` alone.** At 0 nothing distils; 1.0 would be pure depth
    distillation with no guidance baked in.
 5. **Leave `text_dropout: 0.0` and `voice_dropout: 0.0`.** Not a typo — the teacher's targets
    are always fully conditioned, so dropping the student's conditioning would ask it to
    predict a conditioned target from a null input. The trainer warns if you set them.
-6. **Run it.** `uv run training/train.py training/configs/lsd_depth_distill.yaml`
+6. **Run it.** `uv run training/train.py training/configs/depth_distill.yaml`
 7. **Sample the student with `--cfg 1`.** Guidance is already in the weights; sampling at
-   cfg 2 applies it twice. (`lsd_scratch.yaml` sets `sample_cfg_coef: 2.0` because a *teacher*
+   cfg 2 applies it twice. (`scratch.yaml` sets `sample_cfg_coef: 2.0` because a *teacher*
    must be sampled guided — the student's default is 1.0.)
 
 Notes worth knowing before it fails on you:
@@ -353,69 +415,13 @@ Notes worth knowing before it fails on you:
   alongside the student. Budget accordingly; the shipped `batch_size: 16` assumes this.
 - `distill_teacher_use_ema` defaults to **true**, so the target is the teacher's EMA shadow,
   falling back to raw weights if the checkpoint has none. Leave it.
-- WER and speaker similarity reach parity by ~40k steps; the config's 200k is there because
-  prosody keeps settling. If you only need a working voice, stop early.
+- WER reaches parity by ~50k steps; speaker similarity and UTMOS climb until ~150k. The
+  config's 200k is there because prosody keeps settling. If you only need a working voice,
+  stop early.
 - Cost: ~3 h on 8x H100, proportionally more on fewer.
-
-### Alternative: warm-start from the released 24-layer teacher
-
-Kyutai release 24-layer teachers, not only the 6-layer models —
-`languages/english_2026-04_24l/model.safetensors` carries 24 transformer layers and the flow
-head (verified from the checkpoint, and there are `_24l` releases for French, German,
-Italian, Spanish and Portuguese too). So `start_from_pretrained: true` on the teacher config
-is mechanically possible, and you would inherit a backbone that already knows how to turn
-Mimi latents into speech.
-
-The one thing that cannot survive the language change is the text table. In plain terms:
-
-> The model keeps a dictionary — 4,000 rows, one per text piece, each row storing what that
-> piece sounds like. Row 300 is `▁not`. Your Hebrew tokenizer also has 4,000 pieces, but row
-> 300 is now some Hebrew piece. Loading the weights copies row 300 onto row 300, because all
-> the loader checks is that both lists are 4,000 long. They are. So it succeeds — and row 300
-> now holds the sound of `▁not` labelled as Hebrew. Every row is wrong, and nothing warns you.
->
-> The fix is to copy **by name instead of by position**. For each Hebrew piece, ask whether
-> the English list contained that exact piece. If yes, copy its row. If no, leave it fresh
-> for training to learn. Hebrew words were not in the English list, so they start fresh;
-> punctuation, digits and spaces were, so they keep what they learned.
->
-> This matters because the dictionary is the small part. The big part is the 24 layers that
-> turn text into speech, and none of that is English-specific — it copies over intact. You
-> keep the expensive part and relearn only the dictionary.
-
-Concretely: `flow_lm.conditioner.embed.weight` is `[n_bins + 1, 1024]`, one row per piece of
-the **English** tokenizer, and `load_state_dict(strict=True)` matches on shape alone.
-
-Rewrite that one tensor first, and the trainer needs no patching:
-
-```bash
-python -m hebrew_training.warm_start_checkpoint     --tokenizer tokenizers/hebrew.model     --out weights/hebrew_24l_warmstart.safetensors
-```
-
-Rows are matched on the piece **string**, so anything in both vocabularies keeps its learned
-embedding and the rest are drawn from the old table's mean and standard deviation. This is
-the same transplant `hebrew_training/model_utils.py:install_tokenizer` did for the earlier
-run. The script prints how many pieces actually transferred — read it, and do not be
-reassured by a high number if your vocabulary is small, since byte-fallback pieces are
-shared by every SentencePiece model and inflate the count.
-
-Then point a copy of `hebrew.yaml` at the result:
-
-```yaml
-weights_path: weights/hebrew_24l_warmstart.safetensors
-flow_lm:
-  transformer:
-    num_layers: 24
-  lookup_table:
-    n_bins: 4000          # must equal your tokenizer's vocab size
-```
-
-and set `start_from_pretrained: true` in `lsd_scratch.yaml`.
-
-**This is not a route Kyutai measured.** Both their shipped configs train from scratch, and
-their published 2,000 h result is from scratch. At ~4,200 available hours, from scratch is
-the documented path and warm-starting is an experiment — worth running against a
-from-scratch baseline at 50k steps, not worth adopting blind.
+- Upstream `65534c9` changed this config: `batch_size` is now **64** in one pass (was 16),
+  and `flow_batch_multiplier` was dropped because the flow loss never runs in distill mode.
+  Do not re-add it. Parity is quoted as ~50k steps, of the configured 200k.
 
 ### What not to touch
 
@@ -438,10 +444,10 @@ line index (`idx % world_size != rank`). Nothing needs porting or patching.
 
 ```bash
 # one GPU
-uv run training/train.py training/configs/lsd_scratch.yaml
+uv run training/train.py training/configs/scratch.yaml
 
 # eight GPUs
-uv run torchrun --nproc-per-node 8 training/train.py training/configs/lsd_scratch.yaml
+uv run torchrun --nproc-per-node 8 training/train.py training/configs/scratch.yaml
 ```
 
 The same applies to the distillation stage — swap the config.
