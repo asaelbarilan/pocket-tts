@@ -59,6 +59,15 @@ def shutdown_distributed() -> None:
     dist.destroy_process_group()
 
 
+def any_across_ranks(value: bool, device: torch.device) -> bool:
+    """Return true on every rank when any rank supplied true."""
+    if not dist.is_initialized():
+        return value
+    flag = torch.tensor(value, dtype=torch.uint8, device=device)
+    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+    return bool(flag.item())
+
+
 def avg_across_ranks(value: float) -> float:
     if not dist.is_initialized():
         return value

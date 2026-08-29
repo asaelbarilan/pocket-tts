@@ -20,6 +20,7 @@ if __name__ == "__main__":
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import logging
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from training.args import TrainArgs, dump_args, load_args, save_args
 from training.checkpointing import EMA, latest_checkpoint, load_checkpoint, save_checkpoint
 from training.dataloader import DataLoader, encode_batch
 from training.distributed import (
+    any_across_ranks,
     avg_across_ranks,
     get_rank,
     get_world_size,
@@ -54,6 +56,21 @@ from training.train_utils import (
 logger = logging.getLogger("train")
 
 VERBOSE_STEPS = 10  # log every step at the start of a run, then every log_freq
+
+
+class GracefulStop:
+    """Defer termination until the current optimizer step is complete."""
+
+    def __init__(self) -> None:
+        self.requested = False
+        self._seen: set[int] = set()
+
+    def __call__(self, signum: int, _frame) -> None:
+        if signum in self._seen:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        self._seen.add(signum)
+        self.requested = True
 
 
 @dataclass
@@ -158,6 +175,9 @@ def setup(config_path: str) -> Run:
 
 def main(config_path: str) -> None:
     run = setup(config_path)
+    stop = GracefulStop()
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
     # Unpacked for the hot loop; the thin ones stay run.* at their call sites.
     args, model, mimi = run.args, run.model, run.mimi
     optimizer, ema, device, rank = run.optimizer, run.ema, run.device, run.rank
@@ -221,6 +241,20 @@ def main(config_path: str) -> None:
         optimizer.step()
         if ema is not None:
             ema.update(model)
+
+        if any_across_ranks(stop.requested, device):
+            completed_step = step + 1
+            if rank == 0:
+                logger.info(
+                    f"stop requested; saving checkpoint after completed step {completed_step}"
+                )
+                save_checkpoint(
+                    args.run_dir, completed_step, model, optimizer, ema, args.num_ckpt_keep, mimi
+                )
+                progress.log("checkpoint", completed_step, interrupted=True)
+                logger.info("graceful shutdown complete")
+            shutdown_distributed()
+            return
 
         steps_since_log += 1
         if rank == 0 and step == start_step and args.compile:
