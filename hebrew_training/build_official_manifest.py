@@ -44,7 +44,8 @@ silence). Measured on the same 120 recordings, --merge-gap 1.5 --min-duration 4 
 This is the same job prepare_ivritai.py's generate_slices did for the earlier dataset --
 including drawing each group's target around the aim rather than fixing it, which
 DurationController did there and --merge-jitter does here. The difference is only the
-output: that wrote physical wav files, this writes offsets into the untouched source.
+output: that wrote one wav per utterance, this writes offsets into one transcoded wav per
+recording (or the source audio when --no-transcode-audio is used).
 """
 
 from __future__ import annotations
@@ -57,8 +58,10 @@ import random
 import re
 import shutil
 import statistics
+import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from array import array
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -71,6 +74,8 @@ _HEBREW = re.compile(r"[֐-׿]")
 # whenever the command was run from anywhere but the repo root. Assumes the two repos are
 # checked out side by side, which is what the recipe tells you to do.
 DEFAULT_NORMALIZER = Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
+PROGRESS_SECONDS = 10.0
+PROGRESS_RECORDINGS = 10
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +94,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--align-glob", default="transcript.aligned.json")
     parser.add_argument("--metadata-glob", default="metadata.json")
+    parser.add_argument(
+        "--transcode-audio",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Transcode each used recording to a 24 kHz mono WAV in OUT_DIR/audio "
+        "(default: enabled). Completed files are reused; pass --no-transcode-audio "
+        "to keep source paths in the manifest.",
+    )
     parser.add_argument(
         "--speaker-field",
         default="user_id",
@@ -189,6 +202,17 @@ def stable_bucket(key: str) -> float:
     return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") / 2**64
 
 
+def format_seconds(seconds: float) -> str:
+    total = max(0, round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def load_normalizer(directory: Path):
     """The same Hebrew normalizer the earlier pipeline used -- number expansion,
     word replacements, punctuation handling. Only the slicing was replaced; this was not."""
@@ -258,6 +282,55 @@ def find_audio(recording: Path, globs: str) -> Path | None:
         if match is not None:
             return match
     return None
+
+
+def transcode_audio(audio: Path, recording: Path, out_dir: Path) -> tuple[Path, bool]:
+    """Write one restart-safe WAV per recording directly to the durable output volume."""
+    target = out_dir / "audio" / f"{recording.name}.wav"
+    if target.is_file() and target.stat().st_size > 44:
+        return target.resolve(), False
+
+    # Deterministic so a restart overwrites, rather than strands, a potentially huge partial.
+    partial = target.with_name(f".{target.name}.partial")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(audio),
+                "-map",
+                "0:a:0",
+                "-map_metadata",
+                "-1",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                "-c:a",
+                "pcm_s16le",
+                "-threads",
+                "1",
+                "-f",
+                "wav",
+                str(partial),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"exit status {result.returncode}"
+            raise RuntimeError(f"ffmpeg failed for {audio}: {detail}")
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return target.resolve(), True
 
 
 def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
@@ -345,7 +418,15 @@ def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[
 
 def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[list[dict], dict]:
     """One manifest row per merged run of aligned segments."""
-    stats = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
+    stats = {
+        "no_words": 0,
+        "low_quality": 0,
+        "bad_duration": 0,
+        "no_hebrew": 0,
+        "kept": 0,
+        "audio_transcoded": 0,
+        "audio_reused": 0,
+    }
     audio = find_audio(recording, args.audio_glob)
     align = next(iter(recording.glob(args.align_glob)), None)
     if audio is None or align is None:
@@ -411,6 +492,11 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
             }
         )
         stats["kept"] += 1
+    if rows and args.transcode_audio:
+        manifest_audio, created = transcode_audio(audio, recording, args.out_dir)
+        for row in rows:
+            row["path"] = str(manifest_audio)
+        stats["audio_transcoded" if created else "audio_reused"] += 1
     return rows, stats
 
 
@@ -501,6 +587,11 @@ def main() -> None:
     if args.limit_recordings:
         recordings = recordings[: args.limit_recordings]
 
+    if args.transcode_audio:
+        if shutil.which("ffmpeg") is None:
+            raise SystemExit("--transcode-audio requires ffmpeg on PATH")
+        (args.out_dir / "audio").mkdir(parents=True, exist_ok=True)
+
     if not args.spool_dir.is_dir():
         raise SystemExit(f"--spool-dir is not a directory: {args.spool_dir}")
     configured_spool_bytes = int(args.max_spool_gib * 2**30)
@@ -519,20 +610,59 @@ def main() -> None:
     results: list[tuple[Path, str | None, float, int] | None] = [None] * len(recordings)
     duration_counts: dict[float, int] = {}
     uncuttable = 0
-    totals = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
+    progress_started = time.monotonic()
+    progress_last_report = progress_started
+    progress_last_count = 0
+    completed_recordings = 0
+    totals = {
+        "no_words": 0,
+        "low_quality": 0,
+        "bad_duration": 0,
+        "no_hebrew": 0,
+        "kept": 0,
+        "audio_transcoded": 0,
+        "audio_reused": 0,
+    }
 
     def add_stats(stats: dict) -> None:
         for key, value in stats.items():
             totals[key] += value
 
     def collect(result) -> None:
-        nonlocal uncuttable
+        nonlocal completed_recordings, progress_last_count, progress_last_report, uncuttable
         index, path, speaker, seconds, count, durations, stats = result
         results[index] = (path, speaker, seconds, count)
         for duration in durations:
             duration_counts[duration] = duration_counts.get(duration, 0) + 1
             uncuttable += duration < 2.0
         add_stats(stats)
+        completed_recordings += 1
+
+        now = time.monotonic()
+        report = (
+            completed_recordings == len(recordings)
+            or completed_recordings - progress_last_count >= PROGRESS_RECORDINGS
+            or now - progress_last_report >= PROGRESS_SECONDS
+        )
+        if not report:
+            return
+        elapsed = now - progress_started
+        remaining = len(recordings) - completed_recordings
+        eta = elapsed * remaining / completed_recordings
+        audio_progress = ""
+        if args.transcode_audio:
+            audio_progress = (
+                f", WAVs {totals['audio_transcoded']} new/{totals['audio_reused']} reused"
+            )
+        print(
+            f"progress : {completed_recordings}/{len(recordings)} recordings "
+            f"({100 * completed_recordings / len(recordings):.1f}%), "
+            f"{remaining} waiting, elapsed {format_seconds(elapsed)}, ETA {format_seconds(eta)}, "
+            f"{totals['kept']} utterances{audio_progress}",
+            flush=True,
+        )
+        progress_last_report = now
+        progress_last_count = completed_recordings
 
     try:
         if args.workers == 1:
@@ -630,6 +760,11 @@ def main() -> None:
 
         print(f"recordings scanned : {len(recordings)}")
         print(f"utterances kept    : {totals['kept']}")
+        if args.transcode_audio:
+            print(
+                f"audio wavs          : {totals['audio_transcoded']} transcoded, "
+                f"{totals['audio_reused']} reused"
+            )
         print(
             f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
             f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}"

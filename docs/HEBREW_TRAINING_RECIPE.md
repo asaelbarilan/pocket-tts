@@ -168,6 +168,14 @@ PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
     --normalize-text --valid-hours 2.0
 ```
 
+By default, the builder transcodes every recording that contributes a manifest row to
+24 kHz mono PCM WAV under `data/hebrew_official/audio/<recording_id>.wav`, and manifests
+point there instead of at the AAC/MKA source. Conversion runs in the bounded recording
+worker pool, writes directly to the output volume rather than the temporary spool drive,
+and reuses complete WAVs when a build is restarted. Budget output storage at about 165 MiB
+per wall-clock audio hour and set `--workers` for the available CPU and output-disk bandwidth.
+Use `--no-transcode-audio` only when retaining source paths is intentional.
+
 ### The one thing that is easy to get wrong here
 
 The Knesset corpora ship Whisper **decoder** segments, not utterances: median 1.84 s, p90
