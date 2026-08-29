@@ -123,9 +123,7 @@ def assign_validation_speakers(
             break
 
     if not validation_speakers:
-        raise RuntimeError(
-            "No speaker fit the validation budget. Raise --validation-hours."
-        )
+        raise RuntimeError("No speaker fit the validation budget. Raise --validation-hours.")
     return validation_speakers
 
 
@@ -158,21 +156,15 @@ def pair_prompts(rows: list[dict], prompt_seconds: float) -> tuple[list[dict], C
                 if candidate["audio_path"] != row["audio_path"]
             ]
             long_enough = [c for c in others if c["duration"] >= prompt_seconds]
-            cross_recording = [
-                c for c in long_enough if c["source_id"] != row["source_id"]
-            ]
+            cross_recording = [c for c in long_enough if c["source_id"] != row["source_id"]]
             pool = cross_recording or long_enough or others
 
             # Deterministic choice, but varied across rows.
-            choice = pool[
-                int(_stable_bucket(row["audio_path"]) * len(pool)) % len(pool)
-            ]
+            choice = pool[int(_stable_bucket(row["audio_path"]) * len(pool)) % len(pool)]
             paired_row = dict(row)
             paired_row["prompt_audio_path"] = choice["audio_path"]
             paired_row["prompt_duration"] = choice["duration"]
-            paired_row["prompt_is_cross_recording"] = (
-                choice["source_id"] != row["source_id"]
-            )
+            paired_row["prompt_is_cross_recording"] = choice["source_id"] != row["source_id"]
             paired.append(paired_row)
 
     return paired, dropped
@@ -238,12 +230,8 @@ def main() -> None:
             / max(sum(r["duration"] for r in validation), 1e-9),
             3,
         ),
-        "cross_recording_prompts": sum(
-            1 for r in paired if r["prompt_is_cross_recording"]
-        ),
-        "same_recording_prompts": sum(
-            1 for r in paired if not r["prompt_is_cross_recording"]
-        ),
+        "cross_recording_prompts": sum(1 for r in paired if r["prompt_is_cross_recording"]),
+        "same_recording_prompts": sum(1 for r in paired if not r["prompt_is_cross_recording"]),
         "skipped": dict(skipped),
         "dropped": dict(dropped),
         "dataset": str(args.dataset.resolve()),

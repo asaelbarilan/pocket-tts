@@ -23,8 +23,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-chars", type=int, default=110)
     parser.add_argument("--prompt-min-seconds", type=float, default=4.0)
     parser.add_argument("--prompt-max-seconds", type=float, default=10.0)
-    parser.add_argument("--asr-floor-clips", type=int, default=0,
-                        help="0 matches the total generated clip count.")
+    parser.add_argument(
+        "--asr-floor-clips", type=int, default=0, help="0 matches the total generated clip count."
+    )
     parser.add_argument("--seed", type=int, default=1234)
     return parser.parse_args()
 
@@ -66,7 +67,9 @@ def choose_prompts(
             continue
         if speaker not in best or abs(row["duration"] - 6.0) < abs(best[speaker]["duration"] - 6.0):
             best[speaker] = row
-    selected = sorted(best.values(), key=lambda row: (abs(row["duration"] - 6.0), row["speaker_id"]))[:count]
+    selected = sorted(
+        best.values(), key=lambda row: (abs(row["duration"] - 6.0), row["speaker_id"])
+    )[:count]
     if len(selected) < count:
         raise ValueError(f"only {len(selected)} of {count} requested speakers have usable prompts")
     return [
@@ -80,8 +83,13 @@ def choose_prompts(
 
 
 def choose_texts(
-    rows: list[dict], count: int, min_chars: int, max_chars: int, rng: random.Random,
-    *, reject_blob: str | None = None,
+    rows: list[dict],
+    count: int,
+    min_chars: int,
+    max_chars: int,
+    rng: random.Random,
+    *,
+    reject_blob: str | None = None,
 ) -> list[str]:
     candidates = {
         clean(row["text"])
@@ -114,11 +122,7 @@ def choose_asr_floor(rows: list[dict], count: int, rng: random.Random) -> list[d
                 continue
             row = by_speaker[speaker][offset]
             selected.append(
-                {
-                    "speaker_id": speaker,
-                    "audio_path": row["audio_path"],
-                    "text": clean(row["text"]),
-                }
+                {"speaker_id": speaker, "audio_path": row["audio_path"], "text": clean(row["text"])}
             )
             added = True
             if len(selected) == count:

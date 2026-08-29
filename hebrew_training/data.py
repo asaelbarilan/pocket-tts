@@ -7,8 +7,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator
 
-
-_INVISIBLE_MARKS = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"), None)
+_INVISIBLE_MARKS = dict.fromkeys(
+    map(ord, "\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"), None
+)
 _WHITESPACE = re.compile(r"\s+")
 
 

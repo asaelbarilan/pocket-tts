@@ -26,10 +26,14 @@ SERIES = [("wer", "#d94f4f", "WER"), ("cer", "#3b7dd8", "CER")]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--run-dir", type=Path, action="append", required=True,
-                        help="Repeat to overlay runs. The page is written beside the first.")
-    parser.add_argument("--output", type=Path,
-                        help="Defaults to <first run-dir>/hebrew_eval.html")
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        action="append",
+        required=True,
+        help="Repeat to overlay runs. The page is written beside the first.",
+    )
+    parser.add_argument("--output", type=Path, help="Defaults to <first run-dir>/hebrew_eval.html")
     return parser.parse_args()
 
 
@@ -49,8 +53,13 @@ def load(run_dir: Path) -> list[dict]:
 
 
 def chart(runs: list[tuple[str, list[dict]]]) -> str:
-    points = [(r["step"], r[key]) for _, rows in runs for r in rows
-              for key, _, _ in SERIES if r.get(key) is not None]
+    points = [
+        (r["step"], r[key])
+        for _, rows in runs
+        for r in rows
+        for key, _, _ in SERIES
+        if r.get(key) is not None
+    ]
     if not points:
         return '<p class="empty">No scored checkpoints yet.</p>'
     max_step = max(p[0] for p in points)
@@ -65,16 +74,24 @@ def chart(runs: list[tuple[str, list[dict]]]) -> str:
     parts = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="WER and CER by step">']
     for fraction in (0, 0.25, 0.5, 0.75, 1.0):
         value = max_value * fraction
-        parts.append(f'<line class="grid" x1="{PAD_L}" y1="{y(value):.1f}" '
-                     f'x2="{W - PAD_R}" y2="{y(value):.1f}"/>')
-        parts.append(f'<text class="tick" x="{PAD_L - 8}" y="{y(value) + 4:.1f}" '
-                     f'text-anchor="end">{value:.2f}</text>')
+        parts.append(
+            f'<line class="grid" x1="{PAD_L}" y1="{y(value):.1f}" '
+            f'x2="{W - PAD_R}" y2="{y(value):.1f}"/>'
+        )
+        parts.append(
+            f'<text class="tick" x="{PAD_L - 8}" y="{y(value) + 4:.1f}" '
+            f'text-anchor="end">{value:.2f}</text>'
+        )
     for fraction in (0, 0.25, 0.5, 0.75, 1.0):
         step = max_step * fraction
-        parts.append(f'<text class="tick" x="{x(step):.1f}" y="{H - PAD_B + 20}" '
-                     f'text-anchor="middle">{int(step):,}</text>')
-    parts.append(f'<text class="axis" x="{(W) / 2:.0f}" y="{H - 6}" '
-                 f'text-anchor="middle">training step</text>')
+        parts.append(
+            f'<text class="tick" x="{x(step):.1f}" y="{H - PAD_B + 20}" '
+            f'text-anchor="middle">{int(step):,}</text>'
+        )
+    parts.append(
+        f'<text class="axis" x="{(W) / 2:.0f}" y="{H - 6}" '
+        f'text-anchor="middle">training step</text>'
+    )
 
     dash = ""
     for run_index, (name, rows) in enumerate(runs):
@@ -84,15 +101,20 @@ def chart(runs: list[tuple[str, list[dict]]]) -> str:
             pts = [(r["step"], r[key]) for r in rows if r.get(key) is not None]
             if not pts:
                 continue
-            d = " ".join(f"{'M' if i == 0 else 'L'}{x(s):.1f},{y(v):.1f}"
-                         for i, (s, v) in enumerate(pts))
+            d = " ".join(
+                f"{'M' if i == 0 else 'L'}{x(s):.1f},{y(v):.1f}" for i, (s, v) in enumerate(pts)
+            )
             parts.append(f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="2"{dash}/>')
             for s, v in pts:
-                parts.append(f'<circle cx="{x(s):.1f}" cy="{y(v):.1f}" r="3" fill="{colour}">'
-                             f'<title>{html.escape(name)} step {s:,}: {v:.3f}</title></circle>')
+                parts.append(
+                    f'<circle cx="{x(s):.1f}" cy="{y(v):.1f}" r="3" fill="{colour}">'
+                    f"<title>{html.escape(name)} step {s:,}: {v:.3f}</title></circle>"
+                )
             best = min(pts, key=lambda p: p[1])
-            parts.append(f'<circle cx="{x(best[0]):.1f}" cy="{y(best[1]):.1f}" r="6" '
-                         f'fill="none" stroke="{colour}" stroke-width="2"/>')
+            parts.append(
+                f'<circle cx="{x(best[0]):.1f}" cy="{y(best[1]):.1f}" r="6" '
+                f'fill="none" stroke="{colour}" stroke-width="2"/>'
+            )
     parts.append("</svg>")
     return "".join(parts)
 
@@ -103,8 +125,10 @@ def clip_cell(run_dir_name: str, clip: dict) -> str:
     src = html.escape(f"{run_dir_name}{clip['file']}") if clip.get("file") else ""
     wer = clip.get("wer")
     badge = f'<span class="w">{wer:.2f}</span>' if wer is not None else ""
-    return (f'<td><audio controls preload="none" src="{src}"></audio>{badge}'
-            f'<div class="hyp">{html.escape(clip.get("hypothesis") or "—")}</div></td>')
+    return (
+        f'<td><audio controls preload="none" src="{src}"></audio>{badge}'
+        f'<div class="hyp">{html.escape(clip.get("hypothesis") or "—")}</div></td>'
+    )
 
 
 def render(run_dirs: list[Path], output: Path | None = None) -> tuple[Path, int]:
@@ -143,7 +167,7 @@ def render(run_dirs: list[Path], output: Path | None = None) -> tuple[Path, int]
             cells = "".join(clip_cell("", c) for c in row["clips"])
             body.append(
                 f'<tr><th class="step">{row["step"]:,}<span>WER {row["wer"]:.3f} · '
-                f'CER {row["cer"]:.3f}</span></th>{cells}</tr>'
+                f"CER {row['cer']:.3f}</span></th>{cells}</tr>"
             )
         detail.append(
             f"<h2>{html.escape(name)}</h2>"
@@ -194,9 +218,9 @@ checkpoint: a progress signal, not a measurement — confirm the winner with
 </p>
 <table class="sum"><thead><tr><th>run</th><th>checkpoints</th><th>best WER</th>
 <th>latest WER</th><th>latest CER</th></tr></thead>
-<tbody>{''.join(summary_rows) or '<tr><td colspan="5">nothing scored yet</td></tr>'}</tbody>
+<tbody>{"".join(summary_rows) or '<tr><td colspan="5">nothing scored yet</td></tr>'}</tbody>
 </table>
-{''.join(detail)}
+{"".join(detail)}
 """
     output.write_text(page, encoding="utf-8")
     return output, sum(len(r) for _, r in scored)

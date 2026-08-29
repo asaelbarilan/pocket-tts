@@ -65,51 +65,88 @@ _HEBREW = re.compile(r"[֐-׿]")
 # Resolved from this file, not the working directory: the earlier relative default broke
 # whenever the command was run from anywhere but the repo root. Assumes the two repos are
 # checked out side by side, which is what the recipe tells you to do.
-DEFAULT_NORMALIZER = (
-    Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
-)
+DEFAULT_NORMALIZER = Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build Kyutai-format training manifests from an aligned Hebrew corpus."
     )
-    parser.add_argument("--corpus", type=Path, required=True,
-                        help="Root holding one directory per recording.")
+    parser.add_argument(
+        "--corpus", type=Path, required=True, help="Root holding one directory per recording."
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--audio-glob", default="audio.wav,audio.m4a",
-                        help="Comma-separated candidates; the first that matches wins. "
-                             "CrowdRecital ships audio.wav, the Knesset corpora audio.m4a.")
+    parser.add_argument(
+        "--audio-glob",
+        default="audio.wav,audio.m4a",
+        help="Comma-separated candidates; the first that matches wins. "
+        "CrowdRecital ships audio.wav, the Knesset corpora audio.m4a.",
+    )
     parser.add_argument("--align-glob", default="transcript.aligned.json")
     parser.add_argument("--metadata-glob", default="metadata.json")
-    parser.add_argument("--speaker-field", default="user_id",
-                        help="metadata.json key identifying the speaker. Falls back to the "
-                             "recording directory name, which for the Knesset corpora means "
-                             "the split is recording-disjoint but not speaker-disjoint.")
-    parser.add_argument("--min-duration", type=float, default=4.0,
-                        help="Post-merge floor. Must stay above 2 x MIN_CUT_SEC (2.0 s) or "
-                             "the loader cannot cut the row and leaks the prompt.")
-    parser.add_argument("--max-duration", type=float, default=30.0,
-                        help="Should match data.max_duration_sec in the training config.")
-    parser.add_argument("--merge-target", type=float, default=12.0,
-                        help="Stop merging once a group reaches this length.")
-    parser.add_argument("--merge-jitter", type=float, default=0.3,
-                        help="Draw each group's target uniformly from target*(1 +/- this), the "
-                             "way prepare_ivritai.py's DurationController did. 0 fixes the "
-                             "target and narrows the duration distribution.")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="Seeds the merge jitter, so a rebuild is reproducible.")
-    parser.add_argument("--merge-gap", type=float, default=1.5,
-                        help="Break a merge at a silence longer than this. 0 disables merging, "
-                             "which is right only for already-utterance-length corpora.")
-    parser.add_argument("--min-quality", type=float, default=0.6,
-                        help="Median word probability required to keep a segment.")
+    parser.add_argument(
+        "--speaker-field",
+        default="user_id",
+        help="metadata.json key identifying the speaker. Falls back to the "
+        "recording directory name, which for the Knesset corpora means "
+        "the split is recording-disjoint but not speaker-disjoint.",
+    )
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=4.0,
+        help="Post-merge floor. Must stay above 2 x MIN_CUT_SEC (2.0 s) or "
+        "the loader cannot cut the row and leaks the prompt.",
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        default=30.0,
+        help="Should match data.max_duration_sec in the training config.",
+    )
+    parser.add_argument(
+        "--merge-target",
+        type=float,
+        default=12.0,
+        help="Stop merging once a group reaches this length.",
+    )
+    parser.add_argument(
+        "--merge-jitter",
+        type=float,
+        default=0.3,
+        help="Draw each group's target uniformly from target*(1 +/- this), the "
+        "way prepare_ivritai.py's DurationController did. 0 fixes the "
+        "target and narrows the duration distribution.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Seeds the merge jitter, so a rebuild is reproducible."
+    )
+    parser.add_argument(
+        "--merge-gap",
+        type=float,
+        default=1.5,
+        help="Break a merge at a silence longer than this. 0 disables merging, "
+        "which is right only for already-utterance-length corpora.",
+    )
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=0.6,
+        help="Median word probability required to keep a segment.",
+    )
     parser.add_argument("--valid-hours", type=float, default=2.0)
-    parser.add_argument("--normalize-text", action="store_true",
-                        help="Apply the Hebrew TTS normalizer (number expansion etc).")
-    parser.add_argument("--normalizer-dir", type=Path, default=DEFAULT_NORMALIZER,
-                        help="The normalizer package from the hebrew-tts-data-tools repo. "
-                             "Defaults to a checkout sitting beside this one.")
+    parser.add_argument(
+        "--normalize-text",
+        action="store_true",
+        help="Apply the Hebrew TTS normalizer (number expansion etc).",
+    )
+    parser.add_argument(
+        "--normalizer-dir",
+        type=Path,
+        default=DEFAULT_NORMALIZER,
+        help="The normalizer package from the hebrew-tts-data-tools repo. "
+        "Defaults to a checkout sitting beside this one.",
+    )
     parser.add_argument("--limit-recordings", type=int)
     return parser.parse_args()
 
@@ -178,11 +215,9 @@ def normalize_words(words: list[dict], normalize) -> list[dict]:
             continue
         step = (end - start) / len(parts)
         for index, part in enumerate(parts):
-            out.append({
-                "word": part,
-                "start": start + index * step,
-                "end": start + (index + 1) * step,
-            })
+            out.append(
+                {"word": part, "start": start + index * step, "end": start + (index + 1) * step}
+            )
     return out
 
 
@@ -209,10 +244,7 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
             stats["low_quality"] += 1
             continue
 
-        timed = [
-            w for w in words
-            if w.get("start") is not None and w.get("end") is not None
-        ]
+        timed = [w for w in words if w.get("start") is not None and w.get("end") is not None]
         if not timed:
             stats["no_words"] += 1
             continue
@@ -427,7 +459,9 @@ def main() -> None:
         f"train : {len(train):6d} utterances, {hours(train):6.2f} h, "
         f"{len({r['speaker'] for r in train})} speakers"
     )
-    print(f"valid : {len(valid):6d} utterances, {hours(valid):6.2f} h, {len(valid_speakers)} speakers")
+    print(
+        f"valid : {len(valid):6d} utterances, {hours(valid):6.2f} h, {len(valid_speakers)} speakers"
+    )
 
     # The check that matters: rows shorter than 2 x MIN_CUT_SEC cannot be cut by the
     # loader and fall back to a prompt window that overlaps the target. If this line

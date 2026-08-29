@@ -7,7 +7,6 @@ from torch import nn
 
 from pocket_tts.conditioners.text import SentencePieceTokenizer
 
-
 TOKENIZER_SIZE = 4000
 
 
@@ -30,10 +29,7 @@ def install_tokenizer(model, tokenizer_path: Path) -> int:
     old_weight = conditioner.embed.weight.detach()
 
     new_embed = nn.Embedding(
-        TOKENIZER_SIZE + 1,
-        conditioner.dim,
-        device=old_weight.device,
-        dtype=old_weight.dtype,
+        TOKENIZER_SIZE + 1, conditioner.dim, device=old_weight.device, dtype=old_weight.dtype
     )
     with torch.no_grad():
         new_embed.weight.normal_(mean=float(old_weight.mean()), std=float(old_weight.std()))

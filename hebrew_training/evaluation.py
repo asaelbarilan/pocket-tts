@@ -37,8 +37,7 @@ def bootstrap_interval(
         indices = [rng.randrange(count) for _ in range(count)]
         values.append(
             metric(
-                [references[index] for index in indices],
-                [hypotheses[index] for index in indices],
+                [references[index] for index in indices], [hypotheses[index] for index in indices]
             )
         )
     values.sort()

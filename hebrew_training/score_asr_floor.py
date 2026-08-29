@@ -8,7 +8,9 @@ from hebrew_training.evaluation import normalize_hebrew_for_asr, score_transcrip
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Measure Hebrew ASR error on genuine held-out audio.")
+    parser = argparse.ArgumentParser(
+        description="Measure Hebrew ASR error on genuine held-out audio."
+    )
     parser.add_argument("--eval-set", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")

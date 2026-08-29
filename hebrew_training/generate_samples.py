@@ -77,7 +77,9 @@ def main() -> None:
 
     texts = DEFAULT_TEXTS
     if args.texts:
-        texts = [t.strip() for t in args.texts.read_text(encoding="utf-8").splitlines() if t.strip()]
+        texts = [
+            t.strip() for t in args.texts.read_text(encoding="utf-8").splitlines() if t.strip()
+        ]
 
     voices = pick_voices(args.validation_manifest, args.speakers)
     if not voices:

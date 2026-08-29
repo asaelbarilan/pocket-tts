@@ -54,6 +54,7 @@ def main() -> None:
     import scipy.io.wavfile
     import torch
     from faster_whisper import WhisperModel
+
     from pocket_tts import TTSModel
 
     spec = json.loads(args.eval_set.read_text(encoding="utf-8"))
@@ -121,8 +122,7 @@ def main() -> None:
                     seed_generation(torch, generation_seed)
                     audio = model.generate_audio(voice, sentence, max_tokens=args.max_tokens)
                     name = (
-                        f"g{group_index + 1}_spk{speaker_index + 1:02d}_"
-                        f"s{text_index + 1:02d}.wav"
+                        f"g{group_index + 1}_spk{speaker_index + 1:02d}_s{text_index + 1:02d}.wav"
                     )
                     wav_path = clip_dir / name
                     scipy.io.wavfile.write(

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -42,15 +41,26 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--repo", default="ivrit-ai/knesset-plenums")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--hours", type=float, default=1200.0,
-                        help="Budget in SPEECH hours (time inside transcript segments), not "
-                             "wall-clock. Plenary audio is only ~62%% speech.")
-    parser.add_argument("--min-quality", type=float, default=0.8,
-                        help="Recording-level quality_score gate. The corpus median is 0.894; "
-                             "0.8 keeps 1,331 of 1,551 recordings.")
+    parser.add_argument(
+        "--hours",
+        type=float,
+        default=1200.0,
+        help="Budget in SPEECH hours (time inside transcript segments), not "
+        "wall-clock. Plenary audio is only ~62%% speech.",
+    )
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=0.8,
+        help="Recording-level quality_score gate. The corpus median is 0.894; "
+        "0.8 keeps 1,331 of 1,551 recordings.",
+    )
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print the selection and the download size, fetch nothing.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the selection and the download size, fetch nothing.",
+    )
     return parser.parse_args()
 
 

@@ -68,9 +68,7 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
             "speaker": r["speaker_id"][:8],
             "quality": round(r.get("quality_score", 0.0), 3),
             "audio": (
-                f"artifacts/{path.name}/wavs/{Path(r['audio_path']).name}"
-                if wavs_present
-                else None
+                f"artifacts/{path.name}/wavs/{Path(r['audio_path']).name}" if wavs_present else None
             ),
             "prompt_audio": (
                 f"artifacts/{path.name}/wavs/{Path(r['prompt_audio_path']).name}"
@@ -114,9 +112,7 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
         },
         "speakers": {
             "count": len(speakers),
-            "top": [
-                {"id": s[:8], "clips": n} for s, n in speakers.most_common(15)
-            ],
+            "top": [{"id": s[:8], "clips": n} for s, n in speakers.most_common(15)],
             "clips_per_speaker_median": statistics.median(speakers.values()),
         },
         "text_flags": {
@@ -126,9 +122,7 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
             "total": len(texts),
         },
         "prompt_pairing": {
-            "cross_recording": sum(
-                1 for r in everything if r.get("prompt_is_cross_recording")
-            ),
+            "cross_recording": sum(1 for r in everything if r.get("prompt_is_cross_recording")),
             "same_recording": sum(
                 1
                 for r in everything

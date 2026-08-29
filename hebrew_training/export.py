@@ -12,7 +12,9 @@ from pocket_tts.utils.config import CONFIGS_DIR
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export a Hebrew checkpoint for official inference.")
+    parser = argparse.ArgumentParser(
+        description="Export a Hebrew checkpoint for official inference."
+    )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -33,10 +35,7 @@ def main() -> None:
     model.flow_lm.load_state_dict(flow_state, strict=True)
     weights_out = args.output_dir / "model.safetensors"
     safetensors.torch.save_file(
-        {
-            key: value.detach().cpu().contiguous()
-            for key, value in model.state_dict().items()
-        },
+        {key: value.detach().cpu().contiguous() for key, value in model.state_dict().items()},
         weights_out,
     )
 

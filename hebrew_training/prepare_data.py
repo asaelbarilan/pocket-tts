@@ -65,9 +65,7 @@ def main() -> None:
             continue
 
         item = ManifestRow(str(audio_path), text, duration, source_id)
-        target = (
-            validation if split_is_validation(source_id, args.validation_fraction) else train
-        )
+        target = validation if split_is_validation(source_id, args.validation_fraction) else train
         target.append(item)
         source_counts[source_id] += 1
 

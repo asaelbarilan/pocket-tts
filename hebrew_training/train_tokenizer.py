@@ -46,10 +46,7 @@ def main() -> None:
     decoded = tokenizer.decode(ids)
     print(f"Tokenizer: {prefix.with_suffix('.model')}")
     print(f"Vocabulary: {tokenizer.vocab_size()}")
-    print(
-        "Probe pieces: "
-        + json.dumps(tokenizer.encode(probe, out_type=str), ensure_ascii=True)
-    )
+    print("Probe pieces: " + json.dumps(tokenizer.encode(probe, out_type=str), ensure_ascii=True))
     print("Round trip: " + json.dumps(decoded, ensure_ascii=True))
 
 

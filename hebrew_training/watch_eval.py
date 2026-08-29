@@ -52,34 +52,57 @@ _STEP = re.compile(r"checkpoint_(\d+)\.pt$")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--voice", type=Path,
-                        help="Hebrew voice prompt wav. Omit and one is cut from the run's own "
-                             "validation manifest. The model clones this, so a noisy prompt "
-                             "makes every generation sound noisy.")
-    parser.add_argument("--voice-sec", type=float, default=5.0,
-                        help="Prompt length. Matches max_voice_prompt_sec in the configs.")
-    parser.add_argument("--sentences", type=Path,
-                        help="One sentence per line. Defaults to five Knesset-style lines.")
-    parser.add_argument("--min-step", type=int, default=4000,
-                        help="Skip earlier checkpoints; before this the model has nothing to say.")
+    parser.add_argument(
+        "--voice",
+        type=Path,
+        help="Hebrew voice prompt wav. Omit and one is cut from the run's own "
+        "validation manifest. The model clones this, so a noisy prompt "
+        "makes every generation sound noisy.",
+    )
+    parser.add_argument(
+        "--voice-sec",
+        type=float,
+        default=5.0,
+        help="Prompt length. Matches max_voice_prompt_sec in the configs.",
+    )
+    parser.add_argument(
+        "--sentences",
+        type=Path,
+        help="One sentence per line. Defaults to five Knesset-style lines.",
+    )
+    parser.add_argument(
+        "--min-step",
+        type=int,
+        default=4000,
+        help="Skip earlier checkpoints; before this the model has nothing to say.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--asr", default="ivrit-ai/whisper-large-v3-turbo-ct2")
     parser.add_argument("--compute-type", default="int8_float16")
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--temp", type=float, default=0.3)
-    parser.add_argument("--cfg", type=float, default=2.0,
-                        help="Kyutai's reference eval value. Use 1.0 for a distilled student, "
-                             "which has guidance baked in.")
+    parser.add_argument(
+        "--cfg",
+        type=float,
+        default=2.0,
+        help="Kyutai's reference eval value. Use 1.0 for a distilled student, "
+        "which has guidance baked in.",
+    )
     parser.add_argument("--n-steps", type=int, default=1)
     parser.add_argument("--eos-threshold", type=float, default=-1.0)
-    parser.add_argument("--use-ema", action="store_true",
-                        help="Score the EMA shadow instead of the raw weights.")
+    parser.add_argument(
+        "--use-ema", action="store_true", help="Score the EMA shadow instead of the raw weights."
+    )
     parser.add_argument("--max-seconds", type=float, default=30.0)
-    parser.add_argument("--watch", action="store_true",
-                        help="Keep polling for new checkpoints instead of exiting.")
+    parser.add_argument(
+        "--watch", action="store_true", help="Keep polling for new checkpoints instead of exiting."
+    )
     parser.add_argument("--poll-seconds", type=float, default=120.0)
-    parser.add_argument("--no-dashboard", action="store_true",
-                        help="Skip rewriting hebrew_eval.html after each checkpoint.")
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Skip rewriting hebrew_eval.html after each checkpoint.",
+    )
     return parser.parse_args()
 
 
@@ -123,12 +146,13 @@ def pick_voice_prompt(run_dir: Path, seconds: float) -> Path:
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
             soundfile.write(str(out), wav, 24000)
-            print(f"voice prompt: {seconds:.1f}s from {row['path']} at {row.get('start', 0)}s "
-                  f"-> {out}", flush=True)
+            print(
+                f"voice prompt: {seconds:.1f}s from {row['path']} at {row.get('start', 0)}s "
+                f"-> {out}",
+                flush=True,
+            )
             return out
-    raise SystemExit(
-        f"no row in {manifest} is longer than {needed:.1f}s. Pass --voice explicitly."
-    )
+    raise SystemExit(f"no row in {manifest} is longer than {needed:.1f}s. Pass --voice explicitly.")
 
 
 def checkpoint_step(path: Path) -> int | None:
@@ -195,8 +219,17 @@ def score_checkpoint(path: Path, step: int, sentences: list[str], args, asr) -> 
             # as a total miss rather than dropping it and flattering the checkpoint.
             references.append(normalize_hebrew_for_asr(sentence))
             hypotheses.append("")
-            clips.append({"index": index, "file": None, "reference": sentence,
-                          "hypothesis": "", "wer": 1.0, "seconds": 0.0, "empty": True})
+            clips.append(
+                {
+                    "index": index,
+                    "file": None,
+                    "reference": sentence,
+                    "hypothesis": "",
+                    "wer": 1.0,
+                    "seconds": 0.0,
+                    "empty": True,
+                }
+            )
             continue
         audio = wav.float().cpu().numpy()
         name = f"{index}.wav"
@@ -206,12 +239,17 @@ def score_checkpoint(path: Path, step: int, sentences: list[str], args, asr) -> 
         reference = normalize_hebrew_for_asr(sentence)
         references.append(reference)
         hypotheses.append(hypothesis)
-        clips.append({
-            "index": index, "file": f"hebrew_eval/step{step:08d}/{name}",
-            "reference": sentence, "hypothesis": hypothesis,
-            "wer": jiwer.wer(reference, hypothesis) if reference else None,
-            "seconds": len(audio) / mimi.sample_rate, "empty": False,
-        })
+        clips.append(
+            {
+                "index": index,
+                "file": f"hebrew_eval/step{step:08d}/{name}",
+                "reference": sentence,
+                "hypothesis": hypothesis,
+                "wer": jiwer.wer(reference, hypothesis) if reference else None,
+                "seconds": len(audio) / mimi.sample_rate,
+                "empty": False,
+            }
+        )
 
     del model
     if args.device.startswith("cuda"):
@@ -231,9 +269,13 @@ def score_checkpoint(path: Path, step: int, sentences: list[str], args, asr) -> 
 def main() -> None:
     args = parse_args()
     sentences = (
-        [line.strip() for line in args.sentences.read_text(encoding="utf-8").splitlines()
-         if line.strip()]
-        if args.sentences else list(DEFAULT_SENTENCES)
+        [
+            line.strip()
+            for line in args.sentences.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if args.sentences
+        else list(DEFAULT_SENTENCES)
     )
     if args.voice is None:
         args.voice = pick_voice_prompt(args.run_dir, args.voice_sec)
@@ -247,8 +289,9 @@ def main() -> None:
 
     print(f"loading {args.asr} ...", flush=True)
     asr = WhisperModel(args.asr, device=args.device, compute_type=args.compute_type)
-    print(f"scoring {len(sentences)} sentences per checkpoint, from step {args.min_step}",
-          flush=True)
+    print(
+        f"scoring {len(sentences)} sentences per checkpoint, from step {args.min_step}", flush=True
+    )
 
     while True:
         todo = pending(args.run_dir, args.min_step, scored_steps(results))
@@ -261,9 +304,12 @@ def main() -> None:
                 continue
             with results.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            print(f"  WER {record['wer']:.3f}  CER {record['cer']:.3f}  "
-                  f"empty {record['empty_outputs']}/{len(sentences)}  "
-                  f"mean {record['mean_seconds']:.1f}s", flush=True)
+            print(
+                f"  WER {record['wer']:.3f}  CER {record['cer']:.3f}  "
+                f"empty {record['empty_outputs']}/{len(sentences)}  "
+                f"mean {record['mean_seconds']:.1f}s",
+                flush=True,
+            )
             if not args.no_dashboard:
                 # Rewritten per checkpoint so a browser left open on the page is never more
                 # than one checkpoint stale. It is a few hundred KB of string work.

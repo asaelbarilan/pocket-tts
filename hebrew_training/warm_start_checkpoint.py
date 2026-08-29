@@ -53,8 +53,12 @@ EMBED_KEY = "flow_lm.conditioner.embed.weight"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--tokenizer", type=Path, required=True,
-                        help="The new SentencePiece model, from train_tokenizer.py.")
+    parser.add_argument(
+        "--tokenizer",
+        type=Path,
+        required=True,
+        help="The new SentencePiece model, from train_tokenizer.py.",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--weights", default=DEFAULT_WEIGHTS)
     parser.add_argument("--source-tokenizer", default=DEFAULT_SOURCE_TOKENIZER)
@@ -67,7 +71,7 @@ def resolve(reference: str) -> str:
         return reference
     from huggingface_hub import hf_hub_download
 
-    body = reference[len("hf://"):]
+    body = reference[len("hf://") :]
     revision = None
     if "@" in body:
         body, revision = body.rsplit("@", 1)
@@ -85,8 +89,11 @@ def main() -> None:
     if EMBED_KEY not in state:
         raise SystemExit(f"{EMBED_KEY} not in the checkpoint; is this a Pocket TTS model?")
 
-    layers = {int(m.group(1)) for k in state
-              if (m := re.search(r"flow_lm\.transformer\.layers\.(\d+)\.", k))}
+    layers = {
+        int(m.group(1))
+        for k in state
+        if (m := re.search(r"flow_lm\.transformer\.layers\.(\d+)\.", k))
+    }
     old_embed = state[EMBED_KEY]
     print(f"source: {len(layers)} transformer layers, text table {tuple(old_embed.shape)}")
 
@@ -98,9 +105,7 @@ def main() -> None:
         f"{source.vocab_size()} pieces -- wrong --source-tokenizer for these weights"
     )
 
-    new_embed = torch.empty(
-        target.vocab_size() + 1, old_embed.shape[1], dtype=old_embed.dtype
-    )
+    new_embed = torch.empty(target.vocab_size() + 1, old_embed.shape[1], dtype=old_embed.dtype)
     new_embed.normal_(mean=float(old_embed.float().mean()), std=float(old_embed.float().std()))
 
     by_piece = {source.id_to_piece(i): i for i in range(source.vocab_size())}
@@ -121,8 +126,9 @@ def main() -> None:
         f"({100 * copied / target.vocab_size():.1f}%); the rest are freshly initialized"
     )
     print(f"wrote {args.out}")
-    print(f"set weights_path to it, n_bins to {target.vocab_size()}, "
-          f"and start_from_pretrained: true")
+    print(
+        f"set weights_path to it, n_bins to {target.vocab_size()}, and start_from_pretrained: true"
+    )
 
 
 if __name__ == "__main__":
