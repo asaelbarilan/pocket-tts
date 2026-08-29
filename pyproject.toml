@@ -21,7 +21,7 @@ dependencies = [
     "einops>=0.4.0",
     "huggingface_hub>=0.13.0",
     "requests>=2.20.0",
-    "torchcodec>=0.16.0",
+    "torchcodec>=0.11.1",
 ]
 
 [project.optional-dependencies]
@@ -83,6 +83,17 @@ pocket-tts = "pocket_tts.main:cli_app"
 # System python distribution can have header files missing, so we use only the python
 # distributions provided by uv which have everything included.
 python-preference = "only-managed"
+
+[tool.uv.sources]
+# CUDA 13 wheels require a newer driver than the training server provides.
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+torchcodec = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

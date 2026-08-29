@@ -109,3 +109,4 @@ italk.yaml
 .venv-train/
 /data*/
 runs/
+tokenizers/
