@@ -35,6 +35,7 @@ from pathlib import Path
 MODEL = "MahmoudAshraf/mms-300m-1130-forced-aligner"
 SAMPLE_RATE = 16000
 _WS = re.compile(r"\s+")
+_HEBREW = re.compile(r"[֐-׿]")
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +49,13 @@ def parse_args() -> argparse.Namespace:
         help="cuda is faster but this model is small; cpu is fine for a few hundred clips.",
     )
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--romanize",
+        choices=["auto", "yes", "no"],
+        default="auto",
+        help="auto romanizes only when the model's vocabulary has no Hebrew "
+        "letters, which is how MMS differs from a Hebrew CTC head.",
+    )
     return parser.parse_args()
 
 
@@ -66,6 +74,16 @@ def source_words(row: dict) -> list[str]:
     return words or clean(row.get("transcript", "")).split()
 
 
+def blank_id(tokenizer) -> int:
+    """CTC blank. Models disagree on what they call it -- MMS uses <blank>, a wav2vec2
+    Hebrew head uses [PAD] -- and picking the wrong one silently ruins every alignment."""
+    vocab = tokenizer.get_vocab()
+    for name in ("<blank>", "[PAD]", "<pad>"):
+        if name in vocab:
+            return vocab[name]
+    return tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+
+
 def romanize_words(words: list[str], uroman, vocab: dict[str, int]) -> list[list[int]]:
     """Token ids per word; an empty list marks a word that cannot be represented.
 
@@ -75,8 +93,8 @@ def romanize_words(words: list[str], uroman, vocab: dict[str, int]) -> list[list
     """
     out = []
     for word in words:
-        roman = uroman.romanize_string(word).lower()
-        ids = [vocab[c] for c in roman if c in vocab]
+        text = uroman.romanize_string(word).lower() if uroman else word
+        ids = [vocab[c] for c in text if c in vocab]
         out.append(ids)
     return out
 
@@ -94,8 +112,18 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(args.model)
     model = Wav2Vec2ForCTC.from_pretrained(args.model).to(args.device).eval()
     vocab = {k: v for k, v in processor.tokenizer.get_vocab().items() if len(k) == 1}
-    blank = processor.tokenizer.get_vocab().get("<blank>", 0)
-    romanizer = uroman_module.Uroman()
+    blank = blank_id(processor.tokenizer)
+    has_hebrew = any(_HEBREW.match(c) for c in vocab)
+    romanize = args.romanize == "yes" or (args.romanize == "auto" and not has_hebrew)
+    romanizer = uroman_module.Uroman() if romanize else None
+    token = processor.tokenizer.word_delimiter_token
+    delimiter = vocab.get(token) if token else None
+    print(
+        f"vocab {len(vocab)} chars | blank id {blank} | "
+        f"delimiter {token!r} -> {delimiter} | "
+        f"romanize {'yes' if romanize else 'no (native Hebrew vocabulary)'}",
+        flush=True,
+    )
 
     rows = [
         json.loads(line)
@@ -124,7 +152,16 @@ def main() -> None:
                 logits = model(audio).logits
                 emission = torch.log_softmax(logits, dim=-1)
 
-            flat = [t for i in keep for t in token_ids[i]]
+            # A wav2vec2 CTC head trained with a word delimiter ('|') expects one BETWEEN
+            # words. Concatenating words without it makes the Viterbi path drift: measured
+            # on 50 clips, omitting the delimiter put this model ~900 ms away from two
+            # other aligners that agreed with each other to 51 ms. MMS has no delimiter
+            # and must not get one.
+            flat = []
+            for position, i in enumerate(keep):
+                if position and delimiter is not None:
+                    flat.append(delimiter)
+                flat.extend(token_ids[i])
             targets = torch.tensor([flat], dtype=torch.int32, device=args.device)
             try:
                 aligned, scores = AF.forced_align(emission, targets, blank=blank)
@@ -132,13 +169,28 @@ def main() -> None:
                 print(f"  row {index}: {type(exc).__name__} {exc}", flush=True)
                 skipped += 1
                 continue
-            spans = AF.merge_tokens(aligned[0], scores[0].exp())
+            # merge_tokens defaults to blank=0, which is only correct when the model's
+            # blank happens to be id 0 -- true for MMS, false for a wav2vec2 Hebrew head
+            # whose blank is 29 and whose id 0 is the '|' word delimiter. Passing the
+            # wrong blank leaves blank runs in the output and strips the delimiters, so
+            # the spans no longer line up with the targets and every word slides toward
+            # the start of the clip.
+            spans = AF.merge_tokens(aligned[0], scores[0].exp(), blank=blank)
+            if len(spans) != len(flat):
+                print(
+                    f"  row {index}: {len(spans)} spans for {len(flat)} targets, skipping",
+                    flush=True,
+                )
+                skipped += 1
+                continue
 
             # emission frames -> seconds, relative to the row's start, matching the schema
             # the other aligners write.
             ratio = audio.shape[-1] / emission.shape[1] / SAMPLE_RATE
             timed, cursor = [], 0
-            for i in keep:
+            for position, i in enumerate(keep):
+                if position and delimiter is not None:
+                    cursor += 1  # the delimiter consumed one target token
                 count = len(token_ids[i])
                 chunk = spans[cursor : cursor + count]
                 cursor += count
