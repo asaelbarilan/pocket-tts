@@ -32,6 +32,54 @@
   8 long recordings, 4.3% on 10 short ones. `clean_segments` already drops them; the open
   question is how much data that costs.
 
+## Text input coverage — what the model must accept
+
+Raised as things the model has to handle. Each is measured; evidence and the numbers behind
+every recommendation are in `docs/hebrew-english-data-mixing.md`.
+
+- [ ] **Nikud.** People will type vocalized Hebrew and the model must use it, not choke on
+  it. Today it would choke: the corpus is 0.021% vocalized, a plain-only tokenizer spends
+  0.936 tokens per character on nikud (byte fallback), and FineWeb-2 Hebrew is only 0.11%
+  vocalized so the text cannot be sourced — it must be generated with
+  `dicta-il/dictabert-large-char-menaked`.
+  - Train the tokenizer on plain + diacritized text, and emit both transcripts against the
+    same audio so the model accepts either.
+  - Do **not** strip nikud. It is the vowel information the abjad omits; a user typing it is
+    volunteering disambiguation the model otherwise guesses.
+
+- [ ] **Raise `--vocab-size` to 8000 and `flow_lm.lookup_table.n_bins` to match.** This is
+  what makes nikud and English affordable: at 4,000 pieces a plain+nikud+English tokenizer
+  costs plain Hebrew ~22%, at 8,000 it matches the plain-only baseline (0.330 vs 0.314) while
+  handling all three. Costs one tensor, 15.6 -> 31.3 MB, 1.3% of the checkpoint. Compatible
+  with the finetune path, since `reset_text_embedding` discards that table anyway.
+
+- [ ] **Hebrew-English switching.** The corpus supplies almost nothing: 0.12% of words
+  contain Latin, 99 distinct types in 147,192 words.
+  - Tokenizer: mix in ~5-10% English text from FineWeb. 5% halves English cost
+    (0.977 -> 0.476 tokens/char) for 1.9% Hebrew degradation.
+  - Audio: start with **none**. We warm-start from `english_2026-04_24l`, whose backbone
+    already knows English acoustics, so only the text mapping is new. The Hindi-English
+    literature's 65/35 split assumes training from scratch. Add English audio only if the
+    stress set below fails.
+
+- [ ] **Numbers and dates.** No synthetic corpus needed — the normalizer already expands
+  years, dates, times, decimals, percentages and phone numbers into spoken Hebrew, and the
+  corpus carries ~580,000 digit-bearing words as supervision.
+  - Fix the one normalizer bug found: `סעיף 12(א)(3) לחוק` -> `סעיף 12(א)(3 לחוק` drops a
+    parenthesis and leaves `12` unexpanded.
+
+- [ ] **Remove the hard dependency on the normalizer.** The objection is right: it will not
+  always be run at inference, and it has its own failure modes. Only numbers actually depend
+  on it — nikud and English do not. Emit each manifest row twice, raw and normalized, against
+  the same audio. Two texts to one audio is many-to-one, which is harmless for TTS, and it
+  turns the normalizer from a requirement into a quality improvement.
+  - Needs an `--emit-raw` option in `build_official_manifest.py`.
+
+- [ ] **Build the difficult-Hebrew stress set** (already listed under Controlled evaluation)
+  and make it cover all four: vocalized input, English words and acronyms, numbers/dates
+  with and without normalization, and foreign names. This is the test that decides whether
+  English audio is needed at all.
+
 ## Controlled evaluation
 
 - [x] Build fixed, equal-sized evaluation groups for seen/unseen speakers and
