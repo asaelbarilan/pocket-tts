@@ -1,5 +1,37 @@
 # Hebrew Pocket TTS TODO
 
+## Alignment gold set — BLOCKING
+
+- [ ] **Build a 100-sentence hand-marked word-alignment gold set.** Nothing about alignment
+  can be decided without it. Every ivrit.ai corpus (Knesset and CrowdRecital) carries
+  timings from the same stable-ts pipeline, so measuring one against another reports
+  agreement, not accuracy — the earlier "19 ms median word-end error" was exactly that
+  mistake. No public Hebrew corpus with human word timings exists: ILSpeech has expert IPA
+  but no timestamps, Pekar's segmented corpus was never released, MFA's benchmarks are
+  English.
+  - Source the sentences from Knesset plenums, the domain we train on. Optionally add a
+    clean slice from ILSpeech as an upper bound.
+  - Pre-fill each with an aligner and correct the boundaries rather than placing them from
+    scratch — much faster, and `alignment_disagreement.py` already emits Praat TextGrids
+    with both aligners on separate tiers and an empty `gold` tier to fill.
+  - Choose which sentences to annotate by three-way disagreement, so the human time lands
+    where the ranking is actually decided.
+  - Then score all three columns against it: `imvladikon/wav2vec2-xls-r-300m-hebrew`,
+    `MahmoudAshraf/mms-300m-1130-forced-aligner`, and the shipped stable-ts timings.
+  - Report median and p90 boundary error in **Mimi frames (80 ms)**, not milliseconds, and
+    report `last_word_end` separately since it alone drives the trailing-silence trim.
+
+  Why it is blocking: on 112 clips from 10 recordings the three columns agree to 26-37 ms at
+  the median, but 28% of word ends differ by more than one frame and 46% of `last_word_end`
+  values differ by more than one frame between the Hebrew aligner and stable-ts. Medians look
+  fine and the tail does not. Without a gold set there is no way to know which column is
+  right, and `last_word_end` is what broke EOS on the first run.
+
+- [ ] Measure the dead-word rate (`start == end`) on 40 random plenums. Current estimates
+  come from 25.6 h of the corpus's 8,816 h and disagree threefold between samples: 12.7% on
+  8 long recordings, 4.3% on 10 short ones. `clean_segments` already drops them; the open
+  question is how much data that costs.
+
 ## Controlled evaluation
 
 - [x] Build fixed, equal-sized evaluation groups for seen/unseen speakers and

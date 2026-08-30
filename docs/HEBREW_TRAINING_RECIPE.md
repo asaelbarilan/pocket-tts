@@ -631,9 +631,17 @@ Their Czech 10-12% is Whisper on parliamentary speech. They say so themselves:
 > rate: you need an ASR that supports your language.
 
 So an unknown share of that 10-12% is the ASR misreading good audio, not the TTS speaking
-badly. **We have never run this script and have no Hebrew floor number.** Without it you
-cannot tell a bad model from a bad ruler. Judge the TTS against `floor + delta`, not against
-zero, and expect Knesset-style speech to score worse than audiobooks whatever the model does.
+badly.
+
+**It has been run, and the number is large.** `TODO.md` records it: 128 held-out clips,
+**WER 0.1231** (95% CI 0.1065-0.1411), CER 0.0698. That is `ivrit-ai/whisper-large-v3-turbo-ct2`
+failing on 12.3% of words of *real human Hebrew speech*.
+
+Put that beside Kyutai's Czech result of 10-12% WER and the two are indistinguishable. A
+Hebrew TTS scoring ~12% would be sitting on the measurement floor, and no amount of further
+training would move it. Judge the model against `floor + delta`, never against zero, and
+re-measure the floor on your own eval set rather than reusing 0.1231 — it is specific to
+those 128 clips.
 
 ### Set `sample_sentences` to Hebrew before you start training
 

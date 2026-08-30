@@ -162,7 +162,11 @@ def main() -> None:
                 if position and delimiter is not None:
                     flat.append(delimiter)
                 flat.extend(token_ids[i])
-            targets = torch.tensor([flat], dtype=torch.int32, device=args.device)
+            # torchaudio::forced_align has no CUDA kernel, so the Viterbi runs on CPU even
+            # when the acoustic model ran on the GPU. Moving the emission is cheap next to
+            # the forward pass.
+            emission = emission.cpu()
+            targets = torch.tensor([flat], dtype=torch.int32)
             try:
                 aligned, scores = AF.forced_align(emission, targets, blank=blank)
             except Exception as exc:  # noqa: BLE001 -- one unalignable row must not stop the run
