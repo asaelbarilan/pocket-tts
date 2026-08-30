@@ -244,9 +244,23 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
             stats["low_quality"] += 1
             continue
 
-        timed = [w for w in words if w.get("start") is not None and w.get("end") is not None]
+        # 19% of segments in the Knesset corpora carry start == end, collapsing every word
+        # inside them to a single instant -- measured over 867,270 segments in 120 plenum
+        # recordings, affecting 118 of the 120. Those words have no timing at all, and a
+        # zero-width word gives the loader a degenerate cut point and a meaningless
+        # text-to-audio correspondence. Drop them rather than pass them through.
+        timed = [
+            w
+            for w in words
+            if w.get("start") is not None
+            and w.get("end") is not None
+            and float(w["end"]) > float(w["start"])
+        ]
         if not timed:
-            stats["no_words"] += 1
+            stats["untimed"] += 1
+            continue
+        if float(segment["end"]) <= float(segment["start"]):
+            stats["untimed"] += 1
             continue
 
         text = clean(segment.get("text", ""))
@@ -315,7 +329,14 @@ def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[
 
 def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[list[dict], dict]:
     """One manifest row per merged run of aligned segments."""
-    stats = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
+    stats = {
+        "no_words": 0,
+        "low_quality": 0,
+        "bad_duration": 0,
+        "no_hebrew": 0,
+        "untimed": 0,
+        "kept": 0,
+    }
     audio = find_audio(recording, args.audio_glob)
     align = next(iter(recording.glob(args.align_glob)), None)
     if audio is None or align is None:
@@ -394,7 +415,14 @@ def main() -> None:
         recordings = recordings[: args.limit_recordings]
 
     all_rows: list[dict] = []
-    totals = {"no_words": 0, "low_quality": 0, "bad_duration": 0, "no_hebrew": 0, "kept": 0}
+    totals = {
+        "no_words": 0,
+        "low_quality": 0,
+        "bad_duration": 0,
+        "no_hebrew": 0,
+        "untimed": 0,
+        "kept": 0,
+    }
     for recording in recordings:
         rows, stats = segment_rows(recording, args, normalize, rng)
         all_rows.extend(rows)
@@ -453,7 +481,8 @@ def main() -> None:
     print(f"utterances kept    : {totals['kept']}")
     print(
         f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
-        f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}"
+        f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}, "
+        f"untimed {totals['untimed']}"
     )
     print(
         f"train : {len(train):6d} utterances, {hours(train):6.2f} h, "
