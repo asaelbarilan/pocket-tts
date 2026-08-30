@@ -252,6 +252,43 @@ whichever form the user types.
 
 ---
 
+## 5. The four-way mix, measured
+
+The sections above tested pairs. This is the combination actually proposed, so that nothing
+is assumed to compose: Knesset manifest text + 50% general Hebrew + a diacritized copy of
+both + 15% English, all normalized the same way.
+
+Tokens per character on five held-out sets:
+
+| vocab | knesset | general he | nikud | gen nikud | english |
+|---|---|---|---|---|---|
+| 4,000 | 0.350 | 0.394 | 0.310 | 0.353 | 0.483 |
+| **8,000** | **0.308** | **0.349** | **0.268** | **0.303** | **0.414** |
+| 12,000 | 0.290 | 0.328 | 0.244 | 0.278 | 0.391 |
+
+Baseline for comparison, a Knesset-only tokenizer at 4,000: knesset 0.314, nikud 0.936,
+english 0.977.
+
+**Nothing is crowded out.** At 8,000 the four-way tokenizer encodes Knesset text at 0.308 —
+slightly *better* than the specialist Knesset-only tokenizer's 0.314 — while also handling
+general Hebrew, vocalized Hebrew of both kinds, and English. The specialist wins nothing.
+
+Caveat: this was measured on a 0.49 MB corpus. Real tokenizer training would use far more
+text, which only helps; the relative ordering is what transfers.
+
+### The decision
+
+```
+--vocab-size 8000
+flow_lm.lookup_table.n_bins: 8000
+corpus = normalized manifest text
+       + ~50% general Hebrew (FineWeb-2 heb_Hebr, normalized)
+       + a diacritized copy of both (dictabert-large-char-menaked)
+       + ~15% English (FineWeb)
+```
+
+---
+
 ## Deliberately not pursued
 
 - **Synthetic numbers and dates.** The normalizer removes the problem before the model sees
