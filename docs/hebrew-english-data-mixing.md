@@ -169,34 +169,86 @@ its spoken form. That is a lot of supervision for a narrow mapping.
 Cost: the manifest doubles in rows (not in audio, which is unchanged). `--emit-raw` would be
 a small addition to `build_official_manifest.py`.
 
-### Nikud: strip it, and consider training with it
+### Nikud: put it in the tokenizer. It is free if you raise the vocabulary.
 
-Measured on the corpus: **31 of 147,192 words carry nikud (0.021%)**. The model will
-effectively never have seen it. And the normalizer does not remove it — verified:
-`שָׁלוֹם עוֹלָם` passes through unchanged, and even `בְּ-1995` keeps its nikud while expanding
-the number.
+Stripping nikud makes vocalized input *work*, but it throws away exactly the vowel
+information Hebrew's abjad omits — a user who types nikud is volunteering the disambiguation
+the model otherwise has to guess. If the model should **use** nikud, the marks have to be in
+the tokenizer and in the training text.
 
-So today, a user who types vocalized Hebrew hands the model characters outside its
-experience, which fall to byte fallback and probably produce noise.
+Two facts make that harder than it sounds:
 
-The cheap fix is to strip nikud on the way in:
+- The corpus has none: **31 of 147,192 words** carry nikud (0.021%).
+- Neither does the web. A FineWeb-2 `heb_Hebr` sample of 263,701 words is **0.11% vocalized**
+  — 15 distinct marks, and no usable volume.
+
+So the vocalized text has to be generated. `dicta-il/dictabert-large-char-menaked` (14k
+downloads) does it well on Knesset text:
 
 ```
-שָׁלוֹם עוֹלָם            ->  שלום עולם
-הַיּוֹם הַוַּעֲדָה תִּתְכַּנֵּס  ->  היום הועדה תתכנס
+הוועדה תתכנס ביום שלישי הקרוב בשעה עשר בבוקר
+  ->  הַוַּעֲדָה תִּתְכַּנֵּס בְּיוֹם שְׁלִישִׁי הַקָּרוֹב בְּשָׁעָה עֶשֶׂר בַּבֹּקֶר
 ```
 
-One regex, cannot fail, and gives back exactly the unvocalized form the model was trained
-on. **Do this unconditionally, in the model wrapper rather than the normalizer**, so it
-holds whether or not anyone runs normalization.
+`Phonikud/phonikud` (Interspeech 2026) is the other option and goes further, to IPA.
 
-But note what it costs. Nikud is not decoration — it is precisely the vowel information
-Hebrew's abjad omits, and a user who types it is *volunteering the disambiguation the model
-otherwise has to guess*. Stripping throws that away. Training on a vocalized fraction so the
-model can exploit nikud when present is a real improvement, and needs a diacritizer to
-produce the vocalized text: `2026_ReNikud_hebrew-g2p.pdf` and Phonikud (Interspeech 2026,
-code released) are the current Hebrew options. Treat that as a later experiment, after
-stripping removes the crash.
+#### What nikud costs the tokenizer — measured
+
+Diacritized 6,000 lines of real normalized Knesset text with DictaBERT, then trained
+4,000-piece tokenizers on different corpora and measured tokens-per-character on held-out
+plain, vocalized and English text:
+
+| tokenizer corpus | plain | nikud | english | nikud pieces |
+|---|---|---|---|---|
+| plain only | **0.314** | **0.936** | 0.962 | 8 |
+| plain + nikud (50/50) | 0.378 | 0.270 | 0.998 | 2,212 |
+| nikud only | 0.869 | 0.234 | 0.998 | 3,648 |
+| plain + nikud + 5% en | 0.384 | 0.275 | 0.485 | 2,010 |
+
+Row one is the confirmation: **a plain-only tokenizer spends 0.936 tokens per character on
+vocalized text.** Nikud is byte-fallback garbage unless it is in the vocabulary. And row
+three shows the opposite mistake — training only on vocalized text wrecks plain input
+(0.869), so it has to be both.
+
+Supporting all three costs plain Hebrew about 22% at vocab 4,000 (0.314 -> 0.384). That is
+the real objection to doing it.
+
+#### Raising the vocabulary removes the cost entirely
+
+`n_bins` is not fixed at 4,000; it just has to match the tokenizer. Same corpus
+(plain + nikud + 8% English), swept:
+
+| vocab | plain | nikud | english |
+|---|---|---|---|
+| 4,000 | 0.386 | 0.277 | 0.452 |
+| 6,000 | 0.350 | 0.250 | 0.397 |
+| **8,000** | **0.330** | **0.236** | **0.360** |
+| 12,000 | 0.311 | 0.217 | 0.308 |
+
+At **8,000 pieces the three-way tokenizer matches the plain-only 4,000 baseline on plain
+Hebrew** (0.330 vs 0.314) while handling nikud and English properly. At 12,000 it beats it.
+
+The cost is one tensor: the text table goes from 4,097,024 to 8,193,024 parameters, 15.6 MB
+to 31.3 MB in fp32 — **1.3% of a 1.24 GB checkpoint**.
+
+And it is compatible with the finetune path. `builders.py:170` drops `conditioner.embed.*`
+before loading under `reset_text_embedding: true`, then loads with `strict=False`, so the
+fresh table can be any size. Changing `n_bins` does not conflict with warm-starting from the
+released 24-layer teacher.
+
+#### Recommendation
+
+```
+train_tokenizer.py --vocab-size 8000
+  corpus: normalized manifest text
+        + the same text diacritized with dictabert-large-char-menaked
+        + ~8% English from FineWeb
+model config: flow_lm.lookup_table.n_bins: 8000
+```
+
+And train on both plain and vocalized transcripts against the same audio, exactly as with
+raw/normalized numbers — same many-to-one argument, same benefit: the model then handles
+whichever form the user types.
 
 ---
 
