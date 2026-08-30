@@ -7,8 +7,12 @@ each one gave us — but `papers/` is gitignored, so that directory is local to 
 this. Every source is linked at the bottom; re-fetch them with those links.
 
 Written because the collaborator who produced the ivrit-ai Knesset alignments says they are
-not accurate, and he would know — he made them. This checks that claim against the data,
-then asks what to use instead.
+not accurate, and he would know — he made them. The same is true of CrowdRecital: every
+ivrit.ai dataset has this problem, and ivrit.ai are looking for a fix themselves.
+
+That has a consequence this note originally missed. We have no correctly-aligned Hebrew
+reference, so we cannot currently measure any aligner. **The ruler has to be built before
+the aligners can be compared.**
 
 ---
 
@@ -71,38 +75,67 @@ Availability checked, not assumed.
 | 4 | MFA 3.0 — HMM, the accuracy leader at **<15 ms** mean boundary error | **none. No Hebrew acoustic model and no pronunciation dictionary** | very high — train an acoustic model and build a dictionary from scratch | unknown |
 | 5 | Learned DP over MMS + UnSupSeg (arXiv 2606.10675) — beats MFA and MMS, **evaluated on Hebrew** | yes, in the paper | **not available — no code released** | unknown |
 
-### Recommendation: option 1, which we already have
+### CORRECTION: we cannot yet recommend anything, because we have no ruler
 
-`hebrew-tts-data-tools/data_prep/align_hebrew.py` exists, and was measured against
-CrowdRecital's human-recital timings on 40 utterances / 316 words:
+The first version of this note recommended option 1 on the strength of this measurement:
 
 ```
-word END   error: median 19 ms, p90 71 ms
+word END   error: median 19 ms, p90 71 ms      <- measured against CrowdRecital's timings
 word START error: median 74 ms, p90 158 ms
-5.7% of words left untimed
 ```
 
-Put that next to the two reference points this research turned up:
+**That number does not mean what it says.** CrowdRecital's timings were the reference, and
+CrowdRecital is an ivrit.ai dataset aligned the same way as the Knesset corpora. So the
+measurement records *agreement between two aligners of unknown accuracy*, not accuracy. Two
+aligners can agree closely and both be wrong, especially if they share an architecture family
+or training data.
 
-- MFA 3.0, the state of the art, reports **<15 ms** mean boundary error (English/Japanese/Korean).
-- Whisper DTW timestamps vary by **100–400 ms** between model sizes alone.
+ivrit.ai are themselves looking for a fix across all their datasets, Knesset and CrowdRecital
+alike. There is no ivrit.ai corpus that can serve as ground truth.
 
-So our aligner is within a few milliseconds of the best published system, and roughly an
-order of magnitude better than what the corpus ships. One frame at Mimi's 12.5 Hz is 80 ms;
-19 ms is a quarter of a frame, and `last_word_end` — the trailing-silence trim — is the
-accurate side.
+So the order of work inverts. **Build the ruler first, then measure the aligners.**
 
-**Action: re-align the Knesset corpus rather than trusting `transcript.aligned.json`.**
-Keep the shipped `text` as the transcript (it is Whisper refined against the official Knesset
-protocol, which is the better text) and recompute only the word times.
+### Step 1: there is no public Hebrew word-alignment ground truth
 
-Cost: at the ~75x realtime measured earlier, 4,000 h is ~53 GPU-hours — about 7 h wall clock
-on the 8-GPU box, or roughly $15 on an L4 spot instance. Against a multi-day training run
-that is noise, and `align_data.py` already shards across GPUs.
+Searched for one. The nearest candidates and why each falls short:
 
-Run option 2 on a few hundred utterances as a second opinion before committing 53 GPU-hours.
-If two independently-trained CTC models agree to within a frame, the timings are sound; if
-they disagree, that is worth knowing before training on either.
+| candidate | what it has | why it is not ground truth |
+|---|---|---|
+| [ILSpeech](https://huggingface.co/datasets/thewh1teagle/ILSpeech) | ~2 h studio speech, 2 male speakers, expert IPA + Hebrew text | **no timestamps of any kind** — verified from the dataset card |
+| CrowdRecital | read speech, certain text | timings are aligner output, same problem |
+| Pekar 2012, Hebrew phonetic segmentation | a manually segmented Hebrew corpus | not publicly released |
+| MFA benchmark sets (TIMIT, Buckeye) | hand-labelled boundaries | English only |
+
+### Step 2: make a gold set, on two slices
+
+Hand-annotating word boundaries is the only honest option, and it is cheaper than it sounds
+because correcting a pre-filled boundary is far faster than placing one from scratch.
+
+- **Slice A — ILSpeech, ~150 words.** Studio quality and expert-verified text, so boundaries
+  are unambiguous in a spectrogram and no transcript error confounds the measurement. This
+  is the *upper bound*: how well an aligner can possibly do on Hebrew.
+- **Slice B — Knesset plenum, ~150 words.** Gallery microphones, crosstalk, applause. This
+  is the domain we actually train on, and the number that matters. Measuring only on Slice A
+  would flatter every aligner.
+
+Roughly 300 boundaries total is enough to rank two or three aligners; it is not enough to
+publish, and does not need to be.
+
+**Pick what to annotate using disagreement.** Run two independently-trained aligners
+(`imvladikon/wav2vec2-xls-r-300m-hebrew` over Hebrew characters, and
+`MahmoudAshraf/mms-300m-1130-forced-aligner` over uroman romanization — different training
+data, different vocabularies) and annotate where they disagree most. Agreement regions are
+cheap and uninformative; disagreement regions are where the ranking is decided. This costs
+no human time and can be run today.
+
+### Step 3: only then compare aligners
+
+Against Slices A and B, measure the options in the table above. The metric is boundary error
+against the human marks, reported as median and p90 separately for word starts and word ends
+— ends matter more here, because `last_word_end` drives the trailing-silence trim.
+
+Until Step 2 exists, any claim that one Hebrew aligner beats another on this project is
+unsupported, including the claim this document made in its first version.
 
 ---
 
@@ -133,6 +166,9 @@ Hebrew today.
 - **arXiv 2606.10675.** Best reported numbers on Hebrew of anything found, and no code. Re-check later.
 - **Re-transcribing the audio.** The transcripts are refined against the official Knesset
   protocol and are the strongest part of this corpus. Only the *timings* are in question.
+- **Trusting any ivrit.ai timings as a reference.** Knesset and CrowdRecital share the
+  problem. Using one to measure the other reports agreement, not accuracy — which is the
+  mistake this note made in its first version.
 
 ---
 
@@ -147,4 +183,8 @@ Hebrew today.
 - [jianfch/stable-ts](https://github.com/jianfch/stable-ts)
 - [MahmoudAshraf97/ctc-forced-aligner](https://github.com/MahmoudAshraf97/ctc-forced-aligner)
 - [MFA pretrained acoustic models](https://mfa-models.readthedocs.io/en/latest/acoustic/index.html) — Hebrew absent
+- [Phonikud: Overcoming Phonetic Underspecification for Hebrew TTS](https://arxiv.org/pdf/2506.12311) — the ILSpeech corpus
+- [ILSpeech dataset card](https://huggingface.co/datasets/thewh1teagle/ILSpeech) — no timestamps, confirmed
+- [Automatic Phonetic Segmentation for a Speech Corpus of Hebrew (Pekar 2012)](https://infoteh.etf.ues.rs.ba/zbornik/2012/radovi/RSS-5/RSS-5-2.pdf)
+- [NNLP-IL/Hebrew-Resources](https://github.com/NNLP-IL/Hebrew-Resources/blob/master/corpora_and_data_resources.rst)
 - [torchaudio CTC forced alignment API](https://docs.pytorch.org/audio/2.8/tutorials/ctc_forced_alignment_api_tutorial.html)
