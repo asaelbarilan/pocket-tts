@@ -124,6 +124,11 @@ async function loadClip(){
   peaks=null; draw(); render();
 }
 const total=()=>buf?buf.duration-lead:0;
+// The served audio starts `lead` seconds BEFORE the row, so time -lead is the first sample
+// that exists. Clamping marks at 0 made the leading context visible but unreachable, which
+// is wrong twice over: the row's own start came from the same aligner being judged, so the
+// true word start can genuinely lie before it. Everything drawn is now reachable.
+const tmin=()=>-lead;
 const mark=()=>edge==='end'?gold[wi].end:gold[wi].start;
 
 // ---- transport -----------------------------------------------------------
@@ -133,7 +138,7 @@ function stop(){ if(src){try{src.onended=null;src.stop();}catch(e){}} src=null; 
 function start(from,to){
   if(!buf)return;
   if(ctx.state==='suspended')ctx.resume();
-  stop(); seg=(to!=null)?[from,to]:null; off=Math.max(0,Math.min(from,total()));
+  stop(); seg=(to!=null)?[from,to]:null; off=Math.max(tmin(),Math.min(from,total()));
   const len=((to!=null)?to:total())-off;
   if(len<=.01){draw();return;}
   src=ctx.createBufferSource(); src.buffer=buf; src.playbackRate.value=rate;
@@ -143,10 +148,10 @@ function start(from,to){
     if(loop&&seg){start(seg[0],seg[1]);} else {const e=(to!=null)?to:total(); stop(); off=e; draw();} };
 }
 const toggle=()=>{ playing?(off=now(),stop(),draw()):start(off,seg?seg[1]:null); };
-function moveHead(t){ const w=playing; off=Math.max(0,Math.min(t,total()));
+function moveHead(t){ const w=playing; off=Math.max(tmin(),Math.min(t,total()));
   if(w) start(off,null); else { stop(); draw(); } }
 const playWord  =()=>start(gold[wi].start,gold[wi].end);
-const playBefore=()=>start(Math.max(0,mark()-.45),mark());
+const playBefore=()=>start(Math.max(tmin(),mark()-.45),mark());
 const playAfter =()=>start(mark(),Math.min(total(),mark()+.45));
 
 // ---- waveform ------------------------------------------------------------
@@ -171,7 +176,7 @@ function drawOverview(){
   og.fillStyle='#ff5f56'; og.fillRect(X(now()),0,2,h);
 }
 // the zoom window always contains the WHOLE current word, so start and end are both reachable
-const zwin=()=>[Math.max(-lead,gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
+const zwin=()=>[Math.max(tmin(),gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
 function drawZoom(){
   const w=zm.clientWidth,h=220; zm.width=w*devicePixelRatio; zm.height=h*devicePixelRatio;
   zg.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); zg.clearRect(0,0,w,h);
@@ -233,7 +238,7 @@ function render(){
 function setMark(t,which){
   which=which||edge;
   if(which==='start'){
-    const lo=(wi>0)?gold[wi-1].start+.005:0;
+    const lo=(wi>0)?gold[wi-1].start+.005:tmin();
     gold[wi].start=Math.min(Math.max(t,lo),gold[wi].end-.005);
     if(wi>0) gold[wi-1].end=gold[wi].start;
   }else{
@@ -251,20 +256,29 @@ const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render(); pl
 ov.onmousedown=e=>{const r=ov.getBoundingClientRect();
   moveHead((e.clientX-r.left)/r.width*buf.duration-lead);};
 zm.onmousedown=e=>{
-  const r=zm.getBoundingClientRect(), [lo,hi]=zwin();
-  const at=x=>lo+((x-r.left)/r.width)*(hi-lo);
-  const px=t=>(t-lo)/(hi-lo)*r.width+r.left;
-  const t=at(e.clientX);
+  const r=zm.getBoundingClientRect();
+  // The window is recomputed on every move, not captured at mousedown. It follows the mark
+  // being dragged, so holding the pointer near an edge keeps scrolling instead of stopping
+  // dead at the edge of the view -- which is what made the start look unreachable.
+  const at=x=>{const [lo,hi]=zwin(); return lo+((x-r.left)/r.width)*(hi-lo);};
+  const px=t=>{const [lo,hi]=zwin(); return (t-lo)/(hi-lo)*r.width+r.left;};
   const ds=Math.abs(px(gold[wi].start)-e.clientX), de=Math.abs(px(gold[wi].end)-e.clientX);
-  const near=Math.min(ds,de);
-  if(near<9){                                  // grabbed a mark: drag it
+  if(Math.min(ds,de)<9){                       // grabbed a mark: drag it
     const which=(ds<de)?'start':'end'; edge=which; render();
-    setMark(t,which);
-    const mv=ev=>setMark(at(ev.clientX),which);
-    const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+    let last=e.clientX;
+    setMark(at(e.clientX),which);
+    const mv=ev=>{ last=ev.clientX; setMark(at(ev.clientX),which); };
+    // held past the edge, keep going: one window-width per second, so a long drag is possible
+    const timer=setInterval(()=>{
+      const [lo,hi]=zwin(), span=hi-lo;
+      if(last<r.left+6) setMark(mark()-span*0.04,which);
+      else if(last>r.right-6) setMark(mark()+span*0.04,which);
+    },40);
+    const up=()=>{clearInterval(timer);
+      removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
     addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
   }
-  moveHead(t);                                 // otherwise: move the playhead
+  moveHead(at(e.clientX));                     // otherwise: move the playhead
 };
 
 $('play').onclick=toggle;
