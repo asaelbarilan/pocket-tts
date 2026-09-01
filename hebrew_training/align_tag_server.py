@@ -87,11 +87,24 @@ def disagreement(a: dict, b: dict | None) -> float:
 
 
 def build_clips(args) -> list[dict]:
+    """Only clips whose word list reproduces the transcript exactly.
+
+    A clip whose words are a subset of what is spoken is worse than useless here: the
+    annotator hears seven words, sees four, and has nowhere to put the boundaries for the
+    missing three. That happens whenever a word was dropped upstream for having no
+    duration -- which is 11-13% of words in this corpus -- so it has to be excluded rather
+    than trusted.
+    """
     rows_a, rows_b = load(args.a), load(args.b)
     clips = []
+    skipped = 0
     for key, row in rows_a.items():
         words = timed(row)
         if len(words) < 2:
+            continue
+        transcript = clean(row.get("transcript", ""))
+        if transcript and " ".join(clean(w["word"]) for w in words) != transcript:
+            skipped += 1
             continue
         other = rows_b.get(key)
         clips.append(
@@ -119,6 +132,8 @@ def build_clips(args) -> list[dict]:
                 "score": disagreement(row, other),
             }
         )
+    if skipped:
+        print(f"skipped {skipped} clips whose words do not reproduce the transcript")
     clips.sort(key=lambda c: c["score"], reverse=True)
     return clips[: args.limit]
 
