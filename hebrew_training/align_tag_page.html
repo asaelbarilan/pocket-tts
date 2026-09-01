@@ -1,0 +1,187 @@
+<!doctype html><meta charset="utf-8"><title>Hebrew alignment tagging</title>
+<style>
+ body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:#14161a;color:#e8e8ea}
+ h1{font-size:15px;margin:0 0 10px;font-weight:600}
+ #bar{color:#8a8f98;margin-bottom:10px}
+ #wrap{background:#1c1f25;border-radius:6px;overflow:hidden}
+ canvas{display:block;width:100%;height:210px;cursor:text}
+ #transport{display:flex;align-items:center;gap:10px;margin:12px 0}
+ button{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:5px;
+        padding:6px 14px;font:14px system-ui;cursor:pointer}
+ button:hover{background:#333844}
+ button.on{background:#3d6fd6;border-color:#3d6fd6;color:#fff}
+ select{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:5px;padding:5px}
+ #clock{color:#8a8f98;font-variant-numeric:tabular-nums;margin-left:auto}
+ #words{margin:12px 0;direction:rtl;text-align:right;line-height:2.4}
+ .w{padding:4px 9px;margin:0 3px;border-radius:5px;background:#252932;cursor:pointer}
+ .w.cur{background:#3d6fd6;color:#fff}
+ #hint{color:#8a8f98;margin-top:12px;line-height:1.9;font-size:13px}
+ kbd{background:#2a2e37;border:1px solid #3a3f4a;border-radius:4px;padding:1px 6px;font-size:12px}
+ #cmp{margin-top:8px;font-variant-numeric:tabular-nums}
+ .pill{display:inline-block;padding:3px 10px;margin-right:8px;border-radius:5px;background:#252932}
+</style>
+<h1>Hebrew alignment tagging</h1>
+<div id="bar"></div>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="transport">
+  <button id="play">&#9654; play</button>
+  <button id="playword">&#9654; word</button>
+  <button id="loop">loop</button>
+  <select id="rate"><option value="1">1.0x</option><option value="0.75">0.75x</option>
+    <option value="0.5">0.5x</option><option value="0.35">0.35x</option></select>
+  <button id="setb">set end here (f)</button>
+  <span id="clock">0.00 / 0.00</span>
+</div>
+<div id="words"></div>
+<div id="cmp"></div>
+<div id="hint">
+<kbd>space</kbd> play/pause &nbsp; <kbd>w</kbd> play current word &nbsp;
+<kbd>&larr;</kbd><kbd>&rarr;</kbd> word &nbsp; <kbd>a</kbd>/<kbd>b</kbd> accept that aligner &nbsp;
+<kbd>f</kbd> set end at playhead &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp;
+<kbd>&lt;</kbd><kbd>&gt;</kbd> 2ms &nbsp; <kbd>enter</kbd> save &amp; next &nbsp; <kbd>s</kbd> skip
+<br>Click the waveform to seek and play from there. Drag the <b>blue line</b> to move the
+current word's end.
+</div>
+<script>
+let clips=[],ci=0,wi=0,gold=[],buf=null,lead=0,ctx=null,peaks=null;
+let src=null,playing=false,t0=0,off=0,loop=false,rate=1,seg=null;
+const cv=document.getElementById('cv'),g=cv.getContext('2d');
+const $=id=>document.getElementById(id);
+const fmt=t=>t.toFixed(3);
+
+async function boot(){
+  clips=await (await fetch('/api/clips')).json();
+  ci=clips.findIndex(c=>!c.saved); if(ci<0)ci=0;
+  await loadClip(); tick();
+}
+async function loadClip(){
+  stop();
+  const c=clips[ci];
+  gold=(c.saved||c.a).map(w=>({word:w.word,start:w.start,end:w.end}));
+  wi=0; off=0;
+  const r=await fetch('/api/audio/'+ci); lead=parseFloat(r.headers.get('X-Lead')||'0');
+  const ab=await r.arrayBuffer();
+  ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
+  buf=await ctx.decodeAudioData(ab);
+  peaks=null; draw(); render();
+}
+
+// ---- transport -----------------------------------------------------------
+function now(){ return playing ? off+(ctx.currentTime-t0)*rate : off; }
+function stop(){ if(src){try{src.onended=null;src.stop()}catch(e){}} src=null; playing=false;
+  $('play').innerHTML='&#9654; play'; }
+function start(from,to){
+  stop(); seg=(to!=null)?[from,to]:null; off=from;
+  src=ctx.createBufferSource(); src.buffer=buf; src.playbackRate.value=rate;
+  src.connect(ctx.destination);
+  const len=(to!=null)?(to-from):(buf.duration-lead-from);
+  src.start(0,Math.max(0,from+lead),Math.max(.02,len));
+  t0=ctx.currentTime; playing=true; $('play').innerHTML='&#10074;&#10074; pause';
+  src.onended=()=>{ if(!playing)return;
+    if(loop&&seg){ start(seg[0],seg[1]); }
+    else { const e=(to!=null)?to:0; stop(); off=e; draw(); } };
+}
+function toggle(){ if(playing){ off=now(); stop(); draw(); } else start(off,null); }
+function playWord(){ start(gold[wi].start,gold[wi].end); }
+
+// ---- drawing -------------------------------------------------------------
+function draw(){
+  const w=cv.clientWidth,h=210; cv.width=w*devicePixelRatio; cv.height=h*devicePixelRatio;
+  g.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); g.clearRect(0,0,w,h);
+  if(!buf)return;
+  const d=buf.getChannelData(0),n=d.length,dur=buf.duration;
+  if(!peaks||peaks.length!==w*2){peaks=new Float32Array(w*2);
+    for(let x=0;x<w;x++){let lo=1,hi=-1;const s=Math.floor(x*n/w),e=Math.floor((x+1)*n/w);
+      for(let i=s;i<e;i++){const v=d[i];if(v<lo)lo=v;if(v>hi)hi=v;}
+      peaks[x*2]=lo;peaks[x*2+1]=hi;}}
+  const X=t=>(t+lead)/dur*w;
+  gold.forEach((wd,i)=>{ g.fillStyle=(i===wi)?'rgba(61,111,214,.20)':'rgba(255,255,255,.03)';
+    g.fillRect(X(wd.start),0,Math.max(1,X(wd.end)-X(wd.start)),h); });
+  g.fillStyle='#2f3540';
+  for(let x=0;x<w;x++){const lo=peaks[x*2],hi=peaks[x*2+1];
+    g.fillRect(x,h/2+lo*h/2.2,1,Math.max(1,(hi-lo)*h/2.2));}
+  const c=clips[ci];
+  g.fillStyle='#4ec98a'; g.fillRect(X(c.a[wi].end),0,1,h);
+  if(c.b){ g.fillStyle='#d98a3d'; g.fillRect(X(c.b[wi].end),0,1,h); }
+  gold.forEach((wd,i)=>{ g.fillStyle=(i===wi)?'#6aa0ff':'#48505e';
+    g.fillRect(X(wd.end),0,(i===wi)?3:1,h); });
+  const p=now(); g.fillStyle='#ff5f56'; g.fillRect(X(p),0,2,h);
+}
+function tick(){ if(playing) draw();
+  $('clock').textContent=now().toFixed(2)+' / '+(buf?(buf.duration-lead).toFixed(2):'0.00');
+  requestAnimationFrame(tick); }
+
+function render(){
+  const c=clips[ci];
+  $('bar').textContent='clip '+(ci+1)+'/'+clips.length+'  ·  word '+(wi+1)+'/'+gold.length
+    +'  ·  saved '+clips.filter(x=>x.saved).length;
+  const ws=$('words'); ws.innerHTML='';
+  gold.forEach((wd,i)=>{const s=document.createElement('span');
+    s.className='w'+(i===wi?' cur':''); s.textContent=wd.word;
+    s.onclick=()=>{wi=i;draw();render();playWord();}; ws.appendChild(s);});
+  const parts=['<span class="pill" style="color:#4ec98a">A end '+fmt(c.a[wi].end)+'</span>'];
+  if(c.b)parts.push('<span class="pill" style="color:#d98a3d">B end '+fmt(c.b[wi].end)+'</span>');
+  parts.push('<span class="pill" style="color:#6aa0ff">gold '+fmt(gold[wi].end)+'</span>');
+  if(c.b)parts.push('<span class="pill">A-B '
+    +Math.round(Math.abs(c.a[wi].end-c.b[wi].end)*1000)+' ms</span>');
+  $('cmp').innerHTML=parts.join('');
+}
+
+function setEnd(t){
+  // Only the previous boundary and the clip end constrain this one. Clamping against the
+  // NEXT word's end would silently refuse an "accept aligner B" keypress whenever B places
+  // this word later than A placed the following one -- exactly the disagreement the
+  // annotator is here to resolve. Later boundaries are pushed forward instead.
+  const lo=(wi>0)?gold[wi-1].end+.005:0;
+  gold[wi].end=Math.min(Math.max(t,lo),buf.duration-lead);
+  for(let j=wi+1;j<gold.length;j++)
+    if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
+  for(let j=1;j<gold.length;j++) gold[j].start=gold[j-1].end;
+  draw(); render();
+}
+
+const tAt=e=>{const r=cv.getBoundingClientRect();
+  return (e.clientX-r.left)/r.width*buf.duration-lead;};
+cv.onmousedown=e=>{
+  const r=cv.getBoundingClientRect();
+  const bx=(gold[wi].end+lead)/buf.duration*r.width;
+  if(Math.abs(bx-(e.clientX-r.left))<7){          // grabbed the blue line: drag the boundary
+    const mv=ev=>setEnd(tAt(ev));
+    const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+    addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
+  }
+  start(Math.max(0,tAt(e)),null);                 // otherwise: seek and play from here
+};
+
+$('play').onclick=toggle;
+$('playword').onclick=playWord;
+$('loop').onclick=()=>{loop=!loop; $('loop').classList.toggle('on',loop);};
+$('rate').onchange=e=>{rate=parseFloat(e.target.value);
+  if(playing){const p=now(); stop(); start(p,seg?seg[1]:null);}};
+$('setb').onclick=()=>setEnd(now());
+
+addEventListener('keydown',async e=>{
+  if(e.target.tagName==='SELECT')return;
+  const c=clips[ci];
+  if(e.code==='Space'){e.preventDefault(); toggle(); return;}
+  if(e.key==='w'){playWord(); return;}
+  if(e.key==='f'){setEnd(now()); return;}
+  if(e.key==='ArrowLeft'){wi=Math.max(0,wi-1);draw();render();playWord();return;}
+  if(e.key==='ArrowRight'){wi=Math.min(gold.length-1,wi+1);draw();render();playWord();return;}
+  if(e.key==='a'){setEnd(c.a[wi].end);return;}
+  if(e.key==='b'&&c.b){setEnd(c.b[wi].end);return;}
+  if(e.key===','){setEnd(gold[wi].end-.01);return;}
+  if(e.key==='.'){setEnd(gold[wi].end+.01);return;}
+  if(e.key==='<'){setEnd(gold[wi].end-.002);return;}
+  if(e.key==='>'){setEnd(gold[wi].end+.002);return;}
+  if(e.key==='Enter'){
+    await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({index:ci,words:gold})});
+    clips[ci].saved=gold.map(w=>({...w}));
+    if(ci<clips.length-1){ci++; await loadClip();} else render();
+    return;}
+  if(e.key==='s'){ if(ci<clips.length-1){ci++; await loadClip();} return;}
+});
+addEventListener('resize',()=>{peaks=null;draw();});
+boot();
+</script>
