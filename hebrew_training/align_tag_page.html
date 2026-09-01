@@ -2,14 +2,17 @@
 <style>
  *{box-sizing:border-box}
  body{font:14px system-ui,sans-serif;margin:0;padding:14px 18px;background:#14161a;color:#e8e8ea}
- .top{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+ .top{display:flex;align-items:baseline;gap:14px;margin-bottom:6px;flex-wrap:wrap}
  h1{font-size:15px;margin:0;font-weight:600}
  #bar{color:#8a8f98;font-size:13px}
  #done{color:#4ec98a}
- .lab{color:#6f757f;font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px}
- #ov{display:block;width:100%;height:96px;background:#1c1f25;border-radius:6px;cursor:pointer}
- #zm{display:block;width:100%;height:200px;background:#1c1f25;border-radius:6px;cursor:ew-resize}
- #transport{display:flex;align-items:center;gap:6px;margin:10px 0 4px;flex-wrap:wrap}
+ .lab{color:#6f757f;font-size:11px;text-transform:uppercase;letter-spacing:.6px;margin:12px 0 4px}
+ .legend{float:right;text-transform:none;letter-spacing:0;font-size:12px}
+ .key{display:inline-block;margin-left:12px}
+ .sw{display:inline-block;width:11px;height:3px;vertical-align:middle;margin-right:4px}
+ #ov{display:block;width:100%;height:90px;background:#1c1f25;border-radius:6px;cursor:pointer}
+ #zm{display:block;width:100%;height:220px;background:#1c1f25;border-radius:6px;cursor:crosshair}
+ .row{display:flex;align-items:center;gap:6px;margin:9px 0;flex-wrap:wrap}
  button{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:6px;
         padding:7px 12px;font:14px system-ui;cursor:pointer}
  button:hover{background:#363c47}
@@ -17,6 +20,7 @@
  button.go{background:#2b6b46;border-color:#2b6b46;color:#fff;font-weight:600}
  select{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:6px;padding:6px}
  .sep{width:1px;height:26px;background:#333844;margin:0 4px}
+ .tag{color:#6f757f;font-size:12px;margin-right:2px}
  #clock{color:#c8ccd4;font-variant-numeric:tabular-nums;margin-left:auto;font-size:13px}
  #words{margin:10px 0;direction:rtl;text-align:right;line-height:2.3;font-size:16px}
  .w{padding:3px 9px;margin:0 2px;border-radius:5px;background:#252932;cursor:pointer}
@@ -24,28 +28,37 @@
  .w.ok{background:#24503a;color:#bfe6cf}
  #cmp{margin:6px 0;font-variant-numeric:tabular-nums;font-size:13px}
  .pill{display:inline-block;padding:3px 10px;margin-right:8px;border-radius:5px;background:#252932}
- #hint{color:#767c86;margin-top:10px;line-height:1.85;font-size:12.5px}
+ #hint{color:#767c86;margin-top:10px;line-height:1.9;font-size:12.5px}
  kbd{background:#2a2e37;border:1px solid #3a3f4a;border-radius:4px;padding:1px 5px;font-size:11.5px}
 </style>
 
 <div class="top"><h1>Hebrew alignment tagging</h1><div id="bar"></div></div>
 
-<div class="lab">whole clip &mdash; click to seek</div>
+<div class="lab">whole clip &mdash; click anywhere to move the playhead
+  <span class="legend">
+    <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
+    <span class="key"><i class="sw" style="background:#6aa0ff"></i>your marks</span>
+  </span></div>
 <canvas id="ov"></canvas>
 
-<div class="lab" id="zlab">boundary</div>
+<div class="lab" id="zlab">current word
+  <span class="legend">
+    <span class="key"><i class="sw" style="background:#4ec98a"></i>aligner A</span>
+    <span class="key"><i class="sw" style="background:#d98a3d"></i>aligner B</span>
+    <span class="key"><i class="sw" style="background:#6aa0ff"></i>you</span>
+    <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
+  </span></div>
 <canvas id="zm"></canvas>
 
-<div id="transport">
-  <button id="tostart" title="Home">&#9198;</button>
-  <button id="back" title="Back 1s">&#9194;</button>
-  <button id="play" title="Space">&#9654;</button>
-  <button id="stopb" title="Stop">&#9632;</button>
-  <button id="fwd" title="Forward 1s">&#9193;</button>
+<div class="row">
+  <span class="tag">play</span>
+  <button id="tostart" title="Home">&#9198; start</button>
+  <button id="play" title="Space">&#9654; play</button>
+  <button id="stopb" title="Escape">&#9632; stop</button>
   <div class="sep"></div>
-  <button id="pbefore" title="Q">&#9654; before</button>
-  <button id="pword" title="W">&#9654; word</button>
-  <button id="pafter" title="E">&#9654; after</button>
+  <button id="pbefore" title="Q">&#9654; up to mark</button>
+  <button id="pword" title="W">&#9654; whole word</button>
+  <button id="pafter" title="E">&#9654; after mark</button>
   <button id="loop">loop</button>
   <select id="rate"><option value="1">1.0&times;</option><option value="0.75">0.75&times;</option>
     <option value="0.5">0.5&times;</option><option value="0.35">0.35&times;</option></select>
@@ -55,30 +68,38 @@
 <div id="words"></div>
 <div id="cmp"></div>
 
-<div id="transport">
-  <button id="prevw">&larr; word</button><button id="nextw">word &rarr;</button>
+<div class="row">
+  <span class="tag">editing</span>
+  <button id="edStart">word START</button><button id="edEnd" class="on">word END</button>
   <div class="sep"></div>
-  <button id="useA">use A</button><button id="useB">use B</button>
-  <button id="setb">set at playhead</button>
+  <button id="useA">take A</button><button id="useB">take B</button>
+  <button id="setb">put mark at playhead</button>
   <button id="m10">&minus;10ms</button><button id="p10">+10ms</button>
+</div>
+<div class="row">
+  <span class="tag">move</span>
+  <button id="prevw">&larr; prev word</button><button id="nextw">next word &rarr;</button>
   <div class="sep"></div>
-  <button id="save" class="go">save &amp; next</button>
-  <button id="skip">skip</button>
   <button id="prevc">&larr; prev clip</button>
+  <button id="save" class="go">save &amp; next clip</button>
+  <button id="skip">skip clip</button>
 </div>
 
 <div id="hint">
-<kbd>space</kbd> play/pause &nbsp; <kbd>q</kbd> hear up to the line &nbsp; <kbd>w</kbd> the word &nbsp;
-<kbd>e</kbd> hear after the line &nbsp; <kbd>&larr;</kbd><kbd>&rarr;</kbd> word &nbsp;
-<kbd>a</kbd>/<kbd>b</kbd> take that aligner &nbsp; <kbd>f</kbd> set at playhead &nbsp;
-<kbd>,</kbd><kbd>.</kbd> 10ms &nbsp; <kbd>enter</kbd> save &amp; next
-<br>The lower panel is zoomed on the current word's end. Drag anywhere in it to move the line.
+<kbd>space</kbd> play / pause &nbsp; <kbd>esc</kbd> stop &nbsp; <kbd>q</kbd> hear up to the mark &nbsp;
+<kbd>w</kbd> the word &nbsp; <kbd>e</kbd> hear after the mark &nbsp;
+<kbd>&larr;</kbd><kbd>&rarr;</kbd> change word &nbsp; <kbd>tab</kbd> switch start/end &nbsp;
+<kbd>a</kbd>/<kbd>b</kbd> take that aligner &nbsp; <kbd>f</kbd> put mark at playhead &nbsp;
+<kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
+<br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
+playhead. The window always shows the whole current word, so both its start and end are reachable.
 </div>
 
 <script>
-let clips=[],ci=0,wi=0,gold=[],touched=new Set(),buf=null,lead=0,ctx=null,peaks=null;
+let clips=[],ci=0,wi=0,edge='end',gold=[],touched=new Set();
+let buf=null,lead=0,ctx=null,peaks=null;
 let src=null,playing=false,t0=0,off=0,loop=false,rate=1,seg=null;
-const ZOOM=0.45;                       // seconds shown either side of the boundary
+const MARGIN=0.35;                    // seconds of context shown either side of the word
 const ov=document.getElementById('ov'),og=ov.getContext('2d');
 const zm=document.getElementById('zm'),zg=zm.getContext('2d');
 const $=id=>document.getElementById(id);
@@ -95,7 +116,7 @@ async function loadClip(){
   const c=clips[ci];
   gold=(c.saved||c.a).map(w=>({word:w.word,start:w.start,end:w.end}));
   touched=new Set(c.saved?gold.map((_,i)=>i):[]);
-  wi=0; off=0;
+  wi=0; edge='end'; off=0;
   const r=await fetch('/api/audio/'+ci); lead=parseFloat(r.headers.get('X-Lead')||'0');
   const ab=await r.arrayBuffer();
   ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
@@ -103,10 +124,11 @@ async function loadClip(){
   peaks=null; draw(); render();
 }
 const total=()=>buf?buf.duration-lead:0;
+const mark=()=>edge==='end'?gold[wi].end:gold[wi].start;
 
 // ---- transport -----------------------------------------------------------
 function now(){ return Math.min(playing?off+(ctx.currentTime-t0)*rate:off,total()); }
-function label(){ $('play').innerHTML = playing?'&#10074;&#10074;':'&#9654;'; }
+function label(){ $('play').innerHTML = playing?'&#10074;&#10074; pause':'&#9654; play'; }
 function stop(){ if(src){try{src.onended=null;src.stop();}catch(e){}} src=null; playing=false; label(); }
 function start(from,to){
   if(!buf)return;
@@ -121,11 +143,11 @@ function start(from,to){
     if(loop&&seg){start(seg[0],seg[1]);} else {const e=(to!=null)?to:total(); stop(); off=e; draw();} };
 }
 const toggle=()=>{ playing?(off=now(),stop(),draw()):start(off,seg?seg[1]:null); };
-const seek=t=>{const w=playing; off=Math.max(0,Math.min(t,total())); w?start(off,null):(stop(),draw());};
-const playWord =()=>start(gold[wi].start,gold[wi].end);
-// the two that actually settle a boundary: hear it arrive, hear what follows
-const playBefore=()=>start(Math.max(0,gold[wi].end-.45),gold[wi].end);
-const playAfter =()=>start(gold[wi].end,Math.min(total(),gold[wi].end+.45));
+function moveHead(t){ const w=playing; off=Math.max(0,Math.min(t,total()));
+  if(w) start(off,null); else { stop(); draw(); } }
+const playWord  =()=>start(gold[wi].start,gold[wi].end);
+const playBefore=()=>start(Math.max(0,mark()-.45),mark());
+const playAfter =()=>start(mark(),Math.min(total(),mark()+.45));
 
 // ---- waveform ------------------------------------------------------------
 function buildPeaks(w){
@@ -135,12 +157,12 @@ function buildPeaks(w){
     peaks[x*2]=lo;peaks[x*2+1]=hi;}
 }
 function drawOverview(){
-  const w=ov.clientWidth,h=96; ov.width=w*devicePixelRatio; ov.height=h*devicePixelRatio;
+  const w=ov.clientWidth,h=90; ov.width=w*devicePixelRatio; ov.height=h*devicePixelRatio;
   og.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); og.clearRect(0,0,w,h);
   if(!buf)return;
   if(!peaks||peaks.length!==w*2) buildPeaks(w);
   const dur=buf.duration, X=t=>(t+lead)/dur*w;
-  gold.forEach((wd,i)=>{ og.fillStyle=(i===wi)?'rgba(61,111,214,.25)':'rgba(255,255,255,.03)';
+  gold.forEach((wd,i)=>{ og.fillStyle=(i===wi)?'rgba(61,111,214,.30)':'rgba(255,255,255,.03)';
     og.fillRect(X(wd.start),0,Math.max(1,X(wd.end)-X(wd.start)),h); });
   og.fillStyle='#2f3540';
   for(let x=0;x<w;x++){const lo=peaks[x*2],hi=peaks[x*2+1];
@@ -148,32 +170,40 @@ function drawOverview(){
   gold.forEach((wd,i)=>{ og.fillStyle=(i===wi)?'#6aa0ff':'#48505e'; og.fillRect(X(wd.end),0,1,h); });
   og.fillStyle='#ff5f56'; og.fillRect(X(now()),0,2,h);
 }
+// the zoom window always contains the WHOLE current word, so start and end are both reachable
+const zwin=()=>[Math.max(-lead,gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
 function drawZoom(){
-  const w=zm.clientWidth,h=200; zm.width=w*devicePixelRatio; zm.height=h*devicePixelRatio;
+  const w=zm.clientWidth,h=220; zm.width=w*devicePixelRatio; zm.height=h*devicePixelRatio;
   zg.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); zg.clearRect(0,0,w,h);
   if(!buf)return;
-  const c=clips[ci], b=gold[wi].end, lo=b-ZOOM, hi=b+ZOOM;
-  const X=t=>(t-lo)/(hi-lo)*w;
-  const d=buf.getChannelData(0), sr=buf.sampleRate;
-  // the word being ended, and the one after it, tinted so the split is visible
-  zg.fillStyle='rgba(61,111,214,.16)'; zg.fillRect(X(gold[wi].start),0,X(b)-X(gold[wi].start),h);
-  if(wi<gold.length-1){ zg.fillStyle='rgba(255,255,255,.05)';
-    zg.fillRect(X(b),0,X(gold[wi+1].end)-X(b),h); }
+  const c=clips[ci], [lo,hi]=zwin(), X=t=>(t-lo)/(hi-lo)*w;
+  zg.fillStyle='rgba(61,111,214,.16)';
+  zg.fillRect(X(gold[wi].start),0,X(gold[wi].end)-X(gold[wi].start),h);
+  const d=buf.getChannelData(0),sr=buf.sampleRate;
   zg.fillStyle='#39404d';
   for(let x=0;x<w;x++){
-    const t=lo+(x/w)*(hi-lo), s=Math.floor((t+lead)*sr), e=Math.floor((lo+((x+1)/w)*(hi-lo)+lead)*sr);
+    const a=lo+(x/w)*(hi-lo), b=lo+((x+1)/w)*(hi-lo);
+    const s=Math.floor((a+lead)*sr), e=Math.floor((b+lead)*sr);
     let mn=1,mx=-1,any=false;
     for(let i=Math.max(0,s);i<Math.min(d.length,e);i++){const v=d[i];if(v<mn)mn=v;if(v>mx)mx=v;any=true;}
-    if(any) zg.fillRect(x,h/2+mn*h/2.2,1,Math.max(1,(mx-mn)*h/2.2));
+    if(any) zg.fillRect(x,h/2+mn*h/2.4,1,Math.max(1,(mx-mn)*h/2.4));
   }
-  // 100 ms ticks so distances are readable
   zg.fillStyle='#2b303a';
-  for(let t=Math.ceil(lo*10)/10;t<hi;t+=0.1) zg.fillRect(X(t),h-12,1,12);
-  zg.fillStyle='#4ec98a'; zg.fillRect(X(c.a[wi].end),0,1,h);
-  if(c.b){zg.fillStyle='#d98a3d'; zg.fillRect(X(c.b[wi].end),0,1,h);}
-  zg.fillStyle='#6aa0ff'; zg.fillRect(X(b)-1,0,3,h);
+  for(let t=Math.ceil(lo*10)/10;t<hi;t+=0.1) zg.fillRect(X(t),h-10,1,10);
+  const aw=c.a[wi], bw=c.b?c.b[wi]:null;
+  zg.fillStyle='#4ec98a'; zg.fillRect(X(aw.start),0,1,h); zg.fillRect(X(aw.end),0,1,h);
+  if(bw){zg.fillStyle='#d98a3d'; zg.fillRect(X(bw.start),0,1,h); zg.fillRect(X(bw.end),0,1,h);}
+  // your two marks; the one being edited is thicker and labelled
+  [['start',gold[wi].start],['end',gold[wi].end]].forEach(([which,t])=>{
+    const on=(which===edge);
+    zg.fillStyle='#6aa0ff'; zg.fillRect(X(t)-(on?2:0),0,on?4:2,h);
+    zg.fillStyle=on?'#cfe0ff':'#7d8896';
+    zg.font=(on?'bold ':'')+'12px system-ui';
+    zg.fillText(which.toUpperCase(),X(t)+(which==='start'?5:-38),14);
+  });
   const p=now(); if(p>=lo&&p<=hi){ zg.fillStyle='#ff5f56'; zg.fillRect(X(p),0,2,h); }
-  $('zlab').textContent='boundary — end of "'+gold[wi].word+'"   ±'+(ZOOM*1000)+' ms, ticks 100 ms';
+  $('zlab').firstChild.textContent='current word "'+gold[wi].word+'"  —  editing the '
+    +edge.toUpperCase()+'   (ticks 100 ms)   ';
 }
 function draw(){ drawOverview(); drawZoom(); }
 function tick(){ if(playing)draw();
@@ -186,56 +216,74 @@ function render(){
   const ws=$('words'); ws.innerHTML='';
   gold.forEach((wd,i)=>{const s=document.createElement('span');
     s.className='w'+(i===wi?' cur':(touched.has(i)?' ok':''));
-    s.textContent=wd.word; s.onclick=()=>{wi=i;draw();render();playBefore();};
+    s.textContent=wd.word; s.onclick=()=>{wi=i;draw();render();playWord();};
     ws.appendChild(s);});
-  const p=['<span class="pill" style="color:#4ec98a">A '+f3(c.a[wi].end)+'</span>'];
-  if(c.b)p.push('<span class="pill" style="color:#d98a3d">B '+f3(c.b[wi].end)+'</span>');
-  p.push('<span class="pill" style="color:#6aa0ff">gold '+f3(gold[wi].end)+'</span>');
-  if(c.b)p.push('<span class="pill">A&minus;B '
-    +Math.round(Math.abs(c.a[wi].end-c.b[wi].end)*1000)+' ms</span>');
+  const aw=c.a[wi], bw=c.b?c.b[wi]:null, me=gold[wi];
+  const p=['<span class="pill" style="color:#4ec98a">A '+f3(aw.start)+' → '+f3(aw.end)+'</span>'];
+  if(bw)p.push('<span class="pill" style="color:#d98a3d">B '+f3(bw.start)+' → '+f3(bw.end)+'</span>');
+  p.push('<span class="pill" style="color:#6aa0ff">you '+f3(me.start)+' → '+f3(me.end)+'</span>');
   $('cmp').innerHTML=p.join('');
+  $('edStart').classList.toggle('on',edge==='start');
+  $('edEnd').classList.toggle('on',edge==='end');
 }
 
-function setEnd(t){
-  // Only the previous boundary and the clip end constrain this one. Clamping against the
-  // NEXT word's end would silently refuse "take aligner B" whenever B places this word
-  // later than A placed the following one -- exactly the disagreement being resolved.
-  const lo=(wi>0)?gold[wi-1].end+.005:0;
-  gold[wi].end=Math.min(Math.max(t,lo),total());
-  for(let j=wi+1;j<gold.length;j++)
-    if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
-  for(let j=1;j<gold.length;j++) gold[j].start=gold[j-1].end;
+// Marks stay ordered, but only against their immediate neighbours -- clamping a word's end
+// against the NEXT word's end would silently refuse "take aligner B" whenever B places this
+// word later than A placed the following one, which is exactly the disagreement being judged.
+function setMark(t,which){
+  which=which||edge;
+  if(which==='start'){
+    const lo=(wi>0)?gold[wi-1].start+.005:0;
+    gold[wi].start=Math.min(Math.max(t,lo),gold[wi].end-.005);
+    if(wi>0) gold[wi-1].end=gold[wi].start;
+  }else{
+    const lo=gold[wi].start+.005;
+    gold[wi].end=Math.min(Math.max(t,lo),total());
+    for(let j=wi+1;j<gold.length;j++)
+      if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
+    if(wi<gold.length-1) gold[wi+1].start=gold[wi].end;
+  }
   touched.add(wi); draw(); render();
 }
-const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render(); playBefore(); };
+const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render(); playWord(); };
 
 // ---- pointer -------------------------------------------------------------
 ov.onmousedown=e=>{const r=ov.getBoundingClientRect();
-  seek((e.clientX-r.left)/r.width*buf.duration-lead);};
+  moveHead((e.clientX-r.left)/r.width*buf.duration-lead);};
 zm.onmousedown=e=>{
-  const r=zm.getBoundingClientRect(), b=gold[wi].end;
-  const at=x=>b-ZOOM+((x-r.left)/r.width)*(2*ZOOM);
-  setEnd(at(e.clientX));
-  const mv=ev=>setEnd(at(ev.clientX));
-  const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
-  addEventListener('mousemove',mv); addEventListener('mouseup',up);
+  const r=zm.getBoundingClientRect(), [lo,hi]=zwin();
+  const at=x=>lo+((x-r.left)/r.width)*(hi-lo);
+  const px=t=>(t-lo)/(hi-lo)*r.width+r.left;
+  const t=at(e.clientX);
+  const ds=Math.abs(px(gold[wi].start)-e.clientX), de=Math.abs(px(gold[wi].end)-e.clientX);
+  const near=Math.min(ds,de);
+  if(near<9){                                  // grabbed a mark: drag it
+    const which=(ds<de)?'start':'end'; edge=which; render();
+    setMark(t,which);
+    const mv=ev=>setMark(at(ev.clientX),which);
+    const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+    addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
+  }
+  moveHead(t);                                 // otherwise: move the playhead
 };
 
-$('play').onclick=toggle; $('stopb').onclick=()=>{stop();off=0;seg=null;draw();};
-$('tostart').onclick=()=>seek(0); $('back').onclick=()=>seek(now()-1);
-$('fwd').onclick=()=>seek(now()+1);
+$('play').onclick=toggle;
+$('stopb').onclick=()=>{stop();off=0;seg=null;draw();};
+$('tostart').onclick=()=>moveHead(0);
 $('pbefore').onclick=playBefore; $('pword').onclick=playWord; $('pafter').onclick=playAfter;
 $('loop').onclick=()=>{loop=!loop;$('loop').classList.toggle('on',loop);};
 $('rate').onchange=e=>{rate=parseFloat(e.target.value);
   if(playing){const p=now();start(p,seg?seg[1]:null);}};
+$('edStart').onclick=()=>{edge='start';draw();render();};
+$('edEnd').onclick=()=>{edge='end';draw();render();};
+$('useA').onclick=()=>setMark(edge==='end'?clips[ci].a[wi].end:clips[ci].a[wi].start);
+$('useB').onclick=()=>{const b=clips[ci].b;if(b)setMark(edge==='end'?b[wi].end:b[wi].start);};
+$('setb').onclick=()=>setMark(now());
+$('m10').onclick=()=>setMark(mark()-.01); $('p10').onclick=()=>setMark(mark()+.01);
 $('prevw').onclick=()=>goWord(wi-1); $('nextw').onclick=()=>goWord(wi+1);
-$('useA').onclick=()=>setEnd(clips[ci].a[wi].end);
-$('useB').onclick=()=>{const b=clips[ci].b;if(b)setEnd(b[wi].end);};
-$('setb').onclick=()=>setEnd(now());
-$('m10').onclick=()=>setEnd(gold[wi].end-.01); $('p10').onclick=()=>setEnd(gold[wi].end+.01);
+$('prevc').onclick=()=>{if(ci>0){ci--;loadClip();}};
 $('save').onclick=saveNext;
 $('skip').onclick=()=>{if(ci<clips.length-1){ci++;loadClip();}};
-$('prevc').onclick=()=>{if(ci>0){ci--;loadClip();}};
 
 async function saveNext(){
   await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -248,19 +296,21 @@ addEventListener('keydown',async e=>{
   if(e.target.tagName==='SELECT')return;
   const c=clips[ci];
   if(e.code==='Space'){e.preventDefault();toggle();return;}
+  if(e.key==='Escape'){stop();off=0;seg=null;draw();return;}
+  if(e.key==='Tab'){e.preventDefault();edge=(edge==='end')?'start':'end';draw();render();return;}
   if(e.key==='q'){playBefore();return;}
   if(e.key==='w'){playWord();return;}
   if(e.key==='e'){playAfter();return;}
-  if(e.key==='Home'){seek(0);return;}
+  if(e.key==='Home'){moveHead(0);return;}
   if(e.key==='ArrowLeft'){e.preventDefault();goWord(wi-1);return;}
   if(e.key==='ArrowRight'){e.preventDefault();goWord(wi+1);return;}
-  if(e.key==='a'){setEnd(c.a[wi].end);return;}
-  if(e.key==='b'&&c.b){setEnd(c.b[wi].end);return;}
-  if(e.key==='f'){setEnd(now());return;}
-  if(e.key===','){setEnd(gold[wi].end-.01);return;}
-  if(e.key==='.'){setEnd(gold[wi].end+.01);return;}
-  if(e.key==='<'){setEnd(gold[wi].end-.002);return;}
-  if(e.key==='>'){setEnd(gold[wi].end+.002);return;}
+  if(e.key==='a'){setMark(edge==='end'?c.a[wi].end:c.a[wi].start);return;}
+  if(e.key==='b'&&c.b){setMark(edge==='end'?c.b[wi].end:c.b[wi].start);return;}
+  if(e.key==='f'){setMark(now());return;}
+  if(e.key===','){setMark(mark()-.01);return;}
+  if(e.key==='.'){setMark(mark()+.01);return;}
+  if(e.key==='<'){setMark(mark()-.002);return;}
+  if(e.key==='>'){setMark(mark()+.002);return;}
   if(e.key==='Enter'){await saveNext();return;}
   if(e.key==='s'){if(ci<clips.length-1){ci++;await loadClip();}return;}
 });
