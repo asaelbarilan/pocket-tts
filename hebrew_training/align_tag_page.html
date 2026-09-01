@@ -45,9 +45,7 @@
 
 <div class="lab" id="zlab">current word
   <span class="legend">
-    <span class="key"><i class="sw" style="background:#4ec98a"></i>aligner A</span>
-    <span class="key"><i class="sw" style="background:#d98a3d"></i>aligner B</span>
-    <span class="key"><i class="sw" style="background:#6aa0ff"></i>you</span>
+    <span class="key"><i class="sw" style="background:#6aa0ff"></i>your marks</span>
     <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
   </span></div>
 <canvas id="zm"></canvas>
@@ -77,7 +75,6 @@
   <span class="tag">editing</span>
   <button id="edStart">word START</button><button id="edEnd" class="on">word END</button>
   <div class="sep"></div>
-  <button id="useA">take A</button><button id="useB">take B</button>
   <button id="setb">put mark at playhead</button>
   <button id="m10">&minus;10ms</button><button id="p10">+10ms</button>
 </div>
@@ -94,7 +91,7 @@
 <kbd>space</kbd> play / pause &nbsp; <kbd>esc</kbd> stop &nbsp; <kbd>q</kbd> hear up to the mark &nbsp;
 <kbd>w</kbd> the word &nbsp; <kbd>e</kbd> hear after the mark &nbsp;
 <kbd>&larr;</kbd><kbd>&rarr;</kbd> change word &nbsp; <kbd>tab</kbd> switch start/end &nbsp;
-<kbd>a</kbd>/<kbd>b</kbd> take that aligner &nbsp; <kbd>f</kbd> put mark at playhead &nbsp;
+<kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
 playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, &ldquo;fit word&rdquo; snaps back to the current word.
@@ -242,7 +239,7 @@ function drawZoom(){
   const w=zm.clientWidth,h=220; zm.width=w*devicePixelRatio; zm.height=h*devicePixelRatio;
   zg.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); zg.clearRect(0,0,w,h);
   if(!buf)return;
-  const c=clips[ci], [lo,hi]=zwin(), X=t=>(t-lo)/(hi-lo)*w;
+  const [lo,hi]=zwin(), X=t=>(t-lo)/(hi-lo)*w;
   zg.fillStyle='rgba(61,111,214,.16)';
   zg.fillRect(X(gold[wi].start),0,X(gold[wi].end)-X(gold[wi].start),h);
   const d=buf.getChannelData(0),sr=buf.sampleRate;
@@ -256,9 +253,6 @@ function drawZoom(){
   }
   zg.fillStyle='#2b303a';
   for(let t=Math.ceil(lo*10)/10;t<hi;t+=0.1) zg.fillRect(X(t),h-10,1,10);
-  const aw=c.a[wi], bw=c.b?c.b[wi]:null;
-  zg.fillStyle='#4ec98a'; zg.fillRect(X(aw.start),0,1,h); zg.fillRect(X(aw.end),0,1,h);
-  if(bw){zg.fillStyle='#d98a3d'; zg.fillRect(X(bw.start),0,1,h); zg.fillRect(X(bw.end),0,1,h);}
   // your two marks; the one being edited is thicker and labelled
   [['start',gold[wi].start],['end',gold[wi].end]].forEach(([which,t])=>{
     const on=(which===edge);
@@ -284,10 +278,12 @@ function render(){
     s.className='w'+(i===wi?' cur':(touched.has(i)?' ok':''));
     s.textContent=wd.word; s.onclick=()=>{wi=i;draw();render();playWord();};
     ws.appendChild(s);});
-  const aw=c.a[wi], bw=c.b?c.b[wi]:null, me=gold[wi];
-  const p=['<span class="pill" style="color:#4ec98a">A '+f3(aw.start)+' → '+f3(aw.end)+'</span>'];
-  if(bw)p.push('<span class="pill" style="color:#d98a3d">B '+f3(bw.start)+' → '+f3(bw.end)+'</span>');
-  p.push('<span class="pill" style="color:#6aa0ff">you '+f3(me.start)+' → '+f3(me.end)+'</span>');
+  const me=gold[wi];
+  const prevGap=(wi>0)?me.start-gold[wi-1].end:null;
+  const p=['<span class="pill" style="color:#6aa0ff">'+f3(me.start)+' → '+f3(me.end)+'</span>',
+           '<span class="pill">length '+Math.round((me.end-me.start)*1000)+' ms</span>'];
+  if(prevGap!==null)
+    p.push('<span class="pill">gap before '+Math.round(prevGap*1000)+' ms</span>');
   $('cmp').innerHTML=p.join('');
   $('edStart').classList.toggle('on',edge==='start');
   $('edEnd').classList.toggle('on',edge==='end');
@@ -388,8 +384,6 @@ $('rate').onchange=e=>{rate=parseFloat(e.target.value);
   if(playing){const p=now();start(p,seg?seg[1]:null);}};
 $('edStart').onclick=()=>{edge='start';draw();render();};
 $('edEnd').onclick=()=>{edge='end';draw();render();};
-$('useA').onclick=()=>setMark(edge==='end'?clips[ci].a[wi].end:clips[ci].a[wi].start);
-$('useB').onclick=()=>{const b=clips[ci].b;if(b)setMark(edge==='end'?b[wi].end:b[wi].start);};
 $('setb').onclick=()=>setMark(now());
 $('m10').onclick=()=>setMark(mark()-.01); $('p10').onclick=()=>setMark(mark()+.01);
 $('fit').onclick=()=>{fitWord();draw();};
@@ -407,7 +401,6 @@ async function saveNext(){
 
 addEventListener('keydown',async e=>{
   if(e.target.tagName==='SELECT')return;
-  const c=clips[ci];
   if(e.code==='Space'){e.preventDefault();toggle();return;}
   if(e.key==='Escape'){loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();return;}
   if(e.key==='Tab'){e.preventDefault();edge=(edge==='end')?'start':'end';draw();render();return;}
@@ -419,8 +412,6 @@ addEventListener('keydown',async e=>{
   if(e.key==='Home'){moveHead(0);return;}
   if(e.key==='ArrowLeft'){e.preventDefault();goWord(wi-1);return;}
   if(e.key==='ArrowRight'){e.preventDefault();goWord(wi+1);return;}
-  if(e.key==='a'){setMark(edge==='end'?c.a[wi].end:c.a[wi].start);return;}
-  if(e.key==='b'&&c.b){setMark(edge==='end'?c.b[wi].end:c.b[wi].start);return;}
   if(e.key==='f'){setMark(now());return;}
   if(e.key===','){setMark(mark()-.01);return;}
   if(e.key==='.'){setMark(mark()+.01);return;}
