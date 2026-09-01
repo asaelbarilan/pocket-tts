@@ -166,7 +166,16 @@ function setLoop(kind){
   $('loopMark').classList.toggle('on',loopKind==='mark');
   if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); } else stop();
 }
-const toggle=()=>{ playing?(off=now(),stop(),draw()):start(off,seg?seg[1]:null); };
+function toggle(){
+  if(playing){ off=now(); stop(); draw(); return; }
+  // Playing a region (word, up-to-mark, after-mark) leaves the playhead exactly at that
+  // region's end with seg still set, so the next press asked for a zero-length span and
+  // silently did nothing -- the transport looked frozen. Finishing a region falls back to
+  // free play, and reaching the end of the clip rewinds.
+  if(seg && off>=seg[1]-0.005) seg=null;
+  if(off>=total()-0.005) off=tmin();
+  start(off,seg?seg[1]:null);
+}
 function moveHead(t){ const w=playing; off=Math.max(tmin(),Math.min(t,total()));
   if(w) start(off,null); else { stop(); draw(); } }
 const playWord  =()=>start(gold[wi].start,gold[wi].end);
