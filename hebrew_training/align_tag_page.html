@@ -14,6 +14,11 @@
  #zm{display:block;width:100%;height:220px;background:#1c1f25;border-radius:6px;cursor:grab}
  #zm.grabbing{cursor:grabbing}
  #zm.onmark{cursor:ew-resize}
+ #scroll{height:14px;background:#1c1f25;border-radius:0 0 6px 6px;position:relative;
+         margin-top:2px;cursor:pointer}
+ #thumb{position:absolute;top:2px;height:10px;background:#3d6fd6;border-radius:5px;
+        min-width:24px;cursor:grab}
+ #thumb:active{cursor:grabbing}
  .row{display:flex;align-items:center;gap:6px;margin:9px 0;flex-wrap:wrap}
  button{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:6px;
         padding:7px 12px;font:14px system-ui;cursor:pointer}
@@ -49,6 +54,7 @@
     <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
   </span></div>
 <canvas id="zm"></canvas>
+<div id="scroll"><div id="thumb"></div></div>
 
 <div class="row">
   <span class="tag">play</span>
@@ -94,7 +100,7 @@
 <kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
-playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current.
+playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, the bar under the panel scrolls left and right, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current.
 </div>
 
 <script>
@@ -281,7 +287,13 @@ function drawZoom(){
   $('zlab').firstChild.textContent='current word "'+gold[wi].word+'"  —  editing the '
     +edge.toUpperCase()+'   (ticks 100 ms)   ';
 }
-function draw(){ drawOverview(); drawZoom(); }
+function drawScroll(){
+  const lo=tmin(), hi=total(), span=hi-lo;
+  const [a,b]=zwin(), el=$('scroll'), th=$('thumb');
+  th.style.left=((a-lo)/span*100)+'%';
+  th.style.width=Math.max(2,(b-a)/span*100)+'%';
+}
+function draw(){ drawOverview(); drawZoom(); drawScroll(); }
 function tick(){ if(playing)draw();
   $('clock').textContent=mmss(now())+' / '+mmss(total()); requestAnimationFrame(tick); }
 
@@ -398,6 +410,30 @@ zm.addEventListener('wheel',e=>{
   else zoomAt(t, e.deltaY>0?1.25:0.8);
 },{passive:false});
 
+(function(){
+  const el=$('scroll'), th=$('thumb');
+  const spanNow=()=>{const [a,b]=zwin(); return b-a;};
+  function centreOn(clientX){
+    const r=el.getBoundingClientRect(), lo=tmin(), hi=total();
+    const t=lo+((clientX-r.left)/r.width)*(hi-lo), s=spanNow();
+    let a=t-s/2, b=a+s;
+    if(a<lo){a=lo;b=a+s;} if(b>hi){b=hi;a=Math.max(lo,b-s);}
+    view=[a,b]; draw();
+  }
+  th.onmousedown=e=>{
+    e.stopPropagation();
+    const r=el.getBoundingClientRect(), lo=tmin(), hi=total();
+    const grab=e.clientX-th.getBoundingClientRect().left, s=spanNow();
+    const mv=ev=>{
+      let a=lo+((ev.clientX-grab-r.left)/r.width)*(hi-lo), b=a+s;
+      if(a<lo){a=lo;b=a+s;} if(b>hi){b=hi;a=Math.max(lo,b-s);}
+      view=[a,b]; draw();
+    };
+    const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+    addEventListener('mousemove',mv); addEventListener('mouseup',up);
+  };
+  el.onmousedown=e=>{ if(e.target===th)return; centreOn(e.clientX); };
+})();
 $('play').onclick=toggle;
 $('stopb').onclick=()=>{loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();};
 $('tostart').onclick=()=>moveHead(0);

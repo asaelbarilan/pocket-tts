@@ -34,7 +34,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 _WS = re.compile(r"\s+")
-PAD = 0.25  # seconds of context served either side, so boundaries at the edges are judgeable
+PAD = 1.0  # seconds of context served either side, so a boundary at the very edge of a
+#           clip is still judgeable by what comes before and after it
 
 
 def parse_args() -> argparse.Namespace:
