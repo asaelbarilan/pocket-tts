@@ -100,7 +100,7 @@
 <kbd>&larr;</kbd><kbd>&rarr;</kbd> change word &nbsp; <kbd>tab</kbd> switch start/end &nbsp;
 <kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
-<br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
+<br><b>In the lower panel:</b> drag a blue line to move it, or drag the red playhead to scrub. Click anywhere else to move the
 playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, the bar under the panel scrolls left and right, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current, or <b>drag the middle of a word to slide the whole tag</b>.
 </div>
 
@@ -386,6 +386,16 @@ zm.onmousedown=e=>{
   // dead at the edge of the view -- which is what made the start look unreachable.
   const at=x=>{const [lo,hi]=zwin(); return lo+((x-r.left)/r.width)*(hi-lo);};
   const px=t=>{const [lo,hi]=zwin(); return (t-lo)/(hi-lo)*r.width+r.left;};
+  // The playhead is grabbable too, and checked first. In this panel a drag already means
+  // "slide the word" inside a span and "pan the view" outside one, so without an explicit
+  // handle the playhead could only be clicked, never dragged -- which reads as broken.
+  if(Math.abs(px(now())-e.clientX)<9){
+    zm.classList.add('grabbing');
+    const mv=ev=>moveHead(at(ev.clientX));
+    const up=()=>{zm.classList.remove('grabbing');
+      removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+    addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
+  }
   // nearest mark across ALL words, so any of them can be grabbed without switching first
   let best=null;
   gold.forEach((wd,i)=>{
@@ -457,7 +467,7 @@ zm.addEventListener('mousemove',e=>{
   if(!buf||zm.classList.contains('grabbing'))return;
   const r=zm.getBoundingClientRect(),[lo,hi]=zwin();
   const px=t=>(t-lo)/(hi-lo)*r.width+r.left;
-  let near=1e9;
+  let near=Math.abs(px(now())-e.clientX);
   gold.forEach(wd=>{ near=Math.min(near,Math.abs(px(wd.start)-e.clientX),Math.abs(px(wd.end)-e.clientX)); });
   zm.classList.toggle('onmark',near<9);
 });
