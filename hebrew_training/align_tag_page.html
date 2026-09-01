@@ -41,7 +41,7 @@
 
 <div class="top"><h1>Hebrew alignment tagging</h1><div id="bar"></div></div>
 
-<div class="lab">whole clip &mdash; click anywhere to move the playhead
+<div class="lab">whole clip &mdash; click or drag to move the playhead
   <span class="legend">
     <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
     <span class="key"><i class="sw" style="background:#6aa0ff"></i>your marks</span>
@@ -149,7 +149,7 @@ const mark=()=>edge==='end'?gold[wi].end:gold[wi].start;
 // The decoded buffer is kept, but only for drawing the waveform.
 const au=$('au');
 au.preservesPitch=true; au.mozPreservesPitch=true; au.webkitPreservesPitch=true;
-function now(){ return Math.min(au.currentTime-lead, total()); }
+function now(){ return Math.max(tmin(),Math.min(au.currentTime-lead,total())); }
 function label(){ $('play').innerHTML = playing?'&#10074;&#10074; pause':'&#9654; play'; }
 function stop(){ if(stopAt){clearInterval(stopAt);stopAt=null;} au.pause(); playing=false; label(); }
 let stopAt=null;
@@ -199,8 +199,15 @@ function toggle(){
   if(off>=total()-0.005) off=tmin();
   start(off,seg?seg[1]:null);
 }
-function moveHead(t){ const w=playing; off=Math.max(tmin(),Math.min(t,total()));
-  if(w) start(off,null); else { stop(); draw(); } }
+function moveHead(t){
+  // now() reads the audio element, so setting `off` alone moves nothing visible. Seek it.
+  const wasPlaying=playing; off=Math.max(tmin(),Math.min(t,total()));
+  if(wasPlaying){ start(off,null); return; }
+  stop(); seg=null;
+  const go=()=>{ au.currentTime=off+lead; draw(); };
+  if(au.readyState>=1) go(); else au.addEventListener('loadedmetadata',go,{once:true});
+  draw();
+}
 const playWord  =()=>start(gold[wi].start,gold[wi].end);
 const playBefore=()=>start(Math.max(tmin(),mark()-.45),mark());
 const playAfter =()=>start(mark(),Math.min(total(),mark()+.45));
@@ -362,8 +369,14 @@ const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); fitWord(); draw(); r
   if(loopKind){const sp=loopSpan(); start(sp[0],sp[1]);} else playWord(); };
 
 // ---- pointer -------------------------------------------------------------
-ov.onmousedown=e=>{const r=ov.getBoundingClientRect();
-  moveHead((e.clientX-r.left)/r.width*buf.duration-lead);};
+ov.onmousedown=e=>{
+  const r=ov.getBoundingClientRect();
+  const at=x=>(x-r.left)/r.width*buf.duration-lead;
+  moveHead(at(e.clientX));
+  const mv=ev=>moveHead(at(ev.clientX));          // drag to scrub
+  const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+  addEventListener('mousemove',mv); addEventListener('mouseup',up);
+};
 zm.onmousedown=e=>{
   const r=zm.getBoundingClientRect();
   // The window is recomputed on every move, not captured at mousedown. It follows the mark
@@ -384,9 +397,14 @@ zm.onmousedown=e=>{
     const t=at(e.clientX);
     const inside=gold.findIndex(wd=>t>wd.start&&t<wd.end);
     if(inside>=0){
-      wi=inside; dragging=true; zm.classList.add('grabbing'); render();
-      const w=gold[wi], len=w.end-w.start, grab=t-w.start;
+      wi=inside; render();
+      const w=gold[wi], len=w.end-w.start, grab=t-w.start, downX=e.clientX;
+      let moved=false;
       const mv=ev=>{
+        // A click that does not travel is a playhead move, not a word slide. Without this
+        // the word spans cover most of the panel and swallow every click.
+        if(!moved){ if(Math.abs(ev.clientX-downX)<=3) return;
+          moved=true; dragging=true; zm.classList.add('grabbing'); }
         let a=at(ev.clientX)-grab;
         const lo=(wi>0)?gold[wi-1].end:tmin();
         const hi=(wi<gold.length-1)?gold[wi+1].start:total();
@@ -394,7 +412,8 @@ zm.onmousedown=e=>{
         w.start=a; w.end=a+len; touched.add(wi); draw(); render();
         if(loopKind){const sp=loopSpan(); start(sp[0],sp[1]);}
       };
-      const up=()=>{dragging=false; zm.classList.remove('grabbing');
+      const up=()=>{ if(!moved) moveHead(t);
+        dragging=false; zm.classList.remove('grabbing');
         removeEventListener('mousemove',mv); removeEventListener('mouseup',up);};
       addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
     }
