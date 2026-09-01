@@ -59,7 +59,8 @@
   <button id="pbefore" title="Q">&#9654; up to mark</button>
   <button id="pword" title="W">&#9654; whole word</button>
   <button id="pafter" title="E">&#9654; after mark</button>
-  <button id="loop">loop</button>
+  <button id="loopWord">&#8635; loop word</button>
+  <button id="loopMark">&#8635; loop across mark</button>
   <select id="rate"><option value="1">1.0&times;</option><option value="0.75">0.75&times;</option>
     <option value="0.5">0.5&times;</option><option value="0.35">0.35&times;</option></select>
   <span id="clock">0:00.00 / 0:00.00</span>
@@ -90,7 +91,7 @@
 <kbd>w</kbd> the word &nbsp; <kbd>e</kbd> hear after the mark &nbsp;
 <kbd>&larr;</kbd><kbd>&rarr;</kbd> change word &nbsp; <kbd>tab</kbd> switch start/end &nbsp;
 <kbd>a</kbd>/<kbd>b</kbd> take that aligner &nbsp; <kbd>f</kbd> put mark at playhead &nbsp;
-<kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
+<kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
 playhead. The window always shows the whole current word, so both its start and end are reachable.
 </div>
@@ -98,7 +99,7 @@ playhead. The window always shows the whole current word, so both its start and 
 <script>
 let clips=[],ci=0,wi=0,edge='end',gold=[],touched=new Set();
 let buf=null,lead=0,ctx=null,peaks=null;
-let src=null,playing=false,t0=0,off=0,loop=false,rate=1,seg=null;
+let src=null,playing=false,t0=0,off=0,loopKind=null,rate=1,seg=null;
 const MARGIN=0.35;                    // seconds of context shown either side of the word
 const ov=document.getElementById('ov'),og=ov.getContext('2d');
 const zm=document.getElementById('zm'),zg=zm.getContext('2d');
@@ -145,7 +146,21 @@ function start(from,to){
   src.connect(ctx.destination); src.start(0,off+lead,len);
   t0=ctx.currentTime; playing=true; label();
   src.onended=()=>{ if(!playing)return;
-    if(loop&&seg){start(seg[0],seg[1]);} else {const e=(to!=null)?to:total(); stop(); off=e; draw();} };
+    // A loop re-reads the span every cycle rather than replaying the one captured when it
+    // started, so moving a mark while it loops is heard on the very next pass. That is the
+    // whole point: adjust, hear, adjust.
+    if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
+    const e=(to!=null)?to:total(); stop(); off=e; draw(); };
+}
+function loopSpan(){
+  return loopKind==='word' ? [gold[wi].start,gold[wi].end]
+       : [Math.max(tmin(),mark()-.35), Math.min(total(),mark()+.35)];
+}
+function setLoop(kind){
+  loopKind=(loopKind===kind)?null:kind;
+  $('loopWord').classList.toggle('on',loopKind==='word');
+  $('loopMark').classList.toggle('on',loopKind==='mark');
+  if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); } else stop();
 }
 const toggle=()=>{ playing?(off=now(),stop(),draw()):start(off,seg?seg[1]:null); };
 function moveHead(t){ const w=playing; off=Math.max(tmin(),Math.min(t,total()));
@@ -249,8 +264,10 @@ function setMark(t,which){
     if(wi<gold.length-1) gold[wi+1].start=gold[wi].end;
   }
   touched.add(wi); draw(); render();
+  if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); }
 }
-const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render(); playWord(); };
+const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render();
+  if(loopKind){const sp=loopSpan(); start(sp[0],sp[1]);} else playWord(); };
 
 // ---- pointer -------------------------------------------------------------
 ov.onmousedown=e=>{const r=ov.getBoundingClientRect();
@@ -282,10 +299,11 @@ zm.onmousedown=e=>{
 };
 
 $('play').onclick=toggle;
-$('stopb').onclick=()=>{stop();off=0;seg=null;draw();};
+$('stopb').onclick=()=>{loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();};
 $('tostart').onclick=()=>moveHead(0);
 $('pbefore').onclick=playBefore; $('pword').onclick=playWord; $('pafter').onclick=playAfter;
-$('loop').onclick=()=>{loop=!loop;$('loop').classList.toggle('on',loop);};
+$('loopWord').onclick=()=>setLoop('word');
+$('loopMark').onclick=()=>setLoop('mark');
 $('rate').onchange=e=>{rate=parseFloat(e.target.value);
   if(playing){const p=now();start(p,seg?seg[1]:null);}};
 $('edStart').onclick=()=>{edge='start';draw();render();};
@@ -310,11 +328,13 @@ addEventListener('keydown',async e=>{
   if(e.target.tagName==='SELECT')return;
   const c=clips[ci];
   if(e.code==='Space'){e.preventDefault();toggle();return;}
-  if(e.key==='Escape'){stop();off=0;seg=null;draw();return;}
+  if(e.key==='Escape'){loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();return;}
   if(e.key==='Tab'){e.preventDefault();edge=(edge==='end')?'start':'end';draw();render();return;}
   if(e.key==='q'){playBefore();return;}
   if(e.key==='w'){playWord();return;}
   if(e.key==='e'){playAfter();return;}
+  if(e.key==='l'){setLoop('mark');return;}
+  if(e.key==='L'){setLoop('word');return;}
   if(e.key==='Home'){moveHead(0);return;}
   if(e.key==='ArrowLeft'){e.preventDefault();goWord(wi-1);return;}
   if(e.key==='ArrowRight'){e.preventDefault();goWord(wi+1);return;}
