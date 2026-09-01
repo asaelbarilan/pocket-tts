@@ -244,22 +244,23 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
             stats["low_quality"] += 1
             continue
 
-        # 19% of segments in the Knesset corpora carry start == end, collapsing every word
-        # inside them to a single instant -- measured over 867,270 segments in 120 plenum
-        # recordings, affecting 118 of the 120. Those words have no timing at all, and a
-        # zero-width word gives the loader a degenerate cut point and a meaningless
-        # text-to-audio correspondence. Drop them rather than pass them through.
-        timed = [
-            w
-            for w in words
-            if w.get("start") is not None
-            and w.get("end") is not None
-            and float(w["end"]) > float(w["start"])
-        ]
-        if not timed:
+        # A word stamped start == end has no timing at all. Two distinct failures produce
+        # them, measured over 30,348 segments in 18 recordings: whole segments collapsing
+        # (2,728 of the 2,754 such segments sit below confidence 0.6, so the --min-quality
+        # gate above already removes them), and isolated dead words, which occur in a flat
+        # 12-13% of segments at EVERY confidence level including >= 0.9. The second kind is
+        # a timing failure that transcription confidence does not predict.
+        #
+        # The WHOLE SEGMENT is dropped, not just the offending word. Dropping the word
+        # leaves audio in which it is still spoken while removing it from the text, so the
+        # row would teach the model to insert a word it was never given. Cost at high
+        # confidence is 12.6% of segments rather than 2.1% of words -- the right trade,
+        # because the alternative is not less data but corrupted data.
+        if float(segment["end"]) <= float(segment["start"]):
             stats["untimed"] += 1
             continue
-        if float(segment["end"]) <= float(segment["start"]):
+        timed = [w for w in words if w.get("start") is not None and w.get("end") is not None]
+        if len(timed) != len(words) or any(float(w["end"]) <= float(w["start"]) for w in timed):
             stats["untimed"] += 1
             continue
 
