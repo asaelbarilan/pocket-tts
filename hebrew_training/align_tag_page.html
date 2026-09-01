@@ -79,7 +79,7 @@
 </div>
 <div class="row">
   <span class="tag">move</span>
-  <button id="prevw">&larr; prev word</button><button id="nextw">next word &rarr;</button>
+  <button id="fit">fit word</button><button id="prevw">&larr; prev word</button><button id="nextw">next word &rarr;</button>
   <div class="sep"></div>
   <button id="prevc">&larr; prev clip</button>
   <button id="save" class="go">save &amp; next clip</button>
@@ -93,7 +93,7 @@
 <kbd>a</kbd>/<kbd>b</kbd> take that aligner &nbsp; <kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
-playhead. The window always shows the whole current word, so both its start and end are reachable.
+playhead, and <b>drag empty space to slide the view</b>. Wheel scrolls, shift+wheel zooms, &ldquo;fit word&rdquo; snaps back to the current word.
 </div>
 
 <script>
@@ -122,7 +122,7 @@ async function loadClip(){
   const ab=await r.arrayBuffer();
   ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
   buf=await ctx.decodeAudioData(ab);
-  peaks=null; draw(); render();
+  peaks=null; view=null; draw(); render();
 }
 const total=()=>buf?buf.duration-lead:0;
 // The served audio starts `lead` seconds BEFORE the row, so time -lead is the first sample
@@ -191,7 +191,35 @@ function drawOverview(){
   og.fillStyle='#ff5f56'; og.fillRect(X(now()),0,2,h);
 }
 // the zoom window always contains the WHOLE current word, so start and end are both reachable
-const zwin=()=>[Math.max(tmin(),gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
+// The zoom window is explicit state, not a function of the word, so it can be dragged and
+// zoomed. It is refitted to the word whenever the word or clip changes, and nudged along by
+// ensureVisible when a mark is dragged past its edge.
+let view=null;
+function fitWord(){
+  view=[Math.max(tmin(),gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
+  if(view[1]-view[0]<0.12) view[1]=view[0]+0.12;
+}
+function zwin(){ if(!view) fitWord(); return view; }
+function panBy(dt){
+  const [lo,hi]=view, span=hi-lo;
+  let a=lo+dt, b=hi+dt;
+  if(a<tmin()){a=tmin();b=a+span;}
+  if(b>total()){b=total();a=b-span;}
+  view=[a,b]; draw();
+}
+function zoomAt(t,f){
+  const [lo,hi]=view; let span=(hi-lo)*f;
+  span=Math.max(0.06,Math.min(span,total()-tmin()));
+  const frac=(t-lo)/(hi-lo);
+  let a=t-frac*span, b=a+span;
+  if(a<tmin()){a=tmin();b=a+span;}
+  if(b>total()){b=total();a=Math.max(tmin(),b-span);}
+  view=[a,b]; draw();
+}
+function ensureVisible(t){
+  const [lo,hi]=view, pad=(hi-lo)*0.12;
+  if(t<lo+pad) panBy(t-(lo+pad)); else if(t>hi-pad) panBy(t-(hi-pad));
+}
 function drawZoom(){
   const w=zm.clientWidth,h=220; zm.width=w*devicePixelRatio; zm.height=h*devicePixelRatio;
   zg.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); zg.clearRect(0,0,w,h);
@@ -263,10 +291,11 @@ function setMark(t,which){
       if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
     if(wi<gold.length-1) gold[wi+1].start=gold[wi].end;
   }
-  touched.add(wi); draw(); render();
+  touched.add(wi); ensureVisible(which==='start'?gold[wi].start:gold[wi].end);
+  draw(); render();
   if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); }
 }
-const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render();
+const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); fitWord(); draw(); render();
   if(loopKind){const sp=loopSpan(); start(sp[0],sp[1]);} else playWord(); };
 
 // ---- pointer -------------------------------------------------------------
@@ -295,8 +324,27 @@ zm.onmousedown=e=>{
       removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
     addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
   }
-  moveHead(at(e.clientX));                     // otherwise: move the playhead
+  // Not on a mark: drag to pan the view, or click without dragging to move the playhead.
+  const t0x=e.clientX, tAtDown=at(e.clientX); let moved=false;
+  let prev=t0x;
+  const mv2=ev=>{
+    if(Math.abs(ev.clientX-t0x)>3) moved=true;
+    if(!moved){prev=ev.clientX; return;}
+    const [lo,hi]=zwin();
+    panBy(-(ev.clientX-prev)/r.width*(hi-lo));
+    prev=ev.clientX;
+  };
+  const up=()=>{ if(!moved) moveHead(tAtDown);
+    removeEventListener('mousemove',mv2); removeEventListener('mouseup',up); };
+  addEventListener('mousemove',mv2); addEventListener('mouseup',up);
 };
+zm.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=zm.getBoundingClientRect(), [lo,hi]=zwin();
+  const t=lo+((e.clientX-r.left)/r.width)*(hi-lo);
+  if(e.shiftKey||e.ctrlKey) zoomAt(t, e.deltaY>0?1.25:0.8);
+  else panBy((e.deltaY!==0?e.deltaY:e.deltaX)/500*(hi-lo));
+},{passive:false});
 
 $('play').onclick=toggle;
 $('stopb').onclick=()=>{loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();};
@@ -312,6 +360,7 @@ $('useA').onclick=()=>setMark(edge==='end'?clips[ci].a[wi].end:clips[ci].a[wi].s
 $('useB').onclick=()=>{const b=clips[ci].b;if(b)setMark(edge==='end'?b[wi].end:b[wi].start);};
 $('setb').onclick=()=>setMark(now());
 $('m10').onclick=()=>setMark(mark()-.01); $('p10').onclick=()=>setMark(mark()+.01);
+$('fit').onclick=()=>{fitWord();draw();};
 $('prevw').onclick=()=>goWord(wi-1); $('nextw').onclick=()=>goWord(wi+1);
 $('prevc').onclick=()=>{if(ci>0){ci--;loadClip();}};
 $('save').onclick=saveNext;
