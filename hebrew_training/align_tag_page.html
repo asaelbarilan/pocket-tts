@@ -107,7 +107,7 @@ playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shi
 <script>
 let clips=[],ci=0,wi=0,edge='end',gold=[],touched=new Set();
 let buf=null,lead=0,ctx=null,peaks=null;
-let src=null,playing=false,t0=0,off=0,loopKind=null,rate=1,seg=null;
+let playing=false,head=0,loopKind=null,rate=1,seg=null;
 const MARGIN=0.35;                    // seconds of context shown either side of the word
 const ov=document.getElementById('ov'),og=ov.getContext('2d');
 const zm=document.getElementById('zm'),zg=zm.getContext('2d');
@@ -126,7 +126,7 @@ async function loadClip(){
   const c=clips[ci];
   gold=(c.saved||c.a).map(w=>({word:w.word,start:w.start,end:w.end}));
   touched=new Set(c.saved?gold.map((_,i)=>i):[]);
-  wi=0; edge='end'; off=0;
+  wi=0; edge='end'; head=0;
   const r=await fetch('/api/audio/'+ci); lead=parseFloat(r.headers.get('X-Lead')||'0');
   const ab=await r.arrayBuffer();
   ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
@@ -149,21 +149,26 @@ const mark=()=>edge==='end'?gold[wi].end:gold[wi].start;
 // The decoded buffer is kept, but only for drawing the waveform.
 const au=$('au');
 au.preservesPitch=true; au.mozPreservesPitch=true; au.webkitPreservesPitch=true;
-function now(){ return Math.max(tmin(),Math.min(au.currentTime-lead,total())); }
+// `head` is the playhead, and it is OUR state, not the element's. Reading currentTime while
+// paused meant every drag had to seek the element, and those seeks are async and coalesced,
+// so the marker lagged or stuck. The element is seeked once, when playback actually starts.
+function now(){ return playing ? Math.max(tmin(),Math.min(au.currentTime-lead,total())) : head; }
 function label(){ $('play').innerHTML = playing?'&#10074;&#10074; pause':'&#9654; play'; }
-function stop(){ if(stopAt){clearInterval(stopAt);stopAt=null;} au.pause(); playing=false; label(); }
+function stop(){ if(stopAt){clearInterval(stopAt);stopAt=null;}
+  if(playing) head=Math.max(tmin(),Math.min(au.currentTime-lead,total()));
+  au.pause(); playing=false; label(); }
 let stopAt=null;
 function start(from,to){
   if(!buf)return;
   if(stopAt){clearInterval(stopAt);stopAt=null;}
   seg=(to!=null)?[from,to]:null;
-  off=Math.max(tmin(),Math.min(from,total()));
-  if(to!=null && to-off<=.01){draw();return;}
+  head=Math.max(tmin(),Math.min(from,total()));
+  if(to!=null && to-head<=.01){draw();return;}
   au.playbackRate=rate;
   // Setting currentTime on an element that has not buffered enough is silently ignored, so
   // playback would begin from wherever it already was rather than from the mark. Wait for
   // it to be seekable, then seek, then play.
-  const go=()=>{ au.currentTime=off+lead; au.play().catch(()=>{}); };
+  const go=()=>{ au.currentTime=head+lead; au.play().catch(()=>{}); };
   if(au.readyState>=1) go(); else au.addEventListener('loadedmetadata',go,{once:true});
   playing=true; label();
   // The element has no "play until t" so the end is watched. 10 ms is well inside a frame.
@@ -171,11 +176,11 @@ function start(from,to){
     const t=now();
     if(to!=null && t>=to-0.005){
       if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
-      stop(); off=to; draw(); return;
+      stop(); head=to; draw(); return;
     }
     if(au.ended||t>=total()-0.005){
       if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
-      stop(); off=total(); draw();
+      stop(); head=total(); draw();
     }
   },10);
 }
@@ -190,23 +195,20 @@ function setLoop(kind){
   if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); } else stop();
 }
 function toggle(){
-  if(playing){ off=now(); stop(); draw(); return; }
+  if(playing){ stop(); draw(); return; }
   // Playing a region (word, up-to-mark, after-mark) leaves the playhead exactly at that
   // region's end with seg still set, so the next press asked for a zero-length span and
   // silently did nothing -- the transport looked frozen. Finishing a region falls back to
   // free play, and reaching the end of the clip rewinds.
-  if(seg && off>=seg[1]-0.005) seg=null;
-  if(off>=total()-0.005) off=tmin();
-  start(off,seg?seg[1]:null);
+  if(seg && head>=seg[1]-0.005) seg=null;
+  if(head>=total()-0.005) head=tmin();
+  start(head,seg?seg[1]:null);
 }
 function moveHead(t){
-  // now() reads the audio element, so setting `off` alone moves nothing visible. Seek it.
-  const wasPlaying=playing; off=Math.max(tmin(),Math.min(t,total()));
-  if(wasPlaying){ start(off,null); return; }
-  stop(); seg=null;
-  const go=()=>{ au.currentTime=off+lead; draw(); };
-  if(au.readyState>=1) go(); else au.addEventListener('loadedmetadata',go,{once:true});
-  draw();
+  const wasPlaying=playing;
+  head=Math.max(tmin(),Math.min(t,total()));
+  if(wasPlaying){ start(head,null); return; }   // playing: restart from the new spot
+  seg=null; draw();                              // paused: just draw, no seek, no lag
 }
 const playWord  =()=>start(gold[wi].start,gold[wi].end);
 const playBefore=()=>start(Math.max(tmin(),mark()-.45),mark());
@@ -494,7 +496,7 @@ zm.addEventListener('wheel',e=>{
   el.onmousedown=e=>{ if(e.target===th)return; centreOn(e.clientX); };
 })();
 $('play').onclick=toggle;
-$('stopb').onclick=()=>{loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();};
+$('stopb').onclick=()=>{loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();head=0;seg=null;draw();};
 $('tostart').onclick=()=>moveHead(0);
 $('pbefore').onclick=playBefore; $('pword').onclick=playWord; $('pafter').onclick=playAfter;
 $('loopWord').onclick=()=>setLoop('word');
@@ -522,7 +524,7 @@ async function saveNext(){
 addEventListener('keydown',async e=>{
   if(e.target.tagName==='SELECT')return;
   if(e.code==='Space'){e.preventDefault();toggle();return;}
-  if(e.key==='Escape'){loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();off=0;seg=null;draw();return;}
+  if(e.key==='Escape'){loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();head=0;seg=null;draw();return;}
   if(e.key==='Tab'){e.preventDefault();edge=(edge==='end')?'start':'end';draw();render();return;}
   if(e.key==='q'){playBefore();return;}
   if(e.key==='w'){playWord();return;}
