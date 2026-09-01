@@ -198,7 +198,7 @@ function drawOverview(){
 // The zoom window is explicit state, not a function of the word, so it can be dragged and
 // zoomed. It is refitted to the word whenever the word or clip changes, and nudged along by
 // ensureVisible when a mark is dragged past its edge.
-let view=null;
+let view=null,dragging=false;
 function fitWord(){
   view=[Math.max(tmin(),gold[wi].start-MARGIN), Math.min(total(),gold[wi].end+MARGIN)];
   if(view[1]-view[0]<0.12) view[1]=view[0]+0.12;
@@ -221,6 +221,11 @@ function zoomAt(t,f){
   view=[a,b]; draw();
 }
 function ensureVisible(t){
+  // Never while a mark is being dragged. Panning there moves the window that the pointer
+  // position is converted through, so the mark chases its own new coordinates and sticks.
+  // During a drag only the edge timer pans, by a fixed step that does not depend on the
+  // pointer, which cannot feed back.
+  if(dragging) return;
   const [lo,hi]=view, pad=(hi-lo)*0.12;
   if(t<lo+pad) panBy(t-(lo+pad)); else if(t>hi-pad) panBy(t-(hi-pad));
 }
@@ -314,17 +319,20 @@ zm.onmousedown=e=>{
   const px=t=>{const [lo,hi]=zwin(); return (t-lo)/(hi-lo)*r.width+r.left;};
   const ds=Math.abs(px(gold[wi].start)-e.clientX), de=Math.abs(px(gold[wi].end)-e.clientX);
   if(Math.min(ds,de)<9){                       // grabbed a mark: drag it
-    const which=(ds<de)?'start':'end'; edge=which; render();
+    const which=(ds<de)?'start':'end'; edge=which; dragging=true; render();
+    zm.classList.add('grabbing');
     let last=e.clientX;
     setMark(at(e.clientX),which);
     const mv=ev=>{ last=ev.clientX; setMark(at(ev.clientX),which); };
-    // held past the edge, keep going: one window-width per second, so a long drag is possible
+    // Held past an edge, keep going. This is the only thing that pans during a drag, and it
+    // steps by a fixed fraction of the window rather than from the pointer, so there is no
+    // loop between panning and the pointer-to-time mapping.
     const timer=setInterval(()=>{
       const [lo,hi]=zwin(), span=hi-lo;
-      if(last<r.left+6) setMark(mark()-span*0.04,which);
-      else if(last>r.right-6) setMark(mark()+span*0.04,which);
-    },40);
-    const up=()=>{clearInterval(timer);
+      if(last<r.left+6){ panBy(-span*0.05); setMark(mark()-span*0.05,which); }
+      else if(last>r.right-6){ panBy(span*0.05); setMark(mark()+span*0.05,which); }
+    },50);
+    const up=()=>{clearInterval(timer); dragging=false; zm.classList.remove('grabbing');
       removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
     addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
   }
