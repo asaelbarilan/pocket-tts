@@ -196,7 +196,22 @@ def make_handler(args, clips, saved):
                     data, lead = clip_wav(clips[index])
                 except Exception as exc:  # noqa: BLE001 -- a bad clip must not kill the server
                     return self.send(500, str(exc).encode(), "text/plain")
-                return self.send(200, data, "audio/wav", {"X-Lead": f"{lead:.4f}"})
+                headers = {"X-Lead": f"{lead:.4f}", "Accept-Ranges": "bytes"}
+                # An <audio> element cannot seek without byte ranges: setting currentTime on
+                # a response served as a plain 200 is silently ignored and playback stays
+                # wherever it was. Every "play this word" then started from the top.
+                span = self.headers.get("Range")
+                if span and span.startswith("bytes="):
+                    first, _, last = span[6:].partition("-")
+                    begin = int(first) if first else 0
+                    end = int(last) if last else len(data) - 1
+                    end = min(end, len(data) - 1)
+                    if begin > end:
+                        return self.send(416, b"", "audio/wav", headers)
+                    chunk = data[begin : end + 1]
+                    headers["Content-Range"] = f"bytes {begin}-{end}/{len(data)}"
+                    return self.send(206, chunk, "audio/wav", headers)
+                return self.send(200, data, "audio/wav", headers)
             return self.send(404, b"not found", "text/plain")
 
         def do_POST(self):

@@ -54,6 +54,7 @@
     <span class="key"><i class="sw" style="background:#ff5f56"></i>playhead</span>
   </span></div>
 <canvas id="zm"></canvas>
+<audio id="au" preload="auto"></audio>
 <div id="scroll"><div id="thumb"></div></div>
 
 <div class="row">
@@ -100,7 +101,7 @@
 <kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
-playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, the bar under the panel scrolls left and right, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current.
+playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, the bar under the panel scrolls left and right, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current, or <b>drag the middle of a word to slide the whole tag</b>.
 </div>
 
 <script>
@@ -121,6 +122,7 @@ async function boot(){
 }
 async function loadClip(){
   stop();
+  au.src='/api/audio/'+ci;
   const c=clips[ci];
   gold=(c.saved||c.a).map(w=>({word:w.word,start:w.start,end:w.end}));
   touched=new Set(c.saved?gold.map((_,i)=>i):[]);
@@ -140,24 +142,42 @@ const tmin=()=>-lead;
 const mark=()=>edge==='end'?gold[wi].end:gold[wi].start;
 
 // ---- transport -----------------------------------------------------------
-function now(){ return Math.min(playing?off+(ctx.currentTime-t0)*rate:off,total()); }
+// Playback goes through an <audio> element rather than an AudioBufferSourceNode. A buffer
+// source's playbackRate resamples, so half speed drops the pitch an octave and the voice
+// stops sounding like speech -- exactly what you do not want when judging a boundary by ear.
+// preservesPitch makes the browser time-stretch instead, so 0.25x is still the same voice.
+// The decoded buffer is kept, but only for drawing the waveform.
+const au=$('au');
+au.preservesPitch=true; au.mozPreservesPitch=true; au.webkitPreservesPitch=true;
+function now(){ return Math.min(au.currentTime-lead, total()); }
 function label(){ $('play').innerHTML = playing?'&#10074;&#10074; pause':'&#9654; play'; }
-function stop(){ if(src){try{src.onended=null;src.stop();}catch(e){}} src=null; playing=false; label(); }
+function stop(){ if(stopAt){clearInterval(stopAt);stopAt=null;} au.pause(); playing=false; label(); }
+let stopAt=null;
 function start(from,to){
   if(!buf)return;
-  if(ctx.state==='suspended')ctx.resume();
-  stop(); seg=(to!=null)?[from,to]:null; off=Math.max(tmin(),Math.min(from,total()));
-  const len=((to!=null)?to:total())-off;
-  if(len<=.01){draw();return;}
-  src=ctx.createBufferSource(); src.buffer=buf; src.playbackRate.value=rate;
-  src.connect(ctx.destination); src.start(0,off+lead,len);
-  t0=ctx.currentTime; playing=true; label();
-  src.onended=()=>{ if(!playing)return;
-    // A loop re-reads the span every cycle rather than replaying the one captured when it
-    // started, so moving a mark while it loops is heard on the very next pass. That is the
-    // whole point: adjust, hear, adjust.
-    if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
-    const e=(to!=null)?to:total(); stop(); off=e; draw(); };
+  if(stopAt){clearInterval(stopAt);stopAt=null;}
+  seg=(to!=null)?[from,to]:null;
+  off=Math.max(tmin(),Math.min(from,total()));
+  if(to!=null && to-off<=.01){draw();return;}
+  au.playbackRate=rate;
+  // Setting currentTime on an element that has not buffered enough is silently ignored, so
+  // playback would begin from wherever it already was rather than from the mark. Wait for
+  // it to be seekable, then seek, then play.
+  const go=()=>{ au.currentTime=off+lead; au.play().catch(()=>{}); };
+  if(au.readyState>=1) go(); else au.addEventListener('loadedmetadata',go,{once:true});
+  playing=true; label();
+  // The element has no "play until t" so the end is watched. 10 ms is well inside a frame.
+  stopAt=setInterval(()=>{
+    const t=now();
+    if(to!=null && t>=to-0.005){
+      if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
+      stop(); off=to; draw(); return;
+    }
+    if(au.ended||t>=total()-0.005){
+      if(loopKind){ const sp=loopSpan(); start(sp[0],sp[1]); return; }
+      stop(); off=total(); draw();
+    }
+  },10);
 }
 function loopSpan(){
   return loopKind==='word' ? [gold[wi].start,gold[wi].end]
@@ -359,6 +379,26 @@ zm.onmousedown=e=>{
       if(!best||d<best.d) best={d,i,which};
     });
   });
+  // inside a word, away from its marks: drag the whole word, both marks together
+  if(!(best&&best.d<9)){
+    const t=at(e.clientX);
+    const inside=gold.findIndex(wd=>t>wd.start&&t<wd.end);
+    if(inside>=0){
+      wi=inside; dragging=true; zm.classList.add('grabbing'); render();
+      const w=gold[wi], len=w.end-w.start, grab=t-w.start;
+      const mv=ev=>{
+        let a=at(ev.clientX)-grab;
+        const lo=(wi>0)?gold[wi-1].end:tmin();
+        const hi=(wi<gold.length-1)?gold[wi+1].start:total();
+        a=Math.max(lo,Math.min(a,hi-len));
+        w.start=a; w.end=a+len; touched.add(wi); draw(); render();
+        if(loopKind){const sp=loopSpan(); start(sp[0],sp[1]);}
+      };
+      const up=()=>{dragging=false; zm.classList.remove('grabbing');
+        removeEventListener('mousemove',mv); removeEventListener('mouseup',up);};
+      addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
+    }
+  }
   if(best&&best.d<9){                          // grabbed a mark: drag it
     wi=best.i; const which=best.which; edge=which; dragging=true; render();
     zm.classList.add('grabbing');
@@ -440,8 +480,7 @@ $('tostart').onclick=()=>moveHead(0);
 $('pbefore').onclick=playBefore; $('pword').onclick=playWord; $('pafter').onclick=playAfter;
 $('loopWord').onclick=()=>setLoop('word');
 $('loopMark').onclick=()=>setLoop('mark');
-$('rate').onchange=e=>{rate=parseFloat(e.target.value);
-  if(playing){const p=now();start(p,seg?seg[1]:null);}};
+$('rate').onchange=e=>{rate=parseFloat(e.target.value); au.playbackRate=rate;};
 $('edStart').onclick=()=>{edge='start';draw();render();};
 $('edEnd').onclick=()=>{edge='end';draw();render();};
 $('setb').onclick=()=>setMark(now());
