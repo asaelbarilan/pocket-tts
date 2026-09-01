@@ -80,7 +80,7 @@
 </div>
 <div class="row">
   <span class="tag">move</span>
-  <button id="fit">fit word</button><button id="prevw">&larr; prev word</button><button id="nextw">next word &rarr;</button>
+  <button id="fit">fit word</button><button id="fitall">fit all words</button><button id="prevw">&larr; prev word</button><button id="nextw">next word &rarr;</button>
   <div class="sep"></div>
   <button id="prevc">&larr; prev clip</button>
   <button id="save" class="go">save &amp; next clip</button>
@@ -94,7 +94,7 @@
 <kbd>f</kbd> put mark at playhead &nbsp;
 <kbd>l</kbd> loop across the mark &nbsp; <kbd>shift+l</kbd> loop the word &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp; <kbd>enter</kbd> save &amp; next
 <br><b>In the lower panel:</b> drag a blue line to move it. Click anywhere else to move the
-playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, &ldquo;fit word&rdquo; snaps back to the current word.
+playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shift+wheel scrolls, &ldquo;fit word&rdquo; snaps to the current word and &ldquo;fit all words&rdquo; shows the whole sentence. <b>Every word's marks are drawn</b> &mdash; drag any of them and that word becomes current.
 </div>
 
 <script>
@@ -240,8 +240,12 @@ function drawZoom(){
   zg.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); zg.clearRect(0,0,w,h);
   if(!buf)return;
   const [lo,hi]=zwin(), X=t=>(t-lo)/(hi-lo)*w;
-  zg.fillStyle='rgba(61,111,214,.16)';
-  zg.fillRect(X(gold[wi].start),0,X(gold[wi].end)-X(gold[wi].start),h);
+  // every word's span, so the whole sentence is visible at once; the current one brighter
+  gold.forEach((wd,i)=>{
+    zg.fillStyle=(i===wi)?'rgba(61,111,214,.18)'
+      : touched.has(i)?'rgba(78,201,138,.07)':'rgba(255,255,255,.035)';
+    zg.fillRect(X(wd.start),0,Math.max(1,X(wd.end)-X(wd.start)),h);
+  });
   const d=buf.getChannelData(0),sr=buf.sampleRate;
   zg.fillStyle='#39404d';
   for(let x=0;x<w;x++){
@@ -253,14 +257,26 @@ function drawZoom(){
   }
   zg.fillStyle='#2b303a';
   for(let t=Math.ceil(lo*10)/10;t<hi;t+=0.1) zg.fillRect(X(t),h-10,1,10);
-  // your two marks; the one being edited is thicker and labelled
-  [['start',gold[wi].start],['end',gold[wi].end]].forEach(([which,t])=>{
-    const on=(which===edge);
-    zg.fillStyle='#6aa0ff'; zg.fillRect(X(t)-(on?2:0),0,on?4:2,h);
-    zg.fillStyle=on?'#cfe0ff':'#7d8896';
-    zg.font=(on?'bold ':'')+'12px system-ui';
-    zg.fillText(which.toUpperCase(),X(t)+(which==='start'?5:-38),14);
+  // every mark is drawn and grabbable; the current word's are bright, the edited one thick
+  gold.forEach((wd,i)=>{
+    const cur=(i===wi);
+    [['start',wd.start],['end',wd.end]].forEach(([which,t])=>{
+      if(X(t)<-4||X(t)>w+4) return;
+      const on=cur&&which===edge;
+      zg.fillStyle=cur?'#6aa0ff':'#4a5872';
+      zg.fillRect(X(t)-(on?2:0),0,on?4:(cur?2:1),h);
+    });
+    // the word itself, over its span, so you can see which mark belongs to which word
+    const mid=(X(wd.start)+X(wd.end))/2;
+    if(mid>-40&&mid<w+40){
+      zg.font=(cur?'bold ':'')+'12px system-ui';
+      zg.fillStyle=cur?'#cfe0ff':'#6b7480';
+      zg.textAlign='center'; zg.fillText(wd.word,mid,15); zg.textAlign='left';
+    }
   });
+  zg.font='bold 11px system-ui'; zg.fillStyle='#cfe0ff';
+  zg.fillText(edge.toUpperCase(),X(edge==='end'?gold[wi].end:gold[wi].start)
+    +(edge==='start'?6:-34),h-16);
   const p=now(); if(p>=lo&&p<=hi){ zg.fillStyle='#ff5f56'; zg.fillRect(X(p),0,2,h); }
   $('zlab').firstChild.textContent='current word "'+gold[wi].word+'"  —  editing the '
     +edge.toUpperCase()+'   (ticks 100 ms)   ';
@@ -323,9 +339,16 @@ zm.onmousedown=e=>{
   // dead at the edge of the view -- which is what made the start look unreachable.
   const at=x=>{const [lo,hi]=zwin(); return lo+((x-r.left)/r.width)*(hi-lo);};
   const px=t=>{const [lo,hi]=zwin(); return (t-lo)/(hi-lo)*r.width+r.left;};
-  const ds=Math.abs(px(gold[wi].start)-e.clientX), de=Math.abs(px(gold[wi].end)-e.clientX);
-  if(Math.min(ds,de)<9){                       // grabbed a mark: drag it
-    const which=(ds<de)?'start':'end'; edge=which; dragging=true; render();
+  // nearest mark across ALL words, so any of them can be grabbed without switching first
+  let best=null;
+  gold.forEach((wd,i)=>{
+    [['start',wd.start],['end',wd.end]].forEach(([which,t])=>{
+      const d=Math.abs(px(t)-e.clientX);
+      if(!best||d<best.d) best={d,i,which};
+    });
+  });
+  if(best&&best.d<9){                          // grabbed a mark: drag it
+    wi=best.i; const which=best.which; edge=which; dragging=true; render();
     zm.classList.add('grabbing');
     let last=e.clientX;
     setMark(at(e.clientX),which);
@@ -361,7 +384,8 @@ zm.addEventListener('mousemove',e=>{
   if(!buf||zm.classList.contains('grabbing'))return;
   const r=zm.getBoundingClientRect(),[lo,hi]=zwin();
   const px=t=>(t-lo)/(hi-lo)*r.width+r.left;
-  const near=Math.min(Math.abs(px(gold[wi].start)-e.clientX),Math.abs(px(gold[wi].end)-e.clientX));
+  let near=1e9;
+  gold.forEach(wd=>{ near=Math.min(near,Math.abs(px(wd.start)-e.clientX),Math.abs(px(wd.end)-e.clientX)); });
   zm.classList.toggle('onmark',near<9);
 });
 zm.addEventListener('wheel',e=>{
@@ -387,6 +411,8 @@ $('edEnd').onclick=()=>{edge='end';draw();render();};
 $('setb').onclick=()=>setMark(now());
 $('m10').onclick=()=>setMark(mark()-.01); $('p10').onclick=()=>setMark(mark()+.01);
 $('fit').onclick=()=>{fitWord();draw();};
+$('fitall').onclick=()=>{view=[Math.max(tmin(),gold[0].start-0.2),
+  Math.min(total(),gold[gold.length-1].end+0.2)];draw();};
 $('prevw').onclick=()=>goWord(wi-1); $('nextw').onclick=()=>goWord(wi+1);
 $('prevc').onclick=()=>{if(ci>0){ci--;loadClip();}};
 $('save').onclick=saveNext;
