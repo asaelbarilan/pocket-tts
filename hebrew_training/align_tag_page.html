@@ -298,16 +298,17 @@ function render(){
 // word later than A placed the following one, which is exactly the disagreement being judged.
 function setMark(t,which){
   which=which||edge;
+  // Moving one mark never moves another. Words are NOT contiguous -- there is silence
+  // between them, and that gap is precisely what is being marked, so chaining a word's
+  // start to the previous word's end (as the aligners do) destroys the thing we are here
+  // to measure. Each mark is clamped only so the order stays valid: it cannot cross its own
+  // partner, nor the neighbouring word's nearest mark.
   if(which==='start'){
-    const lo=(wi>0)?gold[wi-1].start+.005:tmin();
+    const lo=(wi>0)?gold[wi-1].end:tmin();
     gold[wi].start=Math.min(Math.max(t,lo),gold[wi].end-.005);
-    if(wi>0) gold[wi-1].end=gold[wi].start;
   }else{
-    const lo=gold[wi].start+.005;
-    gold[wi].end=Math.min(Math.max(t,lo),total());
-    for(let j=wi+1;j<gold.length;j++)
-      if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
-    if(wi<gold.length-1) gold[wi+1].start=gold[wi].end;
+    const hi=(wi<gold.length-1)?gold[wi+1].start:total();
+    gold[wi].end=Math.max(Math.min(t,hi),gold[wi].start+.005);
   }
   touched.add(wi); ensureVisible(which==='start'?gold[wi].start:gold[wi].end);
   draw(); render();
