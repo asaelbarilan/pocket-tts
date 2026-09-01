@@ -26,14 +26,17 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import json
 import re
 import unicodedata
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 _WS = re.compile(r"\s+")
+LOCK = threading.Lock()
 PAD = 1.0  # seconds of context served either side, so a boundary at the very edge of a
 #           clip is still judgeable by what comes before and after it
 
@@ -42,11 +45,42 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--a", type=Path, required=True, help="First aligned manifest.")
     parser.add_argument("--b", type=Path, help="Second aligned manifest, shown for comparison.")
-    parser.add_argument("--out", type=Path, required=True, help="Gold manifest, written as you go.")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Gold manifest. With several annotators this becomes a directory: "
+        "each writes <out>/<name>.jsonl, so nobody overwrites anyone.",
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HOST", "127.0.0.1"),
+        help="0.0.0.0 to accept connections from other machines.",
+    )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("TAG_TOKEN", ""),
+        help="If set, every request must carry ?t=<token>. Not real auth -- it "
+        "just stops a stray crawler writing to your gold set.",
+    )
+    parser.add_argument(
+        "--multi",
+        action="store_true",
+        help="Several annotators: ask each for a name and keep their marks in "
+        "separate files, so the same clips can be marked twice and the "
+        "agreement between people measured.",
+    )
+    parser.add_argument(
+        "--clips-root",
+        type=Path,
+        help="Look every clip up by file name in this directory instead of the absolute "
+        "path in the manifest. Needed to host: the manifests carry the Windows paths "
+        "they were built with, which resolve nowhere on a Linux server.",
+    )
     parser.add_argument("--name-a", default="A")
     parser.add_argument("--name-b", default="B")
     parser.add_argument("--limit", type=int, default=100, help="How many clips to serve.")
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)))
     return parser.parse_args()
 
 
@@ -139,17 +173,44 @@ def build_clips(args) -> list[dict]:
     return clips[: args.limit]
 
 
-def clip_wav(clip: dict) -> bytes:
-    """The clip's audio as wav bytes, with PAD seconds of context either side."""
-    import soundfile
+def resolve(path_value: str, root: Path | None) -> Path:
+    """The clip file, rebased onto --clips-root when one is given."""
+    # PurePath cannot split a Windows path on Linux, so take the basename by hand.
+    name = str(path_value).replace("\\", "/").rsplit("/", 1)[-1]
+    return (root / name) if root else Path(path_value)
 
-    from training.dataloader import _load_window
+
+def clip_wav(clip: dict, root: Path | None = None) -> tuple[bytes, float]:
+    """The clip's audio as wav bytes, with PAD seconds of context either side.
+
+    Prefers plain soundfile, because that keeps the tool deployable: reading a window out of
+    a multi-hour source needs `training.dataloader`, which drags in torch and the whole
+    training package. Once the clips have been cut to their own wav files -- which is what
+    `data/gold_set/clips` already is -- the dependency is just soundfile and numpy, small
+    enough to host anywhere.
+    """
+    import soundfile
 
     begin = max(0.0, clip["start"] - PAD)
     lead = clip["start"] - begin
-    wav = _load_window(clip["path"], begin, clip["duration"] + lead + PAD, 24000)
+    want = clip["duration"] + lead + PAD
+    path = resolve(clip["path"], root)
+
+    if path.suffix.lower() == ".wav" and path.exists():
+        with soundfile.SoundFile(path) as handle:
+            rate = handle.samplerate
+            handle.seek(int(begin * rate))
+            wav = handle.read(int(want * rate), dtype="float32", always_2d=False)
+        if getattr(wav, "ndim", 1) > 1:
+            wav = wav.mean(axis=1)
+    else:
+        from training.dataloader import _load_window
+
+        rate = 24000
+        wav = _load_window(str(path), begin, want, rate)
+
     buffer = io.BytesIO()
-    soundfile.write(buffer, wav, 24000, format="WAV", subtype="PCM_16")
+    soundfile.write(buffer, wav, rate, format="WAV", subtype="PCM_16")
     return buffer.getvalue(), lead
 
 
@@ -159,6 +220,37 @@ PAGE_FILE = Path(__file__).with_name("align_tag_page.html")
 def page() -> bytes:
     """Read the UI from disk on every request, so editing the page needs no restart."""
     return PAGE_FILE.read_bytes()
+
+
+_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def gold_path(args, who: str | None) -> Path:
+    """One file per annotator when several are marking, otherwise the single --out file."""
+    if not args.multi:
+        return args.out
+    args.out.mkdir(parents=True, exist_ok=True)
+    return args.out / f"{who or 'anon'}.jsonl"
+
+
+def load_saved(path: Path, clips: list[dict]) -> dict[int, list]:
+    if not path.exists():
+        return {}
+    by_key = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        by_key[(row["path"], round(float(row["start"]), 3))] = row["words"]
+    out = {}
+    for index, clip in enumerate(clips):
+        hit = by_key.get((clip["path"], round(clip["start"], 3)))
+        if hit:
+            out[index] = hit
+    return out
 
 
 def make_handler(args, clips, saved):
@@ -175,15 +267,34 @@ def make_handler(args, clips, saved):
             self.end_headers()
             self.wfile.write(body)
 
+        def who(self):
+            from urllib.parse import parse_qs
+
+            name = (parse_qs(urlparse(self.path).query).get("who") or [""])[0]
+            return name if _NAME.match(name) else None
+
+        def authorised(self):
+            from urllib.parse import parse_qs
+
+            if not args.token:
+                return True
+            return (parse_qs(urlparse(self.path).query).get("t") or [""])[0] == args.token
+
         def do_GET(self):
+            if not self.authorised():
+                return self.send(403, b"bad or missing token", "text/plain")
             route = urlparse(self.path).path
             if route == "/":
                 return self.send(200, page(), "text/html; charset=utf-8")
+            if route == "/api/meta":
+                meta = {"multi": bool(args.multi), "clips": len(clips)}
+                return self.send(200, json.dumps(meta).encode("utf-8"), "application/json")
             if route == "/api/clips":
+                mine = load_saved(gold_path(args, self.who()), clips) if args.multi else saved
                 payload = []
                 for index, clip in enumerate(clips):
                     entry = dict(clip)
-                    entry["saved"] = saved.get(index)
+                    entry["saved"] = mine.get(index)
                     payload.append(entry)
                 return self.send(
                     200,
@@ -193,7 +304,7 @@ def make_handler(args, clips, saved):
             if route.startswith("/api/audio/"):
                 index = int(route.rsplit("/", 1)[1])
                 try:
-                    data, lead = clip_wav(clips[index])
+                    data, lead = clip_wav(clips[index], args.clips_root)
                 except Exception as exc:  # noqa: BLE001 -- a bad clip must not kill the server
                     return self.send(500, str(exc).encode(), "text/plain")
                 headers = {"X-Lead": f"{lead:.4f}", "Accept-Ranges": "bytes"}
@@ -215,12 +326,19 @@ def make_handler(args, clips, saved):
             return self.send(404, b"not found", "text/plain")
 
         def do_POST(self):
+            if not self.authorised():
+                return self.send(403, b"bad or missing token", "text/plain")
             if urlparse(self.path).path != "/api/gold":
                 return self.send(404, b"not found", "text/plain")
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length).decode("utf-8"))
-            saved[int(body["index"])] = body["words"]
-            write_gold(args.out, clips, saved)
+            path = gold_path(args, self.who())
+            # Re-read before writing. Two annotators sharing a file would otherwise each hold
+            # a stale copy and the second save would drop the first one's work.
+            with LOCK:
+                mine = load_saved(path, clips)
+                mine[int(body["index"])] = body["words"]
+                write_gold(path, clips, mine)
             return self.send(200, b'{"ok":true}', "application/json")
 
     return Handler
@@ -261,26 +379,32 @@ def main() -> None:
     if not clips:
         raise SystemExit(f"no usable clips in {args.a}")
 
-    saved: dict[int, list] = {}
-    if args.out.exists():
-        by_key = {
-            (r["path"], round(float(r["start"]), 3)): r["words"]
-            for r in (
-                json.loads(line)
-                for line in args.out.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            )
-        }
-        for index, clip in enumerate(clips):
-            hit = by_key.get((clip["path"], round(clip["start"], 3)))
-            if hit:
-                saved[index] = hit
+    # In --multi each annotator has their own file, loaded per request from their name;
+    # there is no single shared state to resume into here.
+    saved: dict[int, list] = {} if args.multi else load_saved(args.out, clips)
+    if saved:
         print(f"resuming: {len(saved)} clips already marked")
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(args, clips, saved))
+    missing = [c for c in clips if not resolve(c["path"], args.clips_root).exists()]
+    if missing:
+        hint = " (try --clips-root)" if not args.clips_root else ""
+        first = resolve(missing[0]["path"], args.clips_root)
+        print(
+            f"{len(missing)} of {len(clips)} clip files are not where the "
+            f"manifest says they are{hint}."
+        )
+        raise SystemExit(f"  first missing: {first}")
+
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(args, clips, saved))
     words = sum(len(c["a"]) for c in clips)
     print(f"{len(clips)} clips, {words} boundaries to check")
-    print(f"open http://localhost:{args.port}   (ctrl-c to stop; progress is saved per clip)")
+    where = "localhost" if args.host in ("127.0.0.1", "localhost") else args.host
+    link = f"http://{where}:{args.port}/"
+    if args.token:
+        link += f"?t={args.token}"
+    print(f"open {link}   (ctrl-c to stop; progress is saved per clip)")
+    if args.multi:
+        print(f"several annotators: each gets their own file under {args.out}/")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

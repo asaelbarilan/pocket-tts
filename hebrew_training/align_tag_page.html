@@ -10,6 +10,18 @@
  .legend{float:right;text-transform:none;letter-spacing:0;font-size:12px}
  .key{display:inline-block;margin-left:12px}
  .sw{display:inline-block;width:11px;height:3px;vertical-align:middle;margin-right:4px}
+ #gate{position:fixed;inset:0;background:#14161a;display:none;align-items:center;
+       justify-content:center;z-index:50}
+ #gate.on{display:flex}
+ #gate .card{background:#1c1f25;border-radius:10px;padding:26px 28px;max-width:420px}
+ #gate h2{font-size:16px;margin:0 0 10px}
+ #gate p{color:#8a8f98;line-height:1.5;margin:0 0 16px}
+ #gate input{width:100%;font:14px system-ui,sans-serif;padding:9px 11px;border-radius:6px;
+             border:1px solid #333842;background:#14161a;color:#e8e8ea}
+ #gate button{margin-top:12px;width:100%;font:600 14px system-ui,sans-serif;padding:9px;
+              border:0;border-radius:6px;background:#3d6fd6;color:#fff;cursor:pointer}
+ #whoerr{color:#e06c6c;font-size:12px;min-height:16px;margin-top:8px}
+ #me{color:#6f757f;font-size:12px;margin-left:auto}
  #ov{display:block;width:100%;height:90px;background:#1c1f25;border-radius:6px;cursor:pointer}
  #zm{display:block;width:100%;height:220px;background:#1c1f25;border-radius:6px;cursor:grab}
  #zm.grabbing{cursor:grabbing}
@@ -39,7 +51,17 @@
  kbd{background:#2a2e37;border:1px solid #3a3f4a;border-radius:4px;padding:1px 5px;font-size:11.5px}
 </style>
 
-<div class="top"><h1>Hebrew alignment tagging</h1><div id="bar"></div></div>
+<div id="gate"><div class="card">
+  <h2>Hebrew alignment tagging</h2>
+  <p>Your name keeps your marks in their own file, so several people can mark the same
+     clips and we can measure how much they agree.</p>
+  <form id="whoform">
+    <input id="whoin" placeholder="name (letters, digits, - or _)" autocomplete="off" spellcheck="false">
+    <button id="whogo" type="submit">Start marking</button>
+  </form>
+  <div id="whoerr"></div>
+</div></div>
+<div class="top"><h1>Hebrew alignment tagging</h1><div id="bar"></div><div id="me"></div></div>
 
 <div class="lab">whole clip &mdash; click or drag to move the playhead
   <span class="legend">
@@ -105,6 +127,19 @@ playhead, and <b>drag empty space to slide the view</b>. <b>Wheel zooms</b>, shi
 </div>
 
 <script>
+const PARAMS=new URLSearchParams(location.search);
+const TOK=PARAMS.get('t')||'';
+let WHO=PARAMS.get('who')||localStorage.getItem('tagWho')||'';
+// Hosted, the token gates the whole server and `who` decides which file a save lands in,
+// so both have to ride along on every request -- including the <audio> src, which is a
+// browser-issued GET this code never sees.
+function api(path){
+  const q=new URLSearchParams();
+  if(TOK)q.set('t',TOK);
+  if(WHO)q.set('who',WHO);
+  const s=q.toString();
+  return s?path+'?'+s:path;
+}
 let clips=[],ci=0,wi=0,edge='end',gold=[],touched=new Set();
 let buf=null,lead=0,ctx=null,peaks=null;
 let playing=false,head=0,loopKind=null,rate=1,seg=null;
@@ -115,19 +150,41 @@ const $=id=>document.getElementById(id);
 const f3=t=>t.toFixed(3);
 const mmss=t=>{t=Math.max(0,t);return Math.floor(t/60)+':'+(t%60).toFixed(2).padStart(5,'0');};
 
+const NAME=/^[A-Za-z0-9_-]{1,32}$/;
+
 async function boot(){
-  clips=await (await fetch('/api/clips')).json();
+  const meta=await (await fetch(api('/api/meta'))).json();
+  if(meta.multi && !NAME.test(WHO)) return gate();
+  if(meta.multi) $('me').textContent='marking as '+WHO;
+  return load();
+}
+function gate(){
+  const g=$('gate'); g.classList.add('on'); $('whoin').focus();
+  const go=()=>{
+    const v=$('whoin').value.trim();
+    if(!NAME.test(v)){ $('whoerr').textContent=
+      'Letters, digits, - and _ only, up to 32 characters.'; return; }
+    WHO=v; localStorage.setItem('tagWho',v);
+    g.classList.remove('on'); $('me').textContent='marking as '+WHO;
+    load();
+  };
+  // A real form, so Enter submits the way it does in every other text box, rather than
+  // riding on a keydown handler.
+  $('whoform').onsubmit=e=>{ e.preventDefault(); go(); };
+}
+async function load(){
+  clips=await (await fetch(api('/api/clips'))).json();
   ci=clips.findIndex(c=>!c.saved); if(ci<0)ci=0;
   await loadClip(); tick();
 }
 async function loadClip(){
   stop();
-  au.src='/api/audio/'+ci;
+  au.src=api('/api/audio/'+ci);
   const c=clips[ci];
   gold=(c.saved||c.a).map(w=>({word:w.word,start:w.start,end:w.end}));
   touched=new Set(c.saved?gold.map((_,i)=>i):[]);
   wi=0; edge='end'; head=0;
-  const r=await fetch('/api/audio/'+ci); lead=parseFloat(r.headers.get('X-Lead')||'0');
+  const r=await fetch(api('/api/audio/'+ci)); lead=parseFloat(r.headers.get('X-Lead')||'0');
   const ab=await r.arrayBuffer();
   ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
   buf=await ctx.decodeAudioData(ab);
@@ -525,14 +582,18 @@ $('save').onclick=saveNext;
 $('skip').onclick=()=>{if(ci<clips.length-1){ci++;loadClip();}};
 
 async function saveNext(){
-  await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
+  await fetch(api('/api/gold'),{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({index:ci,words:gold})});
   clips[ci].saved=gold.map(w=>({...w}));
   if(ci<clips.length-1){ci++;await loadClip();} else render();
 }
 
 addEventListener('keydown',async e=>{
-  if(e.target.tagName==='SELECT')return;
+  // Never let the transport shortcuts fire while someone is typing: every letter of a
+  // name is also a shortcut here, so the name box would play, seek and re-mark as it
+  // was filled in.
+  if(/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)||e.target.isContentEditable)return;
+  if($('gate').classList.contains('on'))return;
   if(e.code==='Space'){e.preventDefault();toggle();return;}
   if(e.key==='Escape'){loopKind=null;$('loopWord').classList.remove('on');$('loopMark').classList.remove('on');stop();head=0;seg=null;draw();return;}
   if(e.key==='Tab'){e.preventDefault();edge=(edge==='end')?'start':'end';draw();render();return;}

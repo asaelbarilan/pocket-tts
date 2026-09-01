@@ -1,0 +1,4 @@
+**/__pycache__
+data/gold_set/gold.jsonl
+data/gold_set/server.log
+data/gold_set/marks
