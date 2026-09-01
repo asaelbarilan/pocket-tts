@@ -1,53 +1,85 @@
 <!doctype html><meta charset="utf-8"><title>Hebrew alignment tagging</title>
 <style>
  body{font:14px system-ui,sans-serif;margin:0;padding:16px;background:#14161a;color:#e8e8ea}
- h1{font-size:15px;margin:0 0 10px;font-weight:600}
+ h1{font-size:15px;margin:0 0 8px;font-weight:600}
  #bar{color:#8a8f98;margin-bottom:10px}
- #wrap{background:#1c1f25;border-radius:6px;overflow:hidden}
- canvas{display:block;width:100%;height:210px;cursor:text}
- #transport{display:flex;align-items:center;gap:10px;margin:12px 0}
- button{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:5px;
-        padding:6px 14px;font:14px system-ui;cursor:pointer}
- button:hover{background:#333844}
+ #wrap{background:#1c1f25;border-radius:6px 6px 0 0;overflow:hidden}
+ canvas{display:block;width:100%;height:200px;cursor:pointer}
+ #seek{height:6px;background:#22262e;position:relative;cursor:pointer;border-radius:0 0 6px 6px}
+ #seekfill{height:100%;background:#3d6fd6;width:0}
+ #transport{display:flex;align-items:center;gap:6px;margin:12px 0}
+ button{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:6px;
+        padding:7px 11px;font:14px system-ui;cursor:pointer;min-width:40px}
+ button:hover{background:#363c47}
  button.on{background:#3d6fd6;border-color:#3d6fd6;color:#fff}
- select{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:5px;padding:5px}
- #clock{color:#8a8f98;font-variant-numeric:tabular-nums;margin-left:auto}
+ button.big{font-size:16px;padding:7px 16px}
+ select{background:#2a2e37;color:#e8e8ea;border:1px solid #3a3f4a;border-radius:6px;padding:6px}
+ .sep{width:1px;height:26px;background:#333844;margin:0 6px}
+ #clock{color:#c8ccd4;font-variant-numeric:tabular-nums;margin-left:auto;font-size:13px}
  #words{margin:12px 0;direction:rtl;text-align:right;line-height:2.4}
  .w{padding:4px 9px;margin:0 3px;border-radius:5px;background:#252932;cursor:pointer}
  .w.cur{background:#3d6fd6;color:#fff}
+ #edit{display:flex;align-items:center;gap:6px;margin:10px 0;flex-wrap:wrap}
+ #edit .lbl{color:#8a8f98;margin-right:4px}
  #hint{color:#8a8f98;margin-top:12px;line-height:1.9;font-size:13px}
  kbd{background:#2a2e37;border:1px solid #3a3f4a;border-radius:4px;padding:1px 6px;font-size:12px}
- #cmp{margin-top:8px;font-variant-numeric:tabular-nums}
+ #cmp{margin-top:6px;font-variant-numeric:tabular-nums}
  .pill{display:inline-block;padding:3px 10px;margin-right:8px;border-radius:5px;background:#252932}
 </style>
 <h1>Hebrew alignment tagging</h1>
 <div id="bar"></div>
 <div id="wrap"><canvas id="cv"></canvas></div>
+<div id="seek"><div id="seekfill"></div></div>
+
 <div id="transport">
-  <button id="play">&#9654; play</button>
-  <button id="playword">&#9654; word</button>
-  <button id="loop">loop</button>
-  <select id="rate"><option value="1">1.0x</option><option value="0.75">0.75x</option>
-    <option value="0.5">0.5x</option><option value="0.35">0.35x</option></select>
-  <button id="setb">set end here (f)</button>
-  <span id="clock">0.00 / 0.00</span>
+  <button id="tostart" title="Back to start (Home)">&#9198;</button>
+  <button id="back" title="Back 1s">&#9194;</button>
+  <button id="play" class="big" title="Play / Pause (Space)">&#9654;</button>
+  <button id="stopb" title="Stop">&#9632;</button>
+  <button id="fwd" title="Forward 1s">&#9193;</button>
+  <div class="sep"></div>
+  <button id="playword" title="Play current word (W)">&#9654; word</button>
+  <button id="loop" title="Loop what is playing">loop</button>
+  <select id="rate" title="Playback speed">
+    <option value="1">1.0&times;</option><option value="0.75">0.75&times;</option>
+    <option value="0.5">0.5&times;</option><option value="0.35">0.35&times;</option>
+  </select>
+  <span id="clock">0:00.00 / 0:00.00</span>
 </div>
+
 <div id="words"></div>
 <div id="cmp"></div>
+
+<div id="edit">
+  <span class="lbl">word end:</span>
+  <button id="prevw" title="Previous word (&larr;)">&larr; word</button>
+  <button id="nextw" title="Next word (&rarr;)">word &rarr;</button>
+  <div class="sep"></div>
+  <button id="useA" title="Accept aligner A (A)">use A</button>
+  <button id="useB" title="Accept aligner B (B)">use B</button>
+  <button id="setb" title="Set end at playhead (F)">set at playhead</button>
+  <button id="m10">&minus;10ms</button><button id="p10">+10ms</button>
+  <div class="sep"></div>
+  <button id="save" class="on" title="Save clip and go to next (Enter)">save &amp; next</button>
+  <button id="skip" title="Skip (S)">skip</button>
+</div>
+
 <div id="hint">
-<kbd>space</kbd> play/pause &nbsp; <kbd>w</kbd> play current word &nbsp;
-<kbd>&larr;</kbd><kbd>&rarr;</kbd> word &nbsp; <kbd>a</kbd>/<kbd>b</kbd> accept that aligner &nbsp;
+<kbd>space</kbd> play/pause &nbsp; <kbd>w</kbd> word &nbsp; <kbd>home</kbd> start &nbsp;
+<kbd>&larr;</kbd><kbd>&rarr;</kbd> change word &nbsp; <kbd>a</kbd>/<kbd>b</kbd> accept aligner &nbsp;
 <kbd>f</kbd> set end at playhead &nbsp; <kbd>,</kbd><kbd>.</kbd> nudge 10ms &nbsp;
-<kbd>&lt;</kbd><kbd>&gt;</kbd> 2ms &nbsp; <kbd>enter</kbd> save &amp; next &nbsp; <kbd>s</kbd> skip
-<br>Click the waveform to seek and play from there. Drag the <b>blue line</b> to move the
+<kbd>enter</kbd> save &amp; next &nbsp; <kbd>s</kbd> skip
+<br>Click the waveform or the bar under it to seek. Drag the <b>blue line</b> to move the
 current word's end.
 </div>
+
 <script>
 let clips=[],ci=0,wi=0,gold=[],buf=null,lead=0,ctx=null,peaks=null;
 let src=null,playing=false,t0=0,off=0,loop=false,rate=1,seg=null;
 const cv=document.getElementById('cv'),g=cv.getContext('2d');
 const $=id=>document.getElementById(id);
-const fmt=t=>t.toFixed(3);
+const fmt3=t=>t.toFixed(3);
+const mmss=t=>{t=Math.max(0,t);return Math.floor(t/60)+':'+(t%60).toFixed(2).padStart(5,'0');};
 
 async function boot(){
   clips=await (await fetch('/api/clips')).json();
@@ -65,28 +97,46 @@ async function loadClip(){
   buf=await ctx.decodeAudioData(ab);
   peaks=null; draw(); render();
 }
+const total=()=>buf?buf.duration-lead:0;
 
-// ---- transport -----------------------------------------------------------
-function now(){ return playing ? off+(ctx.currentTime-t0)*rate : off; }
-function stop(){ if(src){try{src.onended=null;src.stop()}catch(e){}} src=null; playing=false;
-  $('play').innerHTML='&#9654; play'; }
+// ---- transport: behaves like any audio player ----------------------------
+function now(){ return Math.min(playing?off+(ctx.currentTime-t0)*rate:off, total()); }
+function setLabel(){ $('play').innerHTML = playing ? '&#10074;&#10074;' : '&#9654;'; }
+function stop(){ if(src){try{src.onended=null;src.stop();}catch(e){}} src=null; playing=false;
+  setLabel(); }
 function start(from,to){
-  stop(); seg=(to!=null)?[from,to]:null; off=from;
+  if(!buf)return;
+  if(ctx.state==='suspended') ctx.resume();
+  stop();
+  seg=(to!=null)?[from,to]:null; off=Math.max(0,Math.min(from,total()));
+  const len=(to!=null?to:total())-off;
+  if(len<=.01){ draw(); return; }
   src=ctx.createBufferSource(); src.buffer=buf; src.playbackRate.value=rate;
   src.connect(ctx.destination);
-  const len=(to!=null)?(to-from):(buf.duration-lead-from);
-  src.start(0,Math.max(0,from+lead),Math.max(.02,len));
-  t0=ctx.currentTime; playing=true; $('play').innerHTML='&#10074;&#10074; pause';
+  src.start(0,off+lead,len);
+  t0=ctx.currentTime; playing=true; setLabel();
   src.onended=()=>{ if(!playing)return;
     if(loop&&seg){ start(seg[0],seg[1]); }
-    else { const e=(to!=null)?to:0; stop(); off=e; draw(); } };
+    else { const end=(to!=null)?to:total(); stop(); off=end; draw(); } };
 }
-function toggle(){ if(playing){ off=now(); stop(); draw(); } else start(off,null); }
+function toggle(){ if(playing){ off=now(); stop(); draw(); } else start(off,seg?seg[1]:null); }
+function seek(t){ const was=playing; off=Math.max(0,Math.min(t,total()));
+  if(was) start(off,seg?seg[1]:null); else { stop(); draw(); } }
 function playWord(){ start(gold[wi].start,gold[wi].end); }
+
+$('play').onclick=toggle;
+$('stopb').onclick=()=>{ stop(); off=0; seg=null; draw(); };
+$('tostart').onclick=()=>seek(0);
+$('back').onclick=()=>seek(now()-1);
+$('fwd').onclick=()=>seek(now()+1);
+$('playword').onclick=playWord;
+$('loop').onclick=()=>{loop=!loop; $('loop').classList.toggle('on',loop);};
+$('rate').onchange=e=>{rate=parseFloat(e.target.value);
+  if(playing){const p=now(); start(p,seg?seg[1]:null);} };
 
 // ---- drawing -------------------------------------------------------------
 function draw(){
-  const w=cv.clientWidth,h=210; cv.width=w*devicePixelRatio; cv.height=h*devicePixelRatio;
+  const w=cv.clientWidth,h=200; cv.width=w*devicePixelRatio; cv.height=h*devicePixelRatio;
   g.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); g.clearRect(0,0,w,h);
   if(!buf)return;
   const d=buf.getChannelData(0),n=d.length,dur=buf.duration;
@@ -105,10 +155,11 @@ function draw(){
   if(c.b){ g.fillStyle='#d98a3d'; g.fillRect(X(c.b[wi].end),0,1,h); }
   gold.forEach((wd,i)=>{ g.fillStyle=(i===wi)?'#6aa0ff':'#48505e';
     g.fillRect(X(wd.end),0,(i===wi)?3:1,h); });
-  const p=now(); g.fillStyle='#ff5f56'; g.fillRect(X(p),0,2,h);
+  g.fillStyle='#ff5f56'; g.fillRect(X(now()),0,2,h);
+  $('seekfill').style.width=(total()?now()/total()*100:0)+'%';
 }
 function tick(){ if(playing) draw();
-  $('clock').textContent=now().toFixed(2)+' / '+(buf?(buf.duration-lead).toFixed(2):'0.00');
+  $('clock').textContent=mmss(now())+' / '+mmss(total());
   requestAnimationFrame(tick); }
 
 function render(){
@@ -119,67 +170,79 @@ function render(){
   gold.forEach((wd,i)=>{const s=document.createElement('span');
     s.className='w'+(i===wi?' cur':''); s.textContent=wd.word;
     s.onclick=()=>{wi=i;draw();render();playWord();}; ws.appendChild(s);});
-  const parts=['<span class="pill" style="color:#4ec98a">A end '+fmt(c.a[wi].end)+'</span>'];
-  if(c.b)parts.push('<span class="pill" style="color:#d98a3d">B end '+fmt(c.b[wi].end)+'</span>');
-  parts.push('<span class="pill" style="color:#6aa0ff">gold '+fmt(gold[wi].end)+'</span>');
+  const parts=['<span class="pill" style="color:#4ec98a">A end '+fmt3(c.a[wi].end)+'</span>'];
+  if(c.b)parts.push('<span class="pill" style="color:#d98a3d">B end '+fmt3(c.b[wi].end)+'</span>');
+  parts.push('<span class="pill" style="color:#6aa0ff">gold '+fmt3(gold[wi].end)+'</span>');
   if(c.b)parts.push('<span class="pill">A-B '
     +Math.round(Math.abs(c.a[wi].end-c.b[wi].end)*1000)+' ms</span>');
   $('cmp').innerHTML=parts.join('');
 }
 
+// ---- boundary editing ----------------------------------------------------
 function setEnd(t){
   // Only the previous boundary and the clip end constrain this one. Clamping against the
-  // NEXT word's end would silently refuse an "accept aligner B" keypress whenever B places
+  // NEXT word's end would silently refuse an "accept aligner B" action whenever B places
   // this word later than A placed the following one -- exactly the disagreement the
   // annotator is here to resolve. Later boundaries are pushed forward instead.
   const lo=(wi>0)?gold[wi-1].end+.005:0;
-  gold[wi].end=Math.min(Math.max(t,lo),buf.duration-lead);
+  gold[wi].end=Math.min(Math.max(t,lo),total());
   for(let j=wi+1;j<gold.length;j++)
     if(gold[j].end<gold[j-1].end+.005) gold[j].end=gold[j-1].end+.005;
   for(let j=1;j<gold.length;j++) gold[j].start=gold[j-1].end;
   draw(); render();
 }
+const goWord=i=>{ wi=Math.max(0,Math.min(i,gold.length-1)); draw(); render(); playWord(); };
+$('prevw').onclick=()=>goWord(wi-1);
+$('nextw').onclick=()=>goWord(wi+1);
+$('useA').onclick=()=>setEnd(clips[ci].a[wi].end);
+$('useB').onclick=()=>{const b=clips[ci].b; if(b)setEnd(b[wi].end);};
+$('setb').onclick=()=>setEnd(now());
+$('m10').onclick=()=>setEnd(gold[wi].end-.01);
+$('p10').onclick=()=>setEnd(gold[wi].end+.01);
+$('save').onclick=saveNext;
+$('skip').onclick=()=>{ if(ci<clips.length-1){ci++; loadClip();} };
 
-const tAt=e=>{const r=cv.getBoundingClientRect();
-  return (e.clientX-r.left)/r.width*buf.duration-lead;};
+async function saveNext(){
+  await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({index:ci,words:gold})});
+  clips[ci].saved=gold.map(w=>({...w}));
+  if(ci<clips.length-1){ci++; await loadClip();} else render();
+}
+
+// ---- pointer -------------------------------------------------------------
+const tAt=(e,el)=>{const r=el.getBoundingClientRect();
+  return (e.clientX-r.left)/r.width*(el===cv?buf.duration:total())-(el===cv?lead:0);};
 cv.onmousedown=e=>{
   const r=cv.getBoundingClientRect();
   const bx=(gold[wi].end+lead)/buf.duration*r.width;
-  if(Math.abs(bx-(e.clientX-r.left))<7){          // grabbed the blue line: drag the boundary
-    const mv=ev=>setEnd(tAt(ev));
+  if(Math.abs(bx-(e.clientX-r.left))<7){        // grab the blue line: drag the boundary
+    const mv=ev=>setEnd(tAt(ev,cv));
     const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
     addEventListener('mousemove',mv); addEventListener('mouseup',up); return;
   }
-  start(Math.max(0,tAt(e)),null);                 // otherwise: seek and play from here
+  seek(tAt(e,cv));                              // otherwise: seek, like any player
 };
-
-$('play').onclick=toggle;
-$('playword').onclick=playWord;
-$('loop').onclick=()=>{loop=!loop; $('loop').classList.toggle('on',loop);};
-$('rate').onchange=e=>{rate=parseFloat(e.target.value);
-  if(playing){const p=now(); stop(); start(p,seg?seg[1]:null);}};
-$('setb').onclick=()=>setEnd(now());
+$('seek').onmousedown=e=>{ seek(tAt(e,$('seek')));
+  const mv=ev=>seek(tAt(ev,$('seek')));
+  const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);};
+  addEventListener('mousemove',mv); addEventListener('mouseup',up); };
 
 addEventListener('keydown',async e=>{
-  if(e.target.tagName==='SELECT')return;
+  if(e.target.tagName==='SELECT'||e.target.tagName==='INPUT')return;
   const c=clips[ci];
   if(e.code==='Space'){e.preventDefault(); toggle(); return;}
+  if(e.key==='Home'){seek(0); return;}
   if(e.key==='w'){playWord(); return;}
   if(e.key==='f'){setEnd(now()); return;}
-  if(e.key==='ArrowLeft'){wi=Math.max(0,wi-1);draw();render();playWord();return;}
-  if(e.key==='ArrowRight'){wi=Math.min(gold.length-1,wi+1);draw();render();playWord();return;}
+  if(e.key==='ArrowLeft'){e.preventDefault(); goWord(wi-1); return;}
+  if(e.key==='ArrowRight'){e.preventDefault(); goWord(wi+1); return;}
   if(e.key==='a'){setEnd(c.a[wi].end);return;}
   if(e.key==='b'&&c.b){setEnd(c.b[wi].end);return;}
   if(e.key===','){setEnd(gold[wi].end-.01);return;}
   if(e.key==='.'){setEnd(gold[wi].end+.01);return;}
   if(e.key==='<'){setEnd(gold[wi].end-.002);return;}
   if(e.key==='>'){setEnd(gold[wi].end+.002);return;}
-  if(e.key==='Enter'){
-    await fetch('/api/gold',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({index:ci,words:gold})});
-    clips[ci].saved=gold.map(w=>({...w}));
-    if(ci<clips.length-1){ci++; await loadClip();} else render();
-    return;}
+  if(e.key==='Enter'){await saveNext(); return;}
   if(e.key==='s'){ if(ci<clips.length-1){ci++; await loadClip();} return;}
 });
 addEventListener('resize',()=>{peaks=null;draw();});
