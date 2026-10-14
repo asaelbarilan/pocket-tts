@@ -26,10 +26,25 @@ reset_text_embedding: true  # the tokenizer below is not the one these weights w
 
 # Built in ONE pass over every corpus, so the speaker-disjoint validation split is cut
 # across all of them rather than per source:
-#   python -m hebrew_training.build_official_manifest #       --corpus <crowd-recital> <knesset-plenums> <knesset-committees> #       --out-dir data/hebrew_official --normalize-text --valid-hours 6
-# --valid-hours has to be large enough to hold a whole Knesset recording: those corpora
-# carry no speaker field, so one "speaker" is one recording of about three hours, and a
-# smaller budget drops plenum audio from validation entirely.
+#   python -m hebrew_training.build_official_manifest \
+#       --corpus <crowd-recital> <knesset-committees> \
+#       --out-dir data/hebrew_official --normalize-text --valid-hours 2.5
+#
+# Committees, not plenums: 11,144 recordings against 1,551, so many more speakers and
+# rooms, and committee speech is closer to conversation than to declamation.
+#
+# --valid-hours must be large enough to hold a whole Knesset recording. Those corpora
+# carry no speaker field, so one "speaker" is one whole recording, and a budget smaller
+# than that drops the source out of validation entirely while it is still most of
+# training. At 2.0 h it held out no Knesset audio at all; 2.5 h holds out three.
+#
+# Then transcode, which is not optional: sphn cannot read the Knesset .m4a files at all,
+# and the dataloader skips an unreadable row with a single warning line, so a run will
+# quietly train on whatever is left.
+#   python -m hebrew_training.transcode_corpus \
+#       --manifest data/hebrew_official/train_aligned.jsonl \
+#       --manifest data/hebrew_official/valid_aligned.jsonl --out-dir <wav dir>
+# Point the two paths below at the _wav.jsonl manifests it writes.
 data:
   train_jsonl: data/hebrew_official/train_aligned.jsonl
   valid_jsonl: data/hebrew_official/valid_aligned.jsonl

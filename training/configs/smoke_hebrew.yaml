@@ -24,8 +24,8 @@ start_from_pretrained: true
 reset_text_embedding: true
 
 data:
-  train_jsonl: data/hebrew_pilot_v4/train_aligned_wav.jsonl
-  valid_jsonl: data/hebrew_pilot_v4/valid_aligned_wav.jsonl
+  train_jsonl: data/hebrew_pilot_v5/train_aligned_wav.jsonl
+  valid_jsonl: data/hebrew_pilot_v5/valid_aligned_wav.jsonl
   max_duration_sec: 12.0  # 30.0 upstream; shorter rows keep a batch inside 8 GB
   max_voice_prompt_sec: 5.0
 
