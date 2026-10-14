@@ -57,6 +57,7 @@ import re
 import statistics
 import sys
 import unicodedata
+import pathlib
 from pathlib import Path
 
 _WS = re.compile(r"\s+")
@@ -73,7 +74,11 @@ def parse_args() -> argparse.Namespace:
         description="Build Kyutai-format training manifests from an aligned Hebrew corpus."
     )
     parser.add_argument(
-        "--corpus", type=Path, required=True, help="Root holding one directory per recording."
+        "--corpus", type=Path, required=True, nargs="+",
+        help="Root holding one directory per recording. Repeatable: pass every corpus the "
+        "model should train on in one run, so the speaker-disjoint validation split is cut "
+        "across all of them at once rather than per source. --limit-recordings then applies "
+        "to each root separately, which is how you set the mix.",
     )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
@@ -411,9 +416,13 @@ def main() -> None:
     normalize = load_normalizer(args.normalizer_dir) if args.normalize_text else None
     rng = random.Random(args.seed)
 
-    recordings = sorted(p for p in args.corpus.iterdir() if p.is_dir())
-    if args.limit_recordings:
-        recordings = recordings[: args.limit_recordings]
+    recordings = []
+    for root in args.corpus:
+        found = sorted(p for p in root.iterdir() if p.is_dir())
+        if args.limit_recordings:
+            found = found[: args.limit_recordings]
+        print(f"corpus {root}: {len(found)} recordings")
+        recordings.extend(found)
 
     all_rows: list[dict] = []
     totals = {
@@ -478,7 +487,16 @@ def main() -> None:
     def hours(rows: list[dict]) -> float:
         return sum(r["duration"] for r in rows) / 3600
 
+    by_source: dict[str, float] = {}
+    for row in all_rows:
+        root = next((str(r) for r in args.corpus if str(row["path"]).startswith(str(r))), "?")
+        by_source[root] = by_source.get(root, 0.0) + row["duration"]
     print(f"recordings scanned : {len(recordings)}")
+    if len(args.corpus) > 1:
+        whole = sum(by_source.values())
+        for root, seconds in sorted(by_source.items(), key=lambda kv: -kv[1]):
+            print(f"  {pathlib.Path(root).name:28s} {seconds / 3600:6.2f} h  "
+                  f"{100 * seconds / whole:5.1f}%")
     print(f"utterances kept    : {totals['kept']}")
     print(
         f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
