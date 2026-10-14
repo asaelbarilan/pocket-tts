@@ -8,10 +8,14 @@ import sentencepiece as spm
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a 4,000-piece Hebrew tokenizer.")
+    parser = argparse.ArgumentParser(description="Train the Hebrew tokenizer.")
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--vocab-size", type=int, default=4000)
+    # 8000, not 4000. At 4000 a corpus carrying plain Hebrew, vocalized Hebrew and
+    # English costs every one of them (~0.37-0.39 tokens/char); at 8000 they sit at
+    # 0.31-0.35 and plain Hebrew is no worse than a Knesset-only specialist. Whatever is
+    # set here must equal flow_lm.lookup_table.n_bins in the training config.
+    parser.add_argument("--vocab-size", type=int, default=8000)
     return parser.parse_args()
 
 

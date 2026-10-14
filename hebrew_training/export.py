@@ -45,7 +45,14 @@ def main() -> None:
     base_config["weights_path"] = str(weights_out.resolve())
     base_config["weights_path_without_voice_cloning"] = str(weights_out.resolve())
     base_config["flow_lm"]["lookup_table"]["tokenizer_path"] = str(tokenizer_out.resolve())
-    base_config["flow_lm"]["lookup_table"]["n_bins"] = 4000
+    # From the tokenizer itself, never a literal: n_bins and the SentencePiece model have
+    # to agree or pocket_tts asserts, and a hardcoded 4000 silently became wrong the day
+    # the tokenizer moved to 8000.
+    import sentencepiece as spm
+
+    base_config["flow_lm"]["lookup_table"]["n_bins"] = spm.SentencePieceProcessor(
+        model_file=str(tokenizer_out)
+    ).vocab_size()
     config_out = args.output_dir / "hebrew.yaml"
     config_out.write_text(
         yaml.safe_dump(base_config, sort_keys=False, allow_unicode=True), encoding="utf-8"

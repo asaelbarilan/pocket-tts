@@ -30,7 +30,7 @@ flow_lm:
     num_layers: 6
   lookup_table:
     dim: 1024
-    n_bins: 4000
+    n_bins: 8000
     tokenizer: sentencepiece
     tokenizer_path: tokenizers/hebrew.model  # <- train_tokenizer.py output
   #weights_path: final.safetensors
