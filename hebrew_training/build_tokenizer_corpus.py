@@ -12,7 +12,9 @@ byte fallback, which is to say it cannot spell them at all.
 This writes a file with four kinds of text in it instead, in the shares the measurements in
 docs/hebrew-english-data-mixing.md settled on:
 
-    knesset     15%   the manifest text (--manifest-text), already normalized
+    manifest    15%   the training manifest's own text (--manifest-text), normalized.
+                      Whatever the model trains on -- CrowdRecital today, Knesset later.
+                      Rebuild this slice whenever the training corpus changes.
     general he  40%   HuggingFaceFW/fineweb-2, config heb_Hebr
     gen nikud   15%   that same FineWeb-2 text, diacritized with DictaBERT
     english     30%   HuggingFaceFW/fineweb, sample-10BT
@@ -61,7 +63,7 @@ def parse_args() -> argparse.Namespace:
                    help="Where the downloaded and diacritized slices are kept between runs.")
     p.add_argument("--target-mb", type=float, default=16.0,
                    help="Total size of the mixed corpus (default: 16).")
-    p.add_argument("--knesset", type=float, default=15.0)
+    p.add_argument("--manifest", type=float, default=15.0)
     p.add_argument("--general", type=float, default=40.0)
     p.add_argument("--gen-nikud", type=float, default=15.0)
     p.add_argument("--english", type=float, default=30.0)
@@ -182,7 +184,7 @@ def clip(lines: list[str], want_chars: int) -> list[str]:
 
 def main() -> None:
     args = parse_args()
-    shares = {"knesset": args.knesset, "general": args.general,
+    shares = {"manifest": args.manifest, "general": args.general,
               "gen_nikud": args.gen_nikud, "english": args.english}
     total = sum(shares.values())
     if abs(total - 100.0) > 0.01:
@@ -192,9 +194,9 @@ def main() -> None:
     print(f"building {args.target_mb:.0f} MB: " +
           ", ".join(f"{k} {v:.0f}%" for k, v in shares.items()))
 
-    knesset = lines_of(args.manifest_text.read_text(encoding="utf-8"))
-    print(f"  manifest: {len(knesset)} lines, "
-          f"{sum(len(x) for x in knesset) / 1e6:.1f} MB available")
+    manifest = lines_of(args.manifest_text.read_text(encoding="utf-8"))
+    print(f"  manifest: {len(manifest)} lines, "
+          f"{sum(len(x) for x in manifest) / 1e6:.1f} MB available")
 
     # The vocalized slice is cut from the general-Hebrew pool, so that pool covers both.
     repo, config = SOURCES["general"]
@@ -206,21 +208,21 @@ def main() -> None:
                        args.device, args.batch_size)
 
     slices = {
-        "knesset": clip(knesset, budget["knesset"]),
+        "manifest": clip(manifest, budget["manifest"]),
         "general": clip(general, budget["general"]),
         "gen_nikud": clip(nikud, budget["gen_nikud"]),
         "english": clip(english, budget["english"]),
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8", newline="\n") as handle:
-        for name in ("knesset", "general", "gen_nikud", "english"):
+        for name in ("manifest", "general", "gen_nikud", "english"):
             handle.write("\n".join(slices[name]) + "\n")
 
     # What actually landed, which is not what was asked for whenever a source ran out.
     got = {k: sum(len(x) for x in v) for k, v in slices.items()}
     whole = sum(got.values())
     print(f"\n-> {args.out}  ({whole / 1e6:.1f} MB)")
-    for name in ("knesset", "general", "gen_nikud", "english"):
+    for name in ("manifest", "general", "gen_nikud", "english"):
         print(f"   {name:10s} {got[name] / 1e6:6.2f} MB  {100 * got[name] / whole:5.1f}%  "
               f"(asked {shares[name]:.0f}%)  {len(slices[name])} lines")
     short = [k for k in got if got[k] < 0.95 * budget[k]]
