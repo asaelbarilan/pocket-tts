@@ -1,0 +1,66 @@
+# A ten-step Hebrew run on one GPU. Proves the pipeline before anyone spends eight of them.
+#
+# Run:  uv run python -m training.train training/configs/smoke_hebrew.yaml
+#
+# Identical to finetune_hebrew.yaml except for the four things that make it small enough to
+# finish in minutes on a laptop: batch_size, max_steps, compile off, and the frequencies
+# pulled in so validation, checkpointing and sampling all actually happen inside ten steps.
+# Nothing about the model, the tokenizer or the data differs -- that is the point. If this
+# runs, finetune_hebrew.yaml will start.
+#
+# What it checks, in order of what usually breaks:
+#   1. n_bins matches the tokenizer (pocket_tts asserts this at load)
+#   2. the manifests parse and the loader can cut a voice prompt off each row
+#   3. a forward and backward pass fits in memory
+#   4. validation runs
+#   5. a checkpoint writes
+#   6. the Hebrew sample_sentences synthesize -- including the nikud and English ones
+
+model_config: pocket_tts/config/english_2026-04_24l.yaml
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: artifacts/hebrew_v2_8s/tokenizer.model
+  flow_lm.lookup_table.n_bins: 8000
+start_from_pretrained: true
+reset_text_embedding: true
+
+data:
+  train_jsonl: data/hebrew_pilot_v4/train_aligned_wav.jsonl
+  valid_jsonl: data/hebrew_pilot_v4/valid_aligned_wav.jsonl
+  max_duration_sec: 12.0  # 30.0 upstream; shorter rows keep a batch inside 8 GB
+  max_voice_prompt_sec: 5.0
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 1  # 4 upstream; the extra flow samples are the memory cost
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+run_dir: runs/smoke_hebrew
+batch_size: 1
+grad_accum_steps: 1
+max_steps: 10
+stats_ema_steps: 0
+log_freq: 1
+valid_freq: 5
+num_valid_batches: 2
+ckpt_freq: 10
+num_ckpt_keep: 1
+compile: false  # compiling costs minutes and this run is ten steps
+sample_freq: 10
+sample_cfg_coef: 2.0
+
+# The same four kinds finetune_hebrew.yaml samples, so the smoke run exercises every one of
+# them: plain Knesset Hebrew, numbers and a date, an English word mid-sentence, nikud.
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
+  - "בשנת 1948, בשעה 14:30, עלה השיעור ב-2.5 אחוזים."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
