@@ -21,6 +21,30 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# prepare_data_v2.py writes train.jsonl/validation.jsonl in its own field names;
+# build_official_manifest.py writes train_aligned.jsonl/valid_aligned.jsonl in the shape
+# Kyutai's trainer reads. Both are datasets someone wants to look at before training on
+# them, so this reads either and speaks one set of names internally.
+SPLIT_FILES = (
+    ("train.jsonl", "validation.jsonl"),
+    ("train_aligned.jsonl", "valid_aligned.jsonl"),
+)
+
+
+def normalise(row: dict) -> dict:
+    """A manifest row in the field names the rest of this file uses."""
+    if "text" in row:
+        return row
+    words = row.get("words") or []
+    return {
+        **row,
+        "text": row.get("transcript") or " ".join(w["word"] for w in words),
+        "speaker_id": str(row.get("speaker") or "unknown"),
+        # No per-clip id in the Kyutai shape; the audio file is the recording.
+        "source_id": str(row.get("path", "")),
+    }
+
+
 def histogram(values: list[float], bins: int, lo: float, hi: float) -> list[dict]:
     if hi <= lo:
         return []
@@ -36,14 +60,17 @@ def histogram(values: list[float], bins: int, lo: float, hi: float) -> list[dict
 
 
 def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None:
-    train = path / "train.jsonl"
-    val = path / "validation.jsonl"
-    if not train.exists():
+    train = val = None
+    for train_name, val_name in SPLIT_FILES:
+        if (path / train_name).exists():
+            train, val = path / train_name, path / val_name
+            break
+    if train is None:
         return None
     rows = {}
     for split, f in (("train", train), ("validation", val)):
         if f.exists():
-            rows[split] = [json.loads(line) for line in f.open(encoding="utf-8")]
+            rows[split] = [normalise(json.loads(line)) for line in f.open(encoding="utf-8")]
     everything = [r for rs in rows.values() for r in rs]
     if not everything:
         return None
@@ -51,7 +78,10 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
     durations = sorted(r["duration"] for r in everything)
     texts = [r["text"] for r in everything]
     lengths = sorted(len(t) for t in texts)
-    quality = sorted(r.get("quality_score", 0.0) for r in everything)
+    # The Kyutai shape carries no per-row score -- build_official_manifest.py filters on
+    # one and does not keep it. Reporting that as a column of zeros would read as "every
+    # clip scored 0.0", so it is reported as absent instead.
+    quality = sorted(r["quality_score"] for r in everything if r.get("quality_score") is not None)
     speakers = Counter(r["speaker_id"] for r in everything)
     recordings = {r["source_id"] for r in everything}
 
@@ -66,7 +96,8 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
             "text": r["text"],
             "duration": round(r["duration"], 2),
             "speaker": r["speaker_id"][:8],
-            "quality": round(r.get("quality_score", 0.0), 3),
+            "quality": (round(r["quality_score"], 3)
+                        if r.get("quality_score") is not None else None),
             "audio": (
                 f"artifacts/{path.name}/wavs/{Path(r['audio_path']).name}" if wavs_present else None
             ),
@@ -109,7 +140,9 @@ def summarise(path: Path, example_count: int, rng: random.Random) -> dict | None
             "min": round(min(quality), 3),
             "p10": round(pct(quality, 0.1), 3),
             "hist": histogram(quality, 20, min(quality), max(quality)),
-        },
+        }
+        if quality
+        else None,
         "speakers": {
             "count": len(speakers),
             "top": [{"id": s[:8], "clips": n} for s, n in speakers.most_common(15)],
