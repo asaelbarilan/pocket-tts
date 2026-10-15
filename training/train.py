@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import wandb
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -97,7 +98,9 @@ def setup(config_path: str) -> Run:
     args = load_args(config_path)
     device = init_distributed()
     rank, world_size = get_rank(), get_world_size()
-    torch.manual_seed(args.seed + rank)
+    # All ranks must construct identical parameters so DDP can skip its very large
+    # initial parameter broadcast. Rank-specific randomness is restored below.
+    torch.manual_seed(args.seed)
     run_dir = args.run_dir
     log_path = add_file_logging(run_dir, rank)
     progress = ProgressLog(run_dir / "progress.jsonl", enabled=rank == 0)
@@ -121,6 +124,23 @@ def setup(config_path: str) -> Run:
 
     if rank == 0:
         save_args(args, run_dir / "args.yaml")
+        wandb_kwargs = {
+            "project": os.environ.get("WANDB_PROJECT", "pocket-tts"),
+            "name": os.environ.get("WANDB_NAME", run_dir.name),
+            "dir": str(run_dir),
+            "config": {
+                "config_path": config_path,
+                "resolved_config": dump_args(args),
+                "world_size": world_size,
+                "torch_version": torch.__version__,
+                "git_commit": git_commit(),
+            },
+        }
+        if entity := os.environ.get("WANDB_ENTITY"):
+            wandb_kwargs["entity"] = entity
+        if run_id := os.environ.get("WANDB_RUN_ID"):
+            wandb_kwargs.update(id=run_id, resume="allow")
+        wandb.init(**wandb_kwargs)
 
     model, mimi, _config = build_models(args)
     model.to(device)
@@ -154,9 +174,25 @@ def setup(config_path: str) -> Run:
 
     wrapped: nn.Module = model
     if is_torchrun():
-        wrapped = DDP(model, device_ids=[device.index], find_unused_parameters=not args.compile)
+        if rank == 0:
+            logger.info(f"initializing DDP for the {n_params / 1e6:.1f}M-parameter model")
+        # Every rank used the same seed while building the model above. Avoid DDP's
+        # multi-gigabyte init broadcast, which is excessively slow on this host.
+        wrapped = DDP(
+            model,
+            device_ids=[device.index],
+            find_unused_parameters=not args.compile,
+            init_sync=False,
+        )
+        if rank == 0:
+            logger.info("DDP initialization complete")
     if args.compile:
+        if rank == 0:
+            logger.info("compiling model kernels; this can take several minutes before step 1")
         _compile_models(model, mimi)
+        if rank == 0:
+            logger.info("model compilation complete; entering training loop")
+    torch.manual_seed(args.seed + rank)
 
     return Run(
         args=args,
@@ -210,6 +246,9 @@ def main(config_path: str) -> None:
     steps_since_log = 0
     sample_voice = None
     for step in range(start_step, args.max_steps):
+        first_step = step == start_step
+        if rank == 0 and first_step:
+            logger.info(f"starting optimizer step {step + 1}/{args.max_steps}; loading first batch")
         step_start = time.time()
         lr = lr_at(step, args)
         for group in optimizer.param_groups:
@@ -217,6 +256,10 @@ def main(config_path: str) -> None:
         optimizer.zero_grad()
         for micro in range(args.grad_accum_steps):
             batch = next(train_loader)
+            if rank == 0 and first_step and micro == 0:
+                logger.info(
+                    "first batch loaded; running forward/backward (CUDA compilation may continue)"
+                )
             latents, mask, voice_prompt_latents, num_voice_prompt_frames = encode_batch(
                 mimi, batch, device
             )
@@ -241,6 +284,8 @@ def main(config_path: str) -> None:
         optimizer.step()
         if ema is not None:
             ema.update(model)
+        if rank == 0 and first_step:
+            logger.info(f"first optimizer step complete in {time.time() - step_start:.0f}s")
 
         if any_across_ranks(stop.requested, device):
             completed_step = step + 1
@@ -254,6 +299,8 @@ def main(config_path: str) -> None:
                 progress.log("checkpoint", completed_step, interrupted=True)
                 logger.info("graceful shutdown complete")
             shutdown_distributed()
+            if rank == 0:
+                wandb.finish()
             return
 
         steps_since_log += 1
@@ -271,6 +318,15 @@ def main(config_path: str) -> None:
                 f"step {step + 1} | lr {lr:.2e} | grad {grad_norm:.2f} | {speed:.2f} it/s | {shown}"
             )
             progress.log("train", step + 1, values, lr=lr, grad_norm=grad_norm.item(), it_s=speed)
+            wandb.log(
+                {
+                    **{f"train/{key}": value for key, value in values.items()},
+                    "train/lr": lr,
+                    "train/grad_norm": grad_norm.item(),
+                    "train/iterations_per_second": speed,
+                },
+                step=step + 1,
+            )
         if rank == 0 and step - start_step == VERBOSE_STEPS - 1:
             logger.info(f"per-step logging done, logging every {args.log_freq} steps from now on")
 
@@ -282,11 +338,30 @@ def main(config_path: str) -> None:
             and args.sample_freq > 0
             and (step + 1) % args.sample_freq == 0
         ):
-            write_samples(model, mimi, tokenize, args, args.run_dir, step + 1, sample_voice, device)
+            samples = write_samples(
+                model, mimi, tokenize, args, args.run_dir, step + 1, sample_voice, device
+            )
+            if samples:
+                wandb.log(
+                    {
+                        "samples": wandb.Table(
+                            columns=["text", "audio"],
+                            data=[
+                                [text, wandb.Audio(str(path), sample_rate=mimi.sample_rate)]
+                                for text, path in samples
+                            ],
+                        )
+                    },
+                    step=step + 1,
+                )
 
         if (step + 1) % args.valid_freq == 0 and args.data.valid_jsonl:
             valid_metrics = validate(model, mimi, args, device, rank, run.world_size, step + 1)
             progress.log("valid", step + 1, valid_metrics)
+            if rank == 0:
+                wandb.log(
+                    {f"valid/{key}": value for key, value in valid_metrics.items()}, step=step + 1
+                )
             model.train()
 
         if rank == 0 and (step + 1) % args.ckpt_freq == 0:
@@ -299,6 +374,7 @@ def main(config_path: str) -> None:
         )
         progress.log("checkpoint", args.max_steps)
         logger.info("done")
+        wandb.finish()
     shutdown_distributed()
 
 

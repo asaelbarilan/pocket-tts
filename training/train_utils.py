@@ -110,9 +110,10 @@ def lr_at(step: int, args: TrainArgs) -> float:
 
 @torch.no_grad()
 def write_samples(model, mimi, tokenize, args, run_dir, step, voice_latents, device):
-    """Synthesize the configured sentences from the live (raw) weights."""
+    """Synthesize the configured sentences and return their local WAV paths."""
     out_dir = run_dir / "samples"
     out_dir.mkdir(exist_ok=True)
+    written = []
     model.eval()
     tokens = [torch.tensor(tokenize(s), dtype=torch.long) for s in args.sample_sentences]
     with torch.no_grad():
@@ -134,5 +135,7 @@ def write_samples(model, mimi, tokenize, args, run_dir, step, voice_latents, dev
                 audio.float().cpu().numpy(),
                 mimi.sample_rate,
             )
+            written.append((args.sample_sentences[i], out_dir / f"step{step:08d}_{i}.wav"))
     model.train()
     logger.info(f"wrote {len(tokens)} samples at step {step}")
+    return written

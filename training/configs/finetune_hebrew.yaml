@@ -20,8 +20,8 @@ start_from_pretrained: true
 reset_text_embedding: true  # the tokenizer below is not the one these weights were trained with
 
 data:
-  train_jsonl: data/hebrew_official/train_aligned.jsonl
-  valid_jsonl: data/hebrew_official/valid_aligned.jsonl
+  train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_realigned.jsonl
+  valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_realigned.jsonl
   max_duration_sec: 30.0
   max_voice_prompt_sec: 5.0
 
@@ -39,8 +39,13 @@ optim:
   schedule: constant
   warmup_steps: 1000
 
+# Enable per-layer compilation for better steady-state throughput. Startup can take
+# several minutes on this 24-layer model.
+compile: true
+
 run_dir: runs/finetune_hebrew
-batch_size: 64
+# Per-rank batch: 8 GPUs x 8 samples keeps the upstream effective batch size of 64.
+batch_size: 8
 grad_accum_steps: 1
 max_steps: 250000  # WER plateaus by ~15k; the rest is acoustic quality
 stats_ema_steps: 1000
@@ -65,3 +70,4 @@ sample_sentences:
   - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
   - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית עבור אזרחי המדינה."
   - "תודה רבה, אני מסיים כאן את דבריי."
+  - "למה בעצם אנחנו צריכים ללמוד היסטוריה אם בסוף אנחנו חוזרים על אותן טעויות שוב ושוב?"

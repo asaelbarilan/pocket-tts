@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hebrew checkpoint evaluation</title>
+  <style>
+    :root { color-scheme: dark; font: 14px system-ui, sans-serif; background: #111820; color: #e2eaf1; }
+    body { margin: 0 auto; padding: 24px; max-width: 1800px; }
+    h1 { font-size: 24px; margin: 0 0 8px; } h2 { font-size: 18px; margin-top: 0; }
+    button, input, select, textarea { font: inherit; color: inherit; background: #182430; border: 1px solid #43556a; border-radius: 4px; padding: 7px; }
+    button { cursor: pointer; } button:hover { background: #304558; } button:disabled { opacity: .5; cursor: default; }
+    input[type=checkbox] { accent-color: #6bc6ed; } textarea { width: 100%; box-sizing: border-box; }
+    a { color: #80cdec; } .muted { color: #a2b5c5; font-size: 12px; } .error { color: #ffaaa1; white-space: pre-wrap; }
+    section { background: #19232e; border: 1px solid #354453; border-radius: 6px; padding: 16px; margin: 16px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+    .list { max-height: 270px; overflow: auto; border: 1px solid #354453; padding: 8px; }
+    .choice { display: flex; gap: 8px; align-items: start; padding: 6px 0; }
+    .choice span { flex: 1; } .choice audio { width: 170px; height: 30px; }
+    .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; padding-top: 12px; }
+    .settings label { display: flex; flex-direction: column; gap: 4px; }
+    #run { min-width: 280px; max-width: 100%; } #run-path { flex: 1; min-width: 200px; }
+    #history { min-width: 320px; max-width: 100%; } pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; font-size: 12px; }
+    .scroll { overflow: auto; max-height: 78vh; } table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #43556a; padding: 10px; text-align: start; vertical-align: top; }
+    th { background: #223342; position: sticky; top: 0; z-index: 1; }
+    td.sample { min-width: 220px; max-width: 350px; } td.clip { min-width: 260px; }
+    td audio { width: 250px; height: 36px; margin: 6px 0; } .transcript { margin: 6px 0; }
+    .badge { display: inline-block; padding: 3px 7px; background: #2b4052; border-radius: 4px; }
+    .primary { background: #255772; } #message { min-height: 20px; margin: 8px 0; }
+    .static-export .live-only { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Hebrew checkpoint evaluation</h1>
+  <div id="subtitle" class="muted">Local debugger · ivritai.py · sentence × voice × checkpoint</div>
+  <div id="message" class="error" role="alert"></div>
+  <section class="live-only">
+    <h2>New evaluation</h2>
+    <div id="roots" class="muted"></div>
+    <div class="row"><label for="run">Run folder</label><select id="run"></select><button id="refresh">Refresh folders / assets</button></div>
+    <div class="row"><input id="run-path" placeholder="Or enter an absolute run folder containing args.yaml"><button id="load-run">Load run path</button></div>
+    <div class="grid">
+      <div><div class="row"><b>Checkpoints</b><button data-all="checkpoints">All</button><button data-none="checkpoints">None</button></div><div id="checkpoints" class="list"></div></div>
+      <div><div class="row"><b>Voice prompts</b><button data-all="voices">All</button><button data-none="voices">None</button></div><div id="voices" class="list"></div></div>
+      <div><div class="row"><b>Sentences</b><button data-all="sentences">All</button><button data-none="sentences">None</button></div><div id="sentences" class="list"></div></div>
+    </div>
+    <p><label for="custom">Additional / custom sentences (one per line; use “None” above for custom-only)</label></p>
+    <textarea id="custom" rows="4" dir="auto" placeholder="הקלידו משפטים כאן"></textarea>
+    <div class="row"><b>Evaluation devices</b><button id="refresh-devices">Detect available devices</button><span id="device-status" class="muted"></span></div>
+    <div id="devices" class="row"></div>
+    <p class="muted">Select one or more GPUs, or CPU alone. The evaluator assigns checkpoints to one worker per selected GPU; faster workers take the next queued checkpoint.</p>
+    <details><summary>Generation and ASR settings</summary><div id="settings" class="settings"></div>
+      <p class="muted">Leave ASR empty for audio-only evaluation. Enter an ASR model name to enable WER/CER scoring (requires faster-whisper). Defaults: CFG 2.0, EMA enabled, batch size 6.</p>
+    </details>
+    <div class="row"><label for="label">Label</label><input id="label" maxlength="80" placeholder="Optional description"><button id="start" class="primary">Run evaluation</button><span id="count" class="muted"></span></div>
+  </section>
+  <section>
+    <div class="row"><h2 style="margin:0">Saved evaluations</h2><select id="history" class="live-only"><option value="">Choose an evaluation</option></select><button id="refresh-history" class="live-only">Refresh</button></div>
+    <div id="status"></div>
+    <div id="downloads" class="row live-only"></div>
+    <details><summary>Evaluation manifest</summary><pre id="manifest"></pre></details>
+    <details id="logs"><summary>Process log (last 32 KB)</summary><pre id="log"></pre></details>
+    <div class="row"><label for="voice-filter">View voice</label><select id="voice-filter"><option value="">All voices</option></select><span class="muted">Rows: sentence / voice · columns: checkpoint</span><button id="export" class="live-only" disabled>export static HTML</button></div>
+    <div id="matrix" class="scroll"><p class="muted">Select an evaluation to view and listen.</p></div>
+  </section>
+<!-- EVALUATION_DATA -->
+<script>
+  const $ = id => document.getElementById(id);
+  const staticDetail = $('evaluation-data') ? JSON.parse($('evaluation-data').textContent) : null;
+  let catalog, currentRun = '', selectedEval = '', detail = null, matrixSignature = '', polling = false, exporting = false;
+  const settingHints = {
+    asr: 'Blank disables ASR. A model name enables Hebrew transcription and WER/CER scoring.',
+    asr_compute_type: 'ASR arithmetic precision. Used only with ASR; int8_float16 for CUDA, int8 for CPU.',
+    beam_size: 'Number of ASR transcription candidates searched. Used only with ASR.',
+    batch_size: 'Number of sentence/voice combinations generated together. Larger batches use more memory.',
+    temp: 'Randomness in generated audio. Lower values reduce variation; 0 removes the initial random noise.',
+    cfg: 'Classifier-free guidance strength: 1 uses ordinary conditioning; 2 emphasizes text/voice conditioning and adds an unconditional pass.',
+    n_steps: 'Flow decoding steps per audio frame. More steps increase computation and may change quality.',
+    eos_threshold: 'End-of-speech logit threshold (not a probability). Lower values tend to stop earlier.',
+    max_seconds: 'Maximum generated duration per clip; hitting this limit is marked NO EOS.',
+    seed: 'Random seed. Also keep batch size and selection order fixed for reproducible comparisons.',
+    use_ema: 'Use the checkpoint’s exponential moving average of model weights instead of the raw weights.',
+    bootstrap_samples: 'Resamples used for WER/CER confidence intervals. Used only with ASR.'
+  };
+  const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
+  const fileURL = (id, path) => staticDetail ? encodePath(path) : `/api/evaluations/${encodeURIComponent(id)}/files/${encodePath(path)}`;
+  function element(tag, text, cls) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; }
+  async function api(path, options = {}) {
+    const response = await fetch(path, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail));
+    return body;
+  }
+  function report(error) { $('message').textContent = error.message || String(error); }
+  function action(fn) { return async () => { $('message').textContent = ''; try { await fn(); } catch (error) { report(error); } }; }
+  function choice(container, value, text, checked = false, audioURL = '') {
+    const label = element('label', undefined, 'choice'), input = element('input'); input.type = 'checkbox'; input.value = value; input.checked = checked;
+    label.append(input, element('span', text));
+    if (audioURL) { const audio = element('audio'); audio.controls = true; audio.preload = 'none'; audio.src = audioURL; label.append(audio); }
+    $(container).append(label);
+  }
+  const checked = id => [...$(id).querySelectorAll('input:checked')].map(input => input.value);
+  function counts() {
+    const n = checked('checkpoints').length * checked('voices').length * (checked('sentences').length + $('custom').value.split('\n').filter(line => line.trim()).length);
+    $('count').textContent = `${n} generated clips`;
+  }
+  async function loadRun(path) {
+    const items = await api(`/api/checkpoints?run_dir=${encodeURIComponent(path)}`);
+    currentRun = path; $('checkpoints').replaceChildren();
+    for (const item of items) choice('checkpoints', item.name, `${item.name} (${(item.size_bytes / 1024 ** 2).toFixed(0)} MB)`);
+    if (!items.length) $('checkpoints').append(element('p', 'No checkpoint_XXXXXXXX.pt files found.', 'muted'));
+    counts();
+  }
+  async function loadCatalog() {
+    catalog = await api('/api/catalog');
+    $('roots').textContent = `Runs: ${catalog.runs_dir} · Assets: ${catalog.eval_data} · Outputs: ${catalog.output_dir}`;
+    $('run').replaceChildren(new Option('Choose a run folder', ''));
+    for (const run of catalog.runs) $('run').add(new Option(run.name, run.path));
+    if (catalog.runs.some(run => run.path === currentRun)) $('run').value = currentRun;
+    $('voices').replaceChildren(); $('sentences').replaceChildren();
+    for (const voice of catalog.voices) choice('voices', voice.name, voice.name, true, `/api/voices/${encodePath(voice.name)}`);
+    catalog.sentences.forEach((sentence, index) => choice('sentences', String(index), `${sentence.file}:${sentence.line} — ${sentence.text}`, true));
+    if (!$('settings').children.length) {
+      for (const [key, value] of Object.entries(catalog.defaults)) {
+        if (key === 'device') continue;
+        const label = element('label', key.replaceAll('_', ' ')), input = element('input'); input.id = `setting-${key}`;
+        input.type = typeof value === 'boolean' ? 'checkbox' : typeof value === 'number' ? 'number' : 'text';
+        if (input.type === 'checkbox') input.checked = value;
+        else input.value = value;
+        if (input.type === 'number') input.step = 'any';
+        if (key === 'asr') input.placeholder = 'Disabled (e.g. ivrit-ai/whisper-large-v3-turbo-ct2)';
+        input.title = settingHints[key] || '';
+        label.append(input, element('span', settingHints[key] || '', 'muted')); $('settings').append(label);
+      }
+    }
+    if (currentRun) await loadRun(currentRun);
+    counts();
+  }
+  async function loadDevices() {
+    const previous = checked('devices'); $('device-status').textContent = 'Detecting…';
+    try {
+      const inventory = await api('/api/devices');
+      const gpus = inventory.devices.filter(device => device.type === 'cuda');
+      const selection = previous.length ? previous : gpus.length ? [gpus[0].id] : ['cpu'];
+      $('devices').replaceChildren();
+      for (const device of inventory.devices) {
+        const memory = device.total_memory_bytes ? ` · ${(device.total_memory_bytes / 1024 ** 3).toFixed(1)} GiB` : '';
+        choice('devices', device.id, `${device.id} · ${device.name}${memory}`, selection.includes(device.id));
+      }
+      $('device-status').textContent = `${gpus.length} GPU(s) detected`;
+    } catch (error) { $('device-status').textContent = 'Device discovery failed'; throw error; }
+  }
+  async function loadHistory() {
+    const items = await api('/api/evaluations');
+    $('history').replaceChildren(new Option('Choose an evaluation', ''));
+    for (const item of items) $('history').add(new Option(`${item.id} · ${item.label || item.run_dir.split(/[\\/]/).pop()} · ${item.status} · ${new Date(item.created_at).toLocaleString()}`, item.id));
+    $('history').value = selectedEval;
+    $('start').disabled = items.some(item => item.status === 'running');
+  }
+  async function start() {
+    if (!currentRun) throw new Error('Choose a run folder first.');
+    const devices = checked('devices');
+    if (!devices.length) throw new Error('Select at least one evaluation device.');
+    if (devices.includes('cpu') && devices.length > 1) throw new Error('Select CPU alone or one or more GPUs.');
+    const settings = {};
+    for (const [key, value] of Object.entries(catalog.defaults)) {
+      if (key === 'device') { settings.device = devices[0]; continue; }
+      const input = $(`setting-${key}`);
+      settings[key] = typeof value === 'boolean' ? input.checked : typeof value === 'number' ? Number(input.value) : input.value;
+    }
+    const payload = {run_dir: currentRun, checkpoints: checked('checkpoints'), voices: checked('voices'), sentences: checked('sentences').map(index => ({file: catalog.sentences[index].file, line: catalog.sentences[index].line})), custom_sentences: $('custom').value, label: $('label').value, devices, settings};
+    $('start').disabled = true;
+    try {
+      const manifest = await api('/api/evaluations', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      selectedEval = manifest.id; matrixSignature = ''; $('logs').open = true;
+      await loadHistory(); await loadDetail();
+    } finally { await loadHistory(); }
+  }
+  function metric(value) { return typeof value === 'number' ? value.toFixed(3) : '—'; }
+  function renderMatrix() {
+    const {manifest: m, results} = detail, filter = $('voice-filter').value;
+    const table = element('table'), head = element('thead'), header = element('tr'); header.append(element('th', 'Sample / voice'));
+    const columns = m.checkpoints.map(cp => ({cp, result: results.find(result => result.checkpoint === cp.path), job: detail.evaluation?.jobs.find(job => job.checkpoint === cp.path)}));
+    for (const {cp, result, job} of columns) {
+      const cell = element('th', cp.path.split(/[\\/]/).pop());
+      cell.append(element('div', result ? `Step ${result.step} · ${result.weights} · WER ${metric(result.wer)} · CER ${metric(result.cer)}` : job?.status || 'Pending / no results yet', 'muted'));
+      if (job?.device || result?.execution?.device) cell.append(element('div', job?.device || result.execution.device, 'muted'));
+      if (job?.error) cell.append(element('div', job.error.split('\n').filter(Boolean).pop(), 'error'));
+      if (result) cell.append(element('div', `Silent ${result.silent} · no EOS ${result.no_eos}`, 'muted'));
+      header.append(cell);
+    }
+    head.append(header); table.append(head); const body = element('tbody');
+    const indexes = columns.map(({result}) => new Map((result?.records || []).map(record => [`${record.sentence_index}:${record.voice_index}`, record])));
+    m.sentences.forEach((sentence, si) => m.voices.forEach((voice, vi) => {
+      if (filter !== '' && Number(filter) !== vi) return;
+      const row = element('tr'), sample = element('td', undefined, 'sample');
+      sample.append(element('b', `Sample ${si + 1} · ${voice.name}`));
+      const text = element('p', sentence.text); text.dir = 'auto'; sample.append(text);
+      const prompt = element('audio'); prompt.controls = true; prompt.preload = 'none'; prompt.src = staticDetail ? encodePath(detail.voice_urls[vi]) : `/api/evaluations/${encodeURIComponent(m.id)}/voices/${vi}`; sample.append(element('div', 'Original voice prompt', 'muted'), prompt); row.append(sample);
+      columns.forEach((column, ci) => {
+        const cell = element('td', undefined, 'clip'), record = indexes[ci].get(`${si}:${vi}`);
+        if (!record) cell.append(element('span', column.result ? 'Missing record' : column.job?.status || 'Pending', 'muted'));
+        else {
+          if (record.audio) { const player = element('audio'); player.controls = true; player.preload = 'none'; player.src = fileURL(m.id, record.audio); cell.append(player); }
+          cell.append(element('div', `${record.seconds}s · WER ${metric(record.wer)} · CER ${metric(record.cer)}${record.silent ? ' · SILENT' : ''}${record.no_eos ? ' · NO EOS' : ''}`, 'muted'));
+          if (record.hypothesis) { const transcript = element('div', record.hypothesis, 'transcript'); transcript.dir = 'auto'; cell.append(transcript); }
+          cell.append(element('div', `Seed ${record.generation_seed}`, 'muted'));
+        }
+        row.append(cell);
+      }); body.append(row);
+    }));
+    table.append(body); $('matrix').replaceChildren(table);
+  }
+  async function loadDetail() {
+    if (!selectedEval) return;
+    const requested = selectedEval, data = await api(`/api/evaluations/${encodeURIComponent(requested)}`);
+    if (requested !== selectedEval) return;
+    renderDetail(data);
+  }
+  function renderDetail(data) {
+    detail = data; const m = data.manifest;
+    $('export').disabled = exporting || !selectedEval;
+    $('status').replaceChildren(element('span', m.status, 'badge'), element('p', `${m.id}${m.label ? ` · ${m.label}` : ''} · ${data.audio_count}/${m.expected_audio_count} audio files · ${data.results.length}/${m.checkpoints.length} scored checkpoints`), element('p', `Started: ${m.started_at ? new Date(m.started_at).toLocaleString() : '—'} · Finished: ${m.finished_at ? new Date(m.finished_at).toLocaleString() : '—'}`, 'muted'));
+    for (const job of data.evaluation?.jobs || []) {
+      const row = element('div', `${job.checkpoint.split(/[\\/]/).pop()} · ${job.device || 'unassigned'} · ${job.status} · ${job.generated}/${job.expected} samples`, 'row muted');
+      if (!staticDetail && job.log && job.started_at) { const link = element('a', 'worker log'); link.href = fileURL(m.id, job.log); link.target = '_blank'; row.append(link); }
+      $('status').append(row);
+    }
+    if (!staticDetail && m.status === 'running' && m.managed !== false) {
+      const cancel = element('button', 'Cancel evaluation'); cancel.onclick = action(async () => { await api(`/api/evaluations/${m.id}/cancel`, {method: 'POST'}); await loadDetail(); await loadHistory(); }); $('status').append(cancel);
+    }
+    if (m.error) $('status').append(element('p', m.error, 'error'));
+    $('manifest').textContent = JSON.stringify(m, null, 2); const log = $('log'); const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20; log.textContent = data.log + (data.worker_logs || []).map(worker => `\n\n--- ${worker.device}: ${worker.checkpoint.split(/[\\/]/).pop()} (last 8 KB) ---\n${worker.log}`).join(''); if (atBottom) log.scrollTop = log.scrollHeight;
+    $('downloads').replaceChildren();
+    for (const name of data.artifacts || []) {
+      if (name === 'evaluation.json' && !data.evaluation) continue;
+      if (name === 'results.json' && !data.results.length) continue;
+      const link = element('a', name); link.href = fileURL(m.id, name); link.target = '_blank'; $('downloads').append(link);
+    }
+    const signature = JSON.stringify([m.id, data.results, data.evaluation?.jobs.map(job => [job.status, job.device])]);
+    if (signature !== matrixSignature) {
+      const previousVoice = $('voice-filter').value; $('voice-filter').replaceChildren(new Option('All voices', ''));
+      m.voices.forEach((voice, index) => $('voice-filter').add(new Option(voice.name, String(index))));
+      $('voice-filter').value = matrixSignature && detail.manifest.id === m.id ? previousVoice : '';
+      matrixSignature = signature; renderMatrix();
+    }
+  }
+  async function exportHTML() {
+    if (!selectedEval || exporting) return;
+    const id = selectedEval;
+    exporting = true; $('export').disabled = true; $('export').textContent = 'Preparing ZIP…';
+    try {
+      const response = await fetch(`/api/evaluations/${encodeURIComponent(id)}/export`, {method: 'POST'});
+      if (!response.ok) { const body = await response.json(); throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)); }
+      const url = URL.createObjectURL(await response.blob()), link = element('a');
+      link.href = url; link.download = `${id}.zip`; document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } finally { exporting = false; $('export').disabled = !detail || detail.manifest.id !== selectedEval; $('export').textContent = 'export static HTML'; }
+  }
+  $('voice-filter').onchange = () => { if (detail) renderMatrix(); };
+  document.addEventListener('play', event => { if (event.target.tagName === 'AUDIO') document.querySelectorAll('audio').forEach(audio => { if (audio !== event.target) audio.pause(); }); }, true);
+  if (staticDetail) {
+    document.body.classList.add('static-export');
+    $('subtitle').textContent = 'Static evaluation snapshot · sentence × voice × checkpoint';
+    document.title = `${staticDetail.manifest.id} · Hebrew checkpoint evaluation`;
+    renderDetail(staticDetail);
+  } else {
+  $('export').onclick = action(exportHTML);
+  $('run').onchange = action(async () => { if ($('run').value) await loadRun($('run').value); else { currentRun = ''; $('checkpoints').replaceChildren(); counts(); } });
+  $('load-run').onclick = action(() => loadRun($('run-path').value.trim()));
+  $('refresh-devices').onclick = action(loadDevices);
+  $('devices').addEventListener('change', event => {
+    const changed = event.target;
+    if (changed.type !== 'checkbox' || !changed.checked) return;
+    $('devices').querySelectorAll('input').forEach(input => { if (changed.value === 'cpu' ? input.value !== 'cpu' : input.value === 'cpu') input.checked = false; });
+  });
+  $('refresh').onclick = action(loadCatalog); $('refresh-history').onclick = action(async () => { await loadHistory(); await loadDetail(); }); $('start').onclick = action(start);
+  $('history').onchange = action(async () => { selectedEval = $('history').value; matrixSignature = ''; $('export').disabled = true; if (selectedEval) await loadDetail(); else { detail = null; $('status').replaceChildren(); $('downloads').replaceChildren(); $('manifest').textContent = ''; $('log').textContent = ''; $('matrix').replaceChildren(); } });
+  document.querySelectorAll('[data-all], [data-none]').forEach(button => button.onclick = () => { const id = button.dataset.all || button.dataset.none; $(id).querySelectorAll('input').forEach(input => input.checked = Boolean(button.dataset.all)); counts(); });
+  document.addEventListener('change', counts); $('custom').oninput = counts;
+  action(async () => { await loadCatalog(); await loadHistory(); })();
+  action(loadDevices)();
+  setInterval(async () => {
+    if (polling) return; polling = true;
+    try { await loadHistory(); if (selectedEval && (!detail || detail.manifest.status === 'running')) await loadDetail(); }
+    catch (error) { report(error); } finally { polling = false; }
+  }, 2500);
+  }
+</script>
+</body>
+</html>

@@ -76,6 +76,7 @@ target/
 
 /weights
 /artifacts/
+/eval_data/
 /runs/
 /exports/
 /logs/

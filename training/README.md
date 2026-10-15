@@ -149,6 +149,23 @@ uv run training/train.py training/configs/scratch.yaml
 uv run torchrun --nproc-per-node 8 training/train.py training/configs/scratch.yaml
 ```
 
+Training reports to Weights & Biases from rank 0. Log in once before launching:
+
+```bash
+uv run wandb login
+```
+
+The default project is `pocket-tts`; override it with `WANDB_PROJECT` and optionally set
+`WANDB_ENTITY`, `WANDB_NAME`, or `WANDB_RUN_ID`. Training and validation metrics are logged
+with `train/` and `valid/` prefixes, and configured generated samples are uploaded as audio
+tables. Set `WANDB_MODE=disabled` to turn reporting off.
+
+If NCCL peer-to-peer communication is unreliable on the host, disable it for the launch:
+
+```bash
+NCCL_P2P_DISABLE=1 uv run torchrun --nproc-per-node 8 training/train.py training/configs/scratch.yaml
+```
+
 The training is configured using a single YAML file.
 The official Pocket TTS training happens in two steps, corresponding to the two YAMLs we provide:
 - `scratch.yaml`: trains a 24-layer teacher from scratch
