@@ -13,12 +13,38 @@
 # to move with it.
 model_config: pocket_tts/config/english_2026-04_24l.yaml
 model_overrides:
-  # The sentencepiece model you fitted on your transcripts. n_bins already
-  # matches train_tokenizer.py's default vocab size, so it needs no override.
+  # The sentencepiece model you fitted on your transcripts, and its size. Both are
+  # required: the base config above is the English 24-layer one and still says 4000, and
+  # pocket_tts asserts that n_bins equals the tokenizer's vocabulary. Build both with
+  #   python -m hebrew_training.build_tokenizer_corpus   #       --manifest-text <your manifest's tokenizer_corpus.txt>   #       --out tokenizers/hebrew_corpus.txt --train --vocab-size 8000
+  # which mixes manifest text, general Hebrew, vocalized Hebrew and English so the model
+  # can be fed all four. 4000 cannot spell the last two: it falls back to raw bytes.
   flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model
+  flow_lm.lookup_table.n_bins: 8000
 start_from_pretrained: true
 reset_text_embedding: true  # the tokenizer below is not the one these weights were trained with
 
+# Built in ONE pass over every corpus, so the speaker-disjoint validation split is cut
+# across all of them rather than per source:
+#   python -m hebrew_training.build_official_manifest \
+#       --corpus <crowd-recital> <knesset-committees> \
+#       --out-dir data/hebrew_official --normalize-text --valid-hours 2.5
+#
+# Committees, not plenums: 11,144 recordings against 1,551, so many more speakers and
+# rooms, and committee speech is closer to conversation than to declamation.
+#
+# --valid-hours must be large enough to hold a whole Knesset recording. Those corpora
+# carry no speaker field, so one "speaker" is one whole recording, and a budget smaller
+# than that drops the source out of validation entirely while it is still most of
+# training. At 2.0 h it held out no Knesset audio at all; 2.5 h holds out three.
+#
+# Then transcode, which is not optional: sphn cannot read the Knesset .m4a files at all,
+# and the dataloader skips an unreadable row with a single warning line, so a run will
+# quietly train on whatever is left.
+#   python -m hebrew_training.transcode_corpus \
+#       --manifest data/hebrew_official/train_aligned.jsonl \
+#       --manifest data/hebrew_official/valid_aligned.jsonl --out-dir <wav dir>
+# Point the two paths below at the _wav.jsonl manifests it writes.
 data:
   train_jsonl: data/hebrew_official/train_aligned.jsonl
   valid_jsonl: data/hebrew_official/valid_aligned.jsonl
@@ -61,7 +87,14 @@ sample_cfg_coef: 2.0
 
 # The trainer synthesizes exactly these every sample_freq steps. args.py defaults them to
 # English, which through a Hebrew tokenizer produces samples nobody can judge or score.
+# One per kind of text the tokenizer was built to carry, so every sample tells you
+# whether that kind still works: plain Knesset Hebrew, numbers and a date, an English
+# word mid-sentence, and vocalized Hebrew. If one of these degrades while the others
+# hold, the tokenizer corpus is where to look.
 sample_sentences:
   - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
   - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית עבור אזרחי המדינה."
+  - "בשנת 1948, בשעה 14:30, עלה השיעור ב-2.5 אחוזים."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
   - "תודה רבה, אני מסיים כאן את דבריי."

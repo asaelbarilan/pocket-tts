@@ -6,6 +6,7 @@ model config (point a copy of the config's weights_path at the exported file).
 """
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -78,14 +79,14 @@ def save_checkpoint(
     path = run_dir / f"checkpoint_{step:08d}.pt"
     tmp = path.with_suffix(".tmp")
     torch.save(payload, tmp)
-    tmp.rename(path)
+    os.replace(tmp, path)
     # The optimizer state (half the bytes of a full snapshot) lives in a
     # sidecar kept only for the newest checkpoint: older snapshots stay
     # loadable for eval/distill, and demotion is a plain unlink.
     opt_path = run_dir / f"optim_{step:08d}.pt"
     opt_tmp = opt_path.with_suffix(".tmp")
     torch.save({"optimizer": optimizer.state_dict()}, opt_tmp)
-    opt_tmp.rename(opt_path)
+    os.replace(opt_tmp, opt_path)
     logger.info(f"saved {path}")
     checkpoints = sorted(run_dir.glob("checkpoint_*.pt"))
     for old in checkpoints[:-num_keep]:
@@ -135,5 +136,5 @@ def export_pocket_safetensors(
     path = Path(path)
     tmp = path.with_suffix(".tmp")
     safetensors.torch.save_file(state, str(tmp))
-    tmp.rename(path)
+    os.replace(tmp, path)
     logger.info(f"exported pocket-tts weights to {path}")

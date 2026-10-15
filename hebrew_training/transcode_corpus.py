@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import random
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -170,11 +171,16 @@ def main() -> None:
     todo = [s for s in sources if not output_for(s, args.out_dir).exists()]
     print(f"{len(sources)} distinct recordings, {len(todo)} still to transcode")
     if args.dry_run:
-        seconds = sum(probe_seconds(s) for s in list(todo)[:20])
+        # A random sample, not the first 20: `sources` comes out in manifest order, so the
+        # first 20 of a mixed corpus are all whichever source happens to lead, and a corpus
+        # of 3-minute recitals and 3-hour plenums gets estimated off one of them alone.
+        sample = random.Random(0).sample(todo, min(20, len(todo)))
+        seconds = sum(probe_seconds(s) for s in sample)
         if seconds:
             per_hour_mb = args.sample_rate * 2 * 3600 / 2**20
-            hours = seconds / 3600 * len(todo) / min(20, len(todo))
-            print(f"  ~{hours:.0f} audio-hours estimated -> ~{hours * per_hour_mb / 1024:.1f} TB")
+            hours = seconds / 3600 * len(todo) / len(sample)
+            print(f"  ~{hours:.0f} audio-hours estimated (from {len(sample)} sampled) "
+                  f"-> ~{hours * per_hour_mb / 1024:.1f} GB")
         return
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
