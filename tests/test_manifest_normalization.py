@@ -51,17 +51,17 @@ def test_number_gender_follows_the_next_word(normalize) -> None:
 def test_each_number_uses_its_own_following_word(normalize) -> None:
     assert (
         _normalized(normalize, "אחרי 14 ימים ו-3 שנים וגם 2 אנשים")
-        == "אחרי ארבעה עשר ימים ו שלוש שנים וגם שני אנשים"
+        == "אחרי ארבעה עשר ימים ושלוש שנים וגם שני אנשים"
     )
 
 
 def test_prefix_attached_to_a_number_still_sees_the_next_word(normalize) -> None:
-    assert _normalized(normalize, "ב-15 ימים") == "ב חמישה עשר ימים"
-    assert _normalized(normalize, "ו-15 שנים") == "ו חמש עשרה שנים"
+    assert _normalized(normalize, "ב-15 ימים") == "בחמישה עשר ימים"
+    assert _normalized(normalize, "ו-15 שנים") == "וחמש עשרה שנים"
     # The prefix and the number come from one input word and stay attached to it.
     out = manifest.normalize_words(_words("ב-15 ימים"), normalize)
-    assert _spoken(out) == ["ב", "חמישה", "עשר", "ימים"]
-    assert [word["start"] for word in out] == pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
+    assert _spoken(out) == ["בחמישה", "עשר", "ימים"]
+    assert [word["start"] for word in out] == pytest.approx([0.0, 0.5, 1.0])
 
 
 def test_previous_word_changes_the_gender(normalize) -> None:
@@ -163,8 +163,8 @@ def test_matches_whole_sentence_normalization(normalize) -> None:
     )
     words = _words(sentence)
     expected = (
-        "אנחנו סופרים למעלה מ שישים וחמישה פצועים רק בשנת אלפיים עשרים וחמש "
-        "לעומת עשרים ואחד פצועים. אמר פי שנים עשר במאה שלישית ו ארבעה עשר ימים, "
+        "אנחנו סופרים למעלה משישים וחמישה פצועים רק בשנת אלפיים עשרים וחמש "
+        "לעומת עשרים ואחד פצועים. אמר פי שנים עשר במאה שלישית וארבעה עשר ימים, "
         "שתי שנים."
     )
     normalized = manifest.normalize_words(words, normalize)
