@@ -64,6 +64,7 @@ import tempfile
 import time
 import unicodedata
 from array import array
+from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
@@ -74,6 +75,11 @@ _HEBREW = re.compile(r"[֐-׿]")
 # whenever the command was run from anywhere but the repo root. Assumes the two repos are
 # checked out side by side, which is what the recipe tells you to do.
 DEFAULT_NORMALIZER = Path(__file__).resolve().parents[2] / "hebrew-tts-data-tools" / "normalizer"
+# The normalizer reads one token ahead (number gender) and the last token it emitted behind
+# ("פי", "...מאה"). Words that vanish (a lone quote, an emoji) are skipped, so a few words of
+# context on each side cover every case.
+CONTEXT_WORDS = 3
+_GLUED_PUNCTUATION = ".,?!"
 PROGRESS_SECONDS = 10.0
 PROGRESS_RECORDINGS = 10
 
@@ -215,7 +221,11 @@ def format_seconds(seconds: float) -> str:
 
 def load_normalizer(directory: Path):
     """The same Hebrew normalizer the earlier pipeline used -- number expansion,
-    word replacements, punctuation handling. Only the slicing was replaced; this was not."""
+    word replacements, punctuation handling. Only the slicing was replaced; this was not.
+
+    Returns `normalize(words: list[str]) -> list[str]`, one result per word. The earlier
+    pipeline normalized a whole slice at once; calling it word by word is what drops the
+    context it depends on, so the whole word list must go in together."""
     if not directory.exists():
         raise SystemExit(
             f"--normalize-text needs the normalizer, and {directory} does not exist.\n"
@@ -225,11 +235,18 @@ def load_normalizer(directory: Path):
         )
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory.resolve()))
-    from hebrew_tts_normalizer import (  # type: ignore
-        TTSNormalizeOptions,
-        load_word_replacements,
-        normalize_tts_text,
-    )
+    try:
+        from hebrew_tts_normalizer import (  # type: ignore
+            TTSNormalizeOptions,
+            load_word_replacements,
+            normalize_tts_words,
+        )
+    except ImportError as error:
+        raise SystemExit(
+            f"The normalizer in {directory} is too old or incomplete ({error}).\n"
+            "It must provide normalize_tts_words(), which normalizes words with their "
+            "neighbours as context. Update the hebrew-tts-data-tools checkout."
+        ) from error
 
     options = TTSNormalizeOptions(
         apply_word_replacements=True,
@@ -240,10 +257,12 @@ def load_normalizer(directory: Path):
         remove_parentheses=False,
     )
     replacements = load_word_replacements()
-    return lambda text: normalize_tts_text(text, options=options, word_replacements=replacements)
+    return lambda words: normalize_tts_words(words, options=options, word_replacements=replacements)
 
 
-def normalize_words(words: list[dict], normalize) -> list[dict]:
+def normalize_words(
+    words: list[dict], normalize, before: Sequence[str] = (), after: Sequence[str] = ()
+) -> list[dict]:
     """Normalize the word list itself, not just the joined transcript.
 
     This is not optional polish. training/dataloader.py:150 builds the text it trains on
@@ -252,27 +271,67 @@ def normalize_words(words: list[dict], normalize) -> list[dict]:
     was thrown away on every ordinary sample, and the model would have been trained on
     "1995" instead of "אלף תשע מאות תשעים וחמש".
 
+    The words are normalized TOGETHER, never one at a time. The normalizer is context
+    sensitive: a number takes its gender from the next token ("14 ימים" -> "ארבעה עשר",
+    "14 שנה" -> "ארבע עשרה"), "פי" and "...מאה" change the gender of the number after them,
+    and punctuation is glued to the word before it. A word normalized alone has no
+    neighbours, so every number silently came out feminine.
+
+    `before` and `after` are plain words just outside `words` (the end of the previous
+    row, the start of the next). They are only context: their output is discarded, and
+    only the result the normalizer attributes to each of `words` is used.
+
     A normalized word can expand into several ("1995" -> five words). The expansion is
     spoken across the original word's span, so the span is divided evenly between them.
     That is an approximation, but the loader only uses word times to pick a cut point and
     to trim trailing silence, and both stay correct at the group's outer boundaries.
+
+    A word whose output starts with punctuation (a lone "." that Whisper timed as its own
+    word) is glued onto the previous word, as the normalizer does for a whole sentence.
     """
+    results = normalize([*before, *(word["word"] for word in words), *after])
+    results = results[len(before) : len(before) + len(words)]
     out: list[dict] = []
-    for word in words:
-        text = clean(normalize(word["word"]))
-        if not text:
+    for word, text in zip(words, results):
+        parts = clean(text).split()
+        if not parts:
             continue
-        parts = text.split()
-        start, end = float(word["start"]), float(word["end"])
         if len(parts) == 1:
-            out.append({**word, "word": parts[0]})
-            continue
-        step = (end - start) / len(parts)
-        for index, part in enumerate(parts):
-            out.append(
+            pieces = [{**word, "word": parts[0]}]
+        else:
+            start, end = float(word["start"]), float(word["end"])
+            step = (end - start) / len(parts)
+            pieces = [
                 {"word": part, "start": start + index * step, "end": start + (index + 1) * step}
-            )
+                for index, part in enumerate(parts)
+            ]
+        if out and pieces[0]["word"][0] in _GLUED_PUNCTUATION:
+            glued = pieces.pop(0)
+            out[-1] = {**out[-1], "word": out[-1]["word"] + glued["word"], "end": glued["end"]}
+        out.extend(pieces)
     return out
+
+
+def context_words(groups: list[list[dict]], index: int, args) -> tuple[list[str], list[str]]:
+    """The words just before and after group `index` that belong to the same sentence flow.
+
+    Merged groups are cut at a target length, not at a sentence end, so a number can end one
+    row while its noun opens the next. Neighbours count only when the silence between them
+    is within --merge-gap, the same test merging used. With merging off each segment is an
+    utterance of its own and its neighbours are unrelated.
+    """
+    if args.merge_gap <= 0:
+        return [], []
+    group = groups[index]
+    before: list[str] = []
+    after: list[str] = []
+    if index > 0 and group[0]["start"] - groups[index - 1][-1]["end"] <= args.merge_gap:
+        before = [w["word"] for s in groups[index - 1] for w in s["words"]][-CONTEXT_WORDS:]
+    if index + 1 < len(groups) and groups[index + 1][0]["start"] - group[-1]["end"] <= (
+        args.merge_gap
+    ):
+        after = [w["word"] for s in groups[index + 1] for w in s["words"]][:CONTEXT_WORDS]
+    return before, after
 
 
 def find_audio(recording: Path, globs: str) -> Path | None:
@@ -449,7 +508,8 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
         return [], stats
 
     rows = []
-    for group in merge_segments(clean_segments(segments, args, stats), args, rng):
+    groups = merge_segments(clean_segments(segments, args, stats), args, rng)
+    for index, group in enumerate(groups):
         start = group[0]["start"]
         duration = group[-1]["end"] - start
         if not args.min_duration <= duration <= args.max_duration:
@@ -458,7 +518,8 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
 
         words = [word for segment in group for word in segment["words"]]
         if normalize is not None:
-            words = normalize_words(words, normalize)
+            before, after = context_words(groups, index, args)
+            words = normalize_words(words, normalize, before, after)
         if not words:
             stats["no_hebrew"] += 1
             continue
