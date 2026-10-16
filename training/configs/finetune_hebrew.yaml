@@ -1,23 +1,23 @@
 # Hebrew finetune of the released 24-layer teacher. Copied from finetune_language.yaml;
-# only the four paths below differ, every training parameter is upstream's. Kyutai measured
-# this shape on 976h of Czech: 12% WER by 10k steps where a scratch run was still at 46%,
-# both settling at 10-12%.
+# only the paths and the sample sentences differ, every training parameter is upstream's.
+# Kyutai measured this shape on 976h of Czech: 12% WER by 10k steps where a scratch run was
+# still at 46%, both settling at 10-12%. Keep lr at 2e-4: the text embedding starts random,
+# so the backbone has to move with it. optim.schedule is `constant` here, not the `cosine`
+# scratch.yaml uses; leave it.
 #
 # Run:  uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_hebrew.yaml
 #
-# Note optim.schedule is `constant` here, not the `cosine` scratch.yaml uses. Leave it.
-
-# Finetune a released model into a new language: on 976h of Czech this hit 12%
-# WER by 10k steps where a scratch run was still at 46%, and both settled around
-# 10-12%. Keep lr at 2e-4: the text embedding starts random, so the backbone has
-# to move with it.
+# Before the run, build the tokenizer. It is a Hebrew + niqqud + English mix, charset-filtered
+# (see hebrew_training/configs/tokenizer_hebrew.yaml):
+#   python -m hebrew_training.build_tokenizer_corpus \
+#       --config hebrew_training/configs/tokenizer_hebrew.yaml --train
+# then copy artifacts/tokenizer/tokenizer.model to tokenizers/hebrew.model (or change the path
+# below). The vocabulary size is not set here: n_bins is read from the tokenizer file.
 model_config: pocket_tts/config/english_2026-04_24l.yaml
 model_overrides:
-  # The sentencepiece model you fitted on your transcripts. n_bins already
-  # matches train_tokenizer.py's default vocab size, so it needs no override.
   flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model
 start_from_pretrained: true
-reset_text_embedding: true  # the tokenizer below is not the one these weights were trained with
+reset_text_embedding: true  # the tokenizer is not the one these weights were trained with
 
 data:
   train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_realigned.jsonl
@@ -66,8 +66,14 @@ sample_cfg_coef: 2.0
 
 # The trainer synthesizes exactly these every sample_freq steps. args.py defaults them to
 # English, which through a Hebrew tokenizer produces samples nobody can judge or score.
+# One per kind of text the tokenizer carries, so each sample shows whether that kind still
+# works: plain Hebrew, an English word mid-sentence, vocalized Hebrew. If one degrades while
+# the others hold, the tokenizer corpus is where to look. (No digits sentence: the manifest is
+# normalized, so the model is never given digits.)
 sample_sentences:
   - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
   - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית עבור אזרחי המדינה."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
   - "תודה רבה, אני מסיים כאן את דבריי."
   - "למה בעצם אנחנו צריכים ללמוד היסטוריה אם בסוף אנחנו חוזרים על אותן טעויות שוב ושוב?"

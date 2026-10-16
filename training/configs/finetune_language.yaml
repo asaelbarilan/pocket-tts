@@ -4,8 +4,8 @@
 # to move with it.
 model_config: pocket_tts/config/english_2026-04_24l.yaml
 model_overrides:
-  # The sentencepiece model you fitted on your transcripts. n_bins already
-  # matches train_tokenizer.py's default vocab size, so it needs no override.
+  # The sentencepiece model you fitted on your transcripts. n_bins is read from this file
+  # (training/modules/builders.py), so any vocabulary size works without an override.
   flow_lm.lookup_table.tokenizer_path: data/tokenizer.model
 start_from_pretrained: true
 reset_text_embedding: true  # the tokenizer below is not the one these weights were trained with

@@ -11,6 +11,9 @@ USE THESE -- the recipe depends on them:
     score_wer.py                score a run's samples (reads Kyutai's layout and ours)
     build_eval_set.py           build the fixed eval set those two read
     evaluation.py               shared normalization and scoring helpers
+    build_tokenizer_corpus.py   mix manifest + Hebrew + niqqud + English text for the tokenizer
+    train_tokenizer.py          fit the Hebrew tokenizer (charset-filtered, vocab size a param)
+    tokenizer_charset.py        the character-set safety filter both of those apply
     build_data_report.py        optional corpus dashboard
     server_launcher.py          optional, serves the HTML dashboards
 
@@ -20,10 +23,10 @@ SUPERSEDED by upstream -- do not build on these:
     prepare_data.py, prepare_data_v2.py
                                 -> build_official_manifest.py
     precompute_latents.py       -> Kyutai's DataLoader reads audio directly, no latent cache
-    train_tokenizer.py          -> training/scripts/train_tokenizer.py
     warm_start_checkpoint.py    -> `reset_text_embedding: true` (upstream 8c98c9b)
     model_utils.py              install_tokenizer is superseded by that same flag; the rest
-                                of the module is still imported by the scripts above
+                                of the module is still imported by the scripts above (its
+                                vocabulary size now comes from the tokenizer file)
 
 TIED TO OUR OLD CHECKPOINT FORMAT -- will not read Kyutai's runs as-is:
     generate_samples.py, eval_checkpoints.py, export.py

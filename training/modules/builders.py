@@ -15,7 +15,7 @@ from torch import nn
 from pocket_tts.models.mimi import MimiModel, build_mimi
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.modules.mlp import SimpleMLPAdaLN
-from pocket_tts.utils.config import Config, load_config
+from pocket_tts.utils.config import Config
 from pocket_tts.utils.utils import download_if_necessary
 
 from ..args import TrainArgs
@@ -27,16 +27,39 @@ from .utils import disable_grad, dit_init, gaussian_init, stamp_state_names
 logger = logging.getLogger(__name__)
 
 
+def _local_tokenizer_vocab_size(tokenizer_path: str) -> int | None:
+    """The vocabulary size of a tokenizer on disk, or None for a remote (released) one."""
+    if tokenizer_path.startswith(("hf://", "http://", "https://")):
+        return None
+    tokenizer_file = Path(tokenizer_path)
+    if not tokenizer_file.is_file():
+        raise FileNotFoundError(
+            f"tokenizer {tokenizer_path} does not exist; build it with "
+            "`python -m hebrew_training.train_tokenizer` or fix "
+            "flow_lm.lookup_table.tokenizer_path"
+        )
+    import sentencepiece
+
+    return sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_file)).vocab_size()
+
+
 def load_model_config(path: str, overrides: dict[str, tp.Any]):
     """A pocket-tts model config with dotted-path fields replaced.
 
     Lets one released config serve as the architecture for any variant of it
     (the 24-layer teacher is the 6-layer config with num_layers changed), so a
     language switch is one path rather than a forked copy per depth.
+
+    `flow_lm.lookup_table.n_bins` is taken from a local tokenizer file rather
+    than from the config: pocket-tts asserts the two are equal, so the
+    tokenizer is the source of truth and a vocabulary size is chosen once, when
+    the tokenizer is trained. Released tokenizers (hf:// paths) keep the
+    config's value.
     """
-    if not overrides:
-        return load_config(Path(path))
-    raw = yaml.safe_load(Path(path).read_text())
+    config_file = download_if_necessary(str(path))
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_file}")
+    raw = yaml.safe_load(config_file.read_text())
     for dotted, value in overrides.items():
         node = raw
         *parents, leaf = dotted.split(".")
@@ -47,6 +70,17 @@ def load_model_config(path: str, overrides: dict[str, tp.Any]):
         if leaf not in node:
             raise KeyError(f"{path} has no field {dotted!r} to override")
         node[leaf] = value
+    lookup_table = raw["flow_lm"]["lookup_table"]
+    vocab_size = _local_tokenizer_vocab_size(str(lookup_table["tokenizer_path"]))
+    if vocab_size is not None:
+        if lookup_table.get("n_bins") not in (None, vocab_size):
+            logger.info(
+                "n_bins %s -> %s, the size of %s",
+                lookup_table["n_bins"],
+                vocab_size,
+                lookup_table["tokenizer_path"],
+            )
+        lookup_table["n_bins"] = vocab_size
     return Config(**raw)
 
 

@@ -1,0 +1,58 @@
+# Tokenizer corpus + training, for hebrew_training/build_tokenizer_corpus.py:
+#
+#   python -m hebrew_training.build_tokenizer_corpus --config <this file> --train
+#
+# Shares are of characters. A source with `pct: 0` is left out and needs nothing; the rest
+# must add to 100. Why these defaults: docs/hebrew-english-data-mixing.md.
+#
+# Every source is a local file or folder (.txt, .jsonl, .parquet, optionally .gz). Nothing
+# is downloaded unless `download: true` (or --download SOURCE) is set, and a source with
+# neither a path nor download is an error.
+
+vocab_size: 8000        # the training config reads this back from the tokenizer; no n_bins edit
+target_mb: 16           # total corpus size; a few MB saturates an 8000-piece vocabulary
+output_dir: artifacts/tokenizer         # corpus.txt, tokenizer.model, tokenizer.vocab
+cache_dir: artifacts/tokenizer/cache    # downloaded and diacritized slices, so a re-run resumes
+
+# What may reach the tokenizer. Anything else drops its whole line (`on_foreign: strip`
+# removes just the character). Categories: latin (accented included), hebrew, niqqud,
+# cantillation, digits, punctuation.
+# `fold` rewrites curly quotes, Unicode dashes and maqaf/geresh/gershayim to the plain forms
+# the TTS normalizer produces; turn it off only if the manifest text is not normalized.
+charset:
+  allow: [latin, hebrew, niqqud, cantillation, digits, punctuation]
+  on_foreign: drop-line
+  fold: true
+
+sources:
+  # The training manifest's own text -- tokenizer_corpus.txt from prepare_data_v2.py, or a
+  # train_aligned.jsonl (its "transcript"). Rebuild whenever the training corpus changes.
+  manifest:
+    pct: 15
+    path: data/hebrew_official/train_aligned.jsonl
+  # General modern Hebrew. A folder of FineWeb-2 heb_Hebr parquet/jsonl dumps, or set
+  # `download: true` (and drop `path`) to stream it from HuggingFaceFW/fineweb-2.
+  hebrew:
+    pct: 40
+    path: null
+    download: false
+  # Vocalized Hebrew. Either text you already have (`path`), or `diacritize: true` to
+  # diacritize the `hebrew` text with the diacritizer below. That is the slow step and wants
+  # a GPU; its output is cached.
+  hebrew_nikud:
+    pct: 15
+    path: null
+    diacritize: true
+  # General English. A folder of FineWeb dumps, or `download: true` for
+  # HuggingFaceFW/fineweb (sample-10BT).
+  english:
+    pct: 30
+    path: null
+    download: false
+
+# Only used when hebrew_nikud.diacritize is true. A Hugging Face model id (downloaded on first
+# use, and it runs the model repo's own code) or a local directory.
+diacritizer:
+  model: dicta-il/dictabert-large-char-menaked
+  device: cuda
+  batch_size: 32

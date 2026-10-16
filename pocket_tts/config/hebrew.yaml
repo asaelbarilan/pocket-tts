@@ -1,6 +1,6 @@
 # Hebrew. Copied from english.yaml with exactly two changes, both in
 # flow_lm.lookup_table: `tokenizer_path` points at the Hebrew SentencePiece model from
-# training/scripts/train_tokenizer.py, and `n_bins` must equal that run's --vocab-size.
+# hebrew_training/train_tokenizer.py, and `n_bins` must equal that run's --vocab-size.
 #
 # `weights_path` is deliberately left pointing at the released English model: training/args.py
 # uses it for the Mimi codec ALWAYS, and for the FlowLM only when start_from_pretrained is
@@ -30,7 +30,7 @@ flow_lm:
     num_layers: 6
   lookup_table:
     dim: 1024
-    n_bins: 4000
+    n_bins: 8000  # inference asserts this equals the tokenizer's size; training reads it from the file
     tokenizer: sentencepiece
     tokenizer_path: tokenizers/hebrew.model  # <- train_tokenizer.py output
   #weights_path: final.safetensors

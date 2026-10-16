@@ -23,9 +23,11 @@ PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
 #     in.jsonl out.jsonl --model imvladikon/wav2vec2-xls-r-300m-hebrew \
 #     --device cuda --batch-size 8
 
-# 5. tokenizer, trained on the manifest text from step 3
-uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
-    data/hebrew_official/train_aligned.jsonl --vocab-size 4000
+# 5. tokenizer: manifest text from step 3 + general Hebrew + niqqud + English, charset-filtered.
+#    Edit the sources in the config first (local folders; downloads are opt-in).
+python -m hebrew_training.build_tokenizer_corpus \
+    --config hebrew_training/configs/tokenizer_hebrew.yaml --train
+mkdir -p tokenizers && cp artifacts/tokenizer/tokenizer.model tokenizers/hebrew.model
 
 # 6. train. Finetune from the released 24-layer teacher -- Kyutai measured this as
 #    ~2.5x faster to the same WER than scratch on 976h of Czech. Add torchrun for multi-GPU.
@@ -48,7 +50,7 @@ Be straight with whoever picks this up:
 | 2 fetch | selection verified against the live repo; a full 102 GiB download has not been run |
 | 3 manifests | validated end-to-end on CrowdRecital (80/80 utterances through Kyutai's `DataLoader`). The segment-merging path added for the Knesset corpora is **not yet exercised on downloaded audio** |
 | 4 alignment | `align_hebrew.py` measured against CrowdRecital timings: 19 ms median word-end error. Not needed for the Knesset corpora |
-| 5 tokenizer | Kyutai's script. **Never run here** (`--vocab-size` now defaults to 4000, so it needs no override) |
+| 5 tokenizer | `hebrew_training/build_tokenizer_corpus.py` + `train_tokenizer.py`; unit-tested on local text, **not yet run on the real corpora**. Kyutai's `training/scripts/train_tokenizer.py` does the plain manifest-only version and is **never run here** |
 | 6 train | Kyutai's trainer. **Never run here, not even a smoke test.** Every number in the hardware table is theirs, not ours |
 | 6b finetune path | Kyutai's `finetune_language.yaml`, added upstream `8c98c9b` and measured by them on Czech. **Never run here.** Supersedes our `warm_start_checkpoint.py` |
 | 7 WER | ours, used throughout the earlier run |
@@ -284,26 +286,36 @@ most of the lookup table dead.
 Training a Hebrew tokenizer is a two-minute CPU job that removes both costs. It is cheap
 insurance, not a blocker — if something else is broken, this is not it.
 
+A tokenizer fitted on the manifest alone has the opposite problem: it cannot spell English or
+vocalized Hebrew (0.98 and 0.94 tokens per character, i.e. bytes). So the tokenizer is built
+from a mix of the manifest text, general Hebrew, vocalized Hebrew and English, with a
+character-set filter so a stray script in a crawl cannot take pieces. The measurements and the
+whole tooling (sources, shares, filter, vocabulary size) are in
+[hebrew-english-data-mixing.md](hebrew-english-data-mixing.md#6-building-it-here).
+
 ```bash
-uv run training/scripts/train_tokenizer.py tokenizers/hebrew \
-    data/hebrew_official/train_aligned.jsonl --vocab-size 4000
+python -m hebrew_training.build_tokenizer_corpus \
+    --config hebrew_training/configs/tokenizer_hebrew.yaml --train
 ```
 
-Writes `tokenizers/hebrew.model` and `.vocab`. It reads the manifest directly, so run it
-**after** Step 3 — the tokenizer must see the normalized text the trainer will feed it, not
-the raw transcripts.
+Writes `artifacts/tokenizer/tokenizer.model` and `.vocab` (copy it to `tokenizers/hebrew.model`).
+Run it **after** Step 3 — the tokenizer must see the normalized text the trainer will feed it,
+not the raw transcripts. To use only the manifest, set the other shares to 0, or use Kyutai's
+`training/scripts/train_tokenizer.py` as before.
 
 This is a subword tokenizer for text conditioning. It is unrelated to the character-level
 CTC vocabulary in the aligner; the two are different objects and neither substitutes for the
 other.
 
-Then wire it up. `pocket_tts/config/hebrew.yaml` in this repo already does it — copied from
-`english.yaml` with two changes:
+Then wire it up. The training configs only need `flow_lm.lookup_table.tokenizer_path` (already
+set in `finetune_hebrew.yaml` and `depth_distill_hebrew.yaml`): the trainer reads `n_bins` from
+the tokenizer file, so the vocabulary size is set once, by `--vocab-size`. The inference config
+`pocket_tts/config/hebrew.yaml` is copied from `english.yaml` with two changes:
 
 | field | value | why |
 |---|---|---|
 | `flow_lm.lookup_table.tokenizer_path` | `tokenizers/hebrew.model` | the file you just built |
-| `flow_lm.lookup_table.n_bins` | must equal `--vocab-size` | silent shape mismatch otherwise |
+| `flow_lm.lookup_table.n_bins` | must equal `--vocab-size` | inference asserts it; training does not need it |
 
 `weights_path` stays pointed at the released English model on purpose. `training/args.py`
 uses it for the **Mimi codec always**, and for the FlowLM only when `start_from_pretrained`

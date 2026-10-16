@@ -75,7 +75,8 @@ Train the tokenizer and precompute target/prompt latents:
 ```powershell
 python -m hebrew_training.train_tokenizer `
   --input artifacts\hebrew_v2_8s\tokenizer_corpus.txt `
-  --output-dir artifacts\hebrew_v2_8s
+  --output-dir artifacts\hebrew_v2_8s `
+  --vocab-size 4000
 
 python -m hebrew_training.precompute_latents `
   --manifest artifacts\hebrew_v2_8s\train.jsonl `

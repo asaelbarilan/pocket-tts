@@ -87,3 +87,63 @@ class TestArgValidation:
         """A key the parser doesn't recognize is a setting the user thinks is applied."""
         with pytest.raises(ValueError, match="distill_seed_layers"):
             _from_dict(TrainArgs, {"distill_seed_layers": "first"})
+
+
+class TestVocabSizeFollowsTheTokenizer:
+    """n_bins is read from the tokenizer file, so the vocabulary size is chosen once."""
+
+    @staticmethod
+    def _tokenizer(tmp_path: Path, vocab_size: int) -> Path:
+        import random
+
+        import sentencepiece as spm
+
+        rng = random.Random(0)
+        letters = "אבגדהוזחטיכלמנספרשתabcdefghij"
+        corpus = tmp_path / "corpus.txt"
+        corpus.write_text(
+            "\n".join(
+                " ".join("".join(rng.choices(letters, k=rng.randint(2, 6))) for _ in range(8))
+                for _ in range(300)
+            ),
+            encoding="utf-8",
+        )
+        spm.SentencePieceTrainer.train(
+            input=str(corpus),
+            model_prefix=str(tmp_path / "tok"),
+            vocab_size=vocab_size,
+            model_type="unigram",
+            character_coverage=1.0,
+            bos_id=1,
+            eos_id=2,
+            unk_id=0,
+            pad_id=-1,
+        )
+        return tmp_path / "tok.model"
+
+    @pytest.mark.parametrize("vocab_size", [60, 80])
+    def test_n_bins_is_the_tokenizers_vocab_size(self, tmp_path, vocab_size):
+        tokenizer = self._tokenizer(tmp_path, vocab_size)
+        args = load_args(CONFIGS / "finetune_hebrew.yaml")
+        overrides = {**args.model_overrides, "flow_lm.lookup_table.tokenizer_path": str(tokenizer)}
+        config = load_model_config(args.model_config, overrides)
+        assert config.flow_lm.lookup_table.n_bins == vocab_size
+
+    def test_a_stale_n_bins_override_loses_to_the_tokenizer(self, tmp_path):
+        tokenizer = self._tokenizer(tmp_path, 60)
+        overrides = {
+            "flow_lm.lookup_table.tokenizer_path": str(tokenizer),
+            "flow_lm.lookup_table.n_bins": 4000,
+        }
+        config = load_model_config("pocket_tts/config/english_2026-04_24l.yaml", overrides)
+        assert config.flow_lm.lookup_table.n_bins == 60
+
+    def test_a_missing_tokenizer_is_an_error_naming_it(self):
+        overrides = {"flow_lm.lookup_table.tokenizer_path": "tokenizers/does-not-exist.model"}
+        with pytest.raises(FileNotFoundError, match="does-not-exist"):
+            load_model_config("pocket_tts/config/english_2026-04_24l.yaml", overrides)
+
+    def test_released_tokenizers_keep_the_configs_n_bins(self):
+        config = load_model_config("pocket_tts/config/english_2026-04_24l.yaml", {})
+        assert config.flow_lm.lookup_table.tokenizer_path.startswith("hf://")
+        assert config.flow_lm.lookup_table.n_bins == 4000

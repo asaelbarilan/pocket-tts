@@ -16,6 +16,7 @@
 # 1.0 = pure depth distillation.
 model_config: pocket_tts/config/english.yaml   # 6-layer student
 model_overrides:
+  # Student and teacher must use the same tokenizer file; n_bins is read from it for both.
   flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model
 start_from_pretrained: false
 distill_cfg_coef: 2.0

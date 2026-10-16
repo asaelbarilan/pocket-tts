@@ -8,7 +8,12 @@ from torch import nn
 from pocket_tts.conditioners.text import SentencePieceTokenizer
 
 
-TOKENIZER_SIZE = 4000
+def tokenizer_vocab_size(tokenizer_path: Path) -> int:
+    """The tokenizer's own size. Never a literal: n_bins has to equal it, and a hardcoded
+    4000 silently became wrong the day the vocabulary was made a parameter."""
+    import sentencepiece
+
+    return sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_path)).vocab_size()
 
 
 def require_voice_cloning_access(model) -> None:
@@ -26,14 +31,12 @@ def install_tokenizer(model, tokenizer_path: Path) -> int:
     """Install a Hebrew tokenizer and retain embeddings for pieces shared with the base model."""
     conditioner = model.flow_lm.conditioner
     old_tokenizer = conditioner.tokenizer
-    new_tokenizer = SentencePieceTokenizer(TOKENIZER_SIZE, str(tokenizer_path.resolve()))
+    vocab_size = tokenizer_vocab_size(tokenizer_path)
+    new_tokenizer = SentencePieceTokenizer(vocab_size, str(tokenizer_path.resolve()))
     old_weight = conditioner.embed.weight.detach()
 
     new_embed = nn.Embedding(
-        TOKENIZER_SIZE + 1,
-        conditioner.dim,
-        device=old_weight.device,
-        dtype=old_weight.dtype,
+        vocab_size + 1, conditioner.dim, device=old_weight.device, dtype=old_weight.dtype
     )
     with torch.no_grad():
         new_embed.weight.normal_(mean=float(old_weight.mean()), std=float(old_weight.std()))
@@ -47,7 +50,7 @@ def install_tokenizer(model, tokenizer_path: Path) -> int:
             if old_id is not None:
                 new_embed.weight[new_id].copy_(old_weight[old_id])
                 copied += 1
-        new_embed.weight[TOKENIZER_SIZE].copy_(old_weight[-1])
+        new_embed.weight[vocab_size].copy_(old_weight[-1])
 
     conditioner.tokenizer = new_tokenizer
     conditioner.embed = new_embed

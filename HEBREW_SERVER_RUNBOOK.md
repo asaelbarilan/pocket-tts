@@ -75,7 +75,8 @@ python -m hebrew_training.prepare_data_v2 \
 
 python -m hebrew_training.train_tokenizer \
   --input artifacts/hebrew_server_8s/tokenizer_corpus.txt \
-  --output-dir artifacts/hebrew_server_8s
+  --output-dir artifacts/hebrew_server_8s \
+  --vocab-size 4000
 ```
 
 The converter splits on `user_id` and pairs every target with a different clip from the same
@@ -91,7 +92,8 @@ python -m hebrew_training.prepare_data_v2 \
 
 python -m hebrew_training.train_tokenizer \
   --input artifacts/hebrew_teacher_server_23s/tokenizer_corpus.txt \
-  --output-dir artifacts/hebrew_teacher_server_23s
+  --output-dir artifacts/hebrew_teacher_server_23s \
+  --vocab-size 4000
 ```
 
 ## 4. Student: precompute, smoke, train
