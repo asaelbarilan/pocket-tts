@@ -43,6 +43,7 @@ from pathlib import Path
 
 import yaml
 
+from hebrew_training.diacritizer import DiacritizerSpec, load_dicta
 from hebrew_training.tokenizer_charset import (
     CANTILLATION,
     CATEGORIES,
@@ -80,18 +81,6 @@ class CharsetSpec:
     allow: list[str] = field(default_factory=lambda: list(CATEGORIES))
     on_foreign: str = "drop-line"
     fold: bool = True
-
-
-@dataclass
-class DiacritizerSpec:
-    # A Hugging Face model id or a local directory. No default on purpose: loading one by id
-    # downloads it, and that should be written down in the config, not implied.
-    model: str | None = None
-    device: str = "cuda"
-    batch_size: int = 32
-    revision: str | None = None
-    dtype: str = "float32"
-    preserve_matres: bool = True
 
 
 @dataclass
@@ -370,37 +359,6 @@ def _without_hebrew_marks(text: str) -> str:
     return "".join(c for c in text if c not in NIQQUD and c not in CANTILLATION)
 
 
-class _PythonOffsetsTokenizer:
-    """Avoid thousands of scalar tensor operations in Dicta's Python reconstruction loop.
-
-    The model's predict() only iterates/compares offsets; Python integers give identical
-    results without the overhead of indexing zero-dimensional CPU tensors per character.
-    """
-
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-
-    def __getattr__(self, name):
-        return getattr(self.tokenizer, name)
-
-    def __call__(self, *args, **kwargs):
-        encoded = self.tokenizer(*args, **kwargs)
-        if "offset_mapping" in encoded:
-            offsets = encoded["offset_mapping"].tolist()
-            for row in offsets:
-                seen = set()
-                for span in row:
-                    key = tuple(span)
-                    # NFKC expands e.g. ellipsis into three tokens with the same original
-                    # one-character span. Dicta otherwise emits the original char three times.
-                    if span[1] - span[0] == 1:
-                        if key in seen:
-                            span[1] = span[0]
-                        seen.add(key)
-            encoded["offset_mapping"] = offsets
-        return encoded
-
-
 def diacritize(
     cached: Path, lines: list[str], want_chars: int, spec: DiacritizerSpec, charset: CharsetFilter
 ) -> list[str]:
@@ -445,22 +403,8 @@ def diacritize(
         print(f"  hebrew_nikud: reusing {len(done)} cached lines")
         return done
 
-    import torch
-    from transformers import AutoModel, PreTrainedTokenizerFast
-
     print(f"  hebrew_nikud: diacritizing with {spec.model} on {spec.device}, from line {len(done)}")
-    # Not AutoTokenizer. This is a *character* model whose char-level pre-tokenizer lives only
-    # in tokenizer.json; under transformers 5.x AutoTokenizer builds a word-level BertTokenizer
-    # from vocab.txt instead, tokenizing every Hebrew word as [UNK]. predict() then returns
-    # repeated prefixes with no nikud at all -- no error, just quiet rubbish.
-    tokenizer = _PythonOffsetsTokenizer(
-        PreTrainedTokenizerFast.from_pretrained(spec.model, revision=spec.revision)
-    )
-    model = (
-        AutoModel.from_pretrained(spec.model, revision=spec.revision, trust_remote_code=True)
-        .eval()
-        .to(device=spec.device, dtype=getattr(torch, spec.dtype))
-    )
+    predict = load_dicta(spec)
     cached.parent.mkdir(parents=True, exist_ok=True)
     have = sum(map(len, done))
     ws = re.compile(r"\s+")
@@ -468,9 +412,7 @@ def diacritize(
     with cached.open("a", encoding="utf-8", newline="\n") as handle:
         for i in range(progress["next_input"], len(lines), spec.batch_size):
             batch = lines[i : i + spec.batch_size]
-            with torch.inference_mode():
-                kwargs = {"mark_matres_lectionis": ""} if spec.preserve_matres else {}
-                marked = model.predict(batch, tokenizer, **kwargs)
+            marked = predict(batch)
             if len(marked) != len(batch) or (
                 spec.preserve_matres
                 and any(

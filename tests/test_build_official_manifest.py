@@ -69,12 +69,11 @@ def test_parallel_output_matches_serial_and_removes_spool(
     _run(monkeypatch, corpus, serial, tmp_path, workers=1)
     _run(monkeypatch, corpus, parallel, tmp_path, workers=2)
 
-    for name in ("train_aligned.jsonl", "valid_aligned.jsonl"):
+    for name in ("train.jsonl", "valid.jsonl"):
         assert (serial / name).read_bytes() == (parallel / name).read_bytes()
     assert (
         sum(
-            len((serial / name).read_text().splitlines())
-            for name in ("train_aligned.jsonl", "valid_aligned.jsonl")
+            len((serial / name).read_text().splitlines()) for name in ("train.jsonl", "valid.jsonl")
         )
         == 4
     )
@@ -164,6 +163,83 @@ def test_failed_transcode_removes_partial_file(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(build_official_manifest.subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="decode failed"):
-        build_official_manifest.transcode_audio(source, recording, output)
+        build_official_manifest.transcode_audio(source, recording, output / "audio")
 
     assert not list((output / "audio").iterdir())
+
+
+def _transcode_args(out_dir: Path, audio_dir: Path | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        audio_glob="audio.wav,audio.m4a,audio.mka",
+        align_glob="transcript.aligned.json",
+        metadata_glob="metadata.json",
+        speaker_field="user_id",
+        min_quality=0.6,
+        min_duration=4.0,
+        max_duration=30.0,
+        merge_target=12.0,
+        merge_jitter=0.0,
+        merge_gap=1.5,
+        transcode_audio=True,
+        out_dir=out_dir,
+        audio_dir=audio_dir,
+    )
+
+
+def test_existing_wavs_are_kept_and_reused_by_a_rebuild_into_a_new_folder(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _make_recording(corpus, "session-1", "speaker")
+    first = tmp_path / "build-1"
+    (first / "audio").mkdir(parents=True)
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"RIFF" + b"\0" * 100)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(build_official_manifest.subprocess, "run", fake_run)
+    rows, _ = build_official_manifest.segment_rows(
+        corpus / "session-1", _transcode_args(first), None, random.Random(0)
+    )
+    wav = first / "audio" / "session-1.wav"
+    before = (wav.read_bytes(), wav.stat().st_mtime_ns)
+    assert len(commands) == 1
+
+    # a new manifest version in a new folder, pointed at the old WAVs
+    second = tmp_path / "build-2"
+    second.mkdir()
+    rows2, stats = build_official_manifest.segment_rows(
+        corpus / "session-1", _transcode_args(second, first / "audio"), None, random.Random(0)
+    )
+    assert len(commands) == 1 and stats["audio_reused"] == 1 and stats["audio_transcoded"] == 0
+    assert {row["path"] for row in rows2} == {str(wav.resolve())} == {row["path"] for row in rows}
+    assert (wav.read_bytes(), wav.stat().st_mtime_ns) == before
+    assert not (second / "audio").exists()  # nothing was made in the new folder
+
+
+def test_only_a_partial_file_is_replaced_never_a_finished_wav(monkeypatch, tmp_path: Path) -> None:
+    recording = tmp_path / "session"
+    recording.mkdir()
+    source = recording / "audio.m4a"
+    source.touch()
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    (audio / ".session.wav.partial").write_bytes(b"half written")
+
+    def fake_run(command, **kwargs):
+        Path(command[-1]).write_bytes(b"RIFF" + b"\1" * 100)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(build_official_manifest.subprocess, "run", fake_run)
+    target, created = build_official_manifest.transcode_audio(source, recording, audio)
+    assert created and target.read_bytes().startswith(b"RIFF")
+    assert not list(audio.glob("*.partial"))
+
+    target.write_bytes(b"RIFF" + b"\2" * 100)  # a finished wav stays, even if the source changed
+    source.write_bytes(b"new source")
+    again, created = build_official_manifest.transcode_audio(source, recording, audio)
+    assert not created and again.read_bytes() == b"RIFF" + b"\2" * 100

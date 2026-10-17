@@ -21,7 +21,7 @@ charset:
 sources:
   manifest:
     pct: 20
-    path: /mlspeech/hebrew/pockettts-data/committee/train_realigned.jsonl
+    path: /mlspeech/hebrew/pockettts-data/committee/train_aligned.jsonl
   hebrew:
     pct: 40
     path: /mlspeech/hebrew/raw_sources/fineweb_heb_corpus/he

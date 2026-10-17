@@ -26,6 +26,12 @@ after it has chosen its cut (see `swap_alternates`). Loaders that do not know th
 ignore it. The indices are only valid for the exact `words` list of the row, so any step
 that rewrites `words` must keep it one-to-one or drop `alt_words`.
 
+Writes `train.jsonl` and `valid.jsonl`. The optional later stages add to these rows and name
+their output after themselves (see manifest_files.py): `diacritize_official_manifest` adds a
+parallel `nikud` list (`train_diac.jsonl`), `align_official_manifest` refines the word times
+(`train_aligned.jsonl`). Neither changes the text of `words` or the number of words, so
+`alt_words` indices stay valid through both.
+
 `words` IS THE TEXT. training/dataloader.py:150 builds what it trains on by joining
 `words`, and reads `transcript` only in the fallback branch where no word-boundary cut
 exists. So anything done to the text -- normalization above all -- has to be done to
@@ -79,6 +85,8 @@ from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
+from hebrew_training.manifest_files import BUILT
+
 _WS = re.compile(r"\s+")
 _HEBREW = re.compile(r"[֐-׿]")
 
@@ -118,6 +126,13 @@ def parse_args() -> argparse.Namespace:
         help="Transcode each used recording to a 24 kHz mono WAV in OUT_DIR/audio "
         "(default: enabled). Completed files are reused; pass --no-transcode-audio "
         "to keep source paths in the manifest.",
+    )
+    parser.add_argument(
+        "--audio-dir",
+        type=Path,
+        help="Where the transcoded WAVs live (default: OUT_DIR/audio). Point a rebuild of the "
+        "manifest at the folder of an earlier build and every WAV already there is reused, "
+        "not transcoded again.",
     )
     parser.add_argument(
         "--speaker-field",
@@ -470,9 +485,18 @@ def find_audio(recording: Path, globs: str) -> Path | None:
     return None
 
 
-def transcode_audio(audio: Path, recording: Path, out_dir: Path) -> tuple[Path, bool]:
-    """Write one restart-safe WAV per recording directly to the durable output volume."""
-    target = out_dir / "audio" / f"{recording.name}.wav"
+def audio_dir_of(args) -> Path:
+    return getattr(args, "audio_dir", None) or args.out_dir / "audio"
+
+
+def transcode_audio(audio: Path, recording: Path, audio_dir: Path) -> tuple[Path, bool]:
+    """Write one restart-safe WAV per recording directly to the durable output volume.
+
+    A WAV that is already there is never rewritten or removed: the rename below is the last
+    step, so a file at the final name is a complete one, and a rebuild -- into this folder or,
+    with --audio-dir, into a new one -- finds it and skips the transcode. Only a half-written
+    `.partial` from an interrupted run is replaced."""
+    target = audio_dir / f"{recording.name}.wav"
     if target.is_file() and target.stat().st_size > 44:
         return target.resolve(), False
 
@@ -684,7 +708,7 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
         rows.append(row)
         stats["kept"] += 1
     if rows and args.transcode_audio:
-        manifest_audio, created = transcode_audio(audio, recording, args.out_dir)
+        manifest_audio, created = transcode_audio(audio, recording, audio_dir_of(args))
         for row in rows:
             row["path"] = str(manifest_audio)
         stats["audio_transcoded" if created else "audio_reused"] += 1
@@ -781,7 +805,7 @@ def main() -> None:
     if args.transcode_audio:
         if shutil.which("ffmpeg") is None:
             raise SystemExit("--transcode-audio requires ffmpeg on PATH")
-        (args.out_dir / "audio").mkdir(parents=True, exist_ok=True)
+        audio_dir_of(args).mkdir(parents=True, exist_ok=True)
 
     if not args.spool_dir.is_dir():
         raise SystemExit(f"--spool-dir is not a directory: {args.spool_dir}")
@@ -931,8 +955,8 @@ def main() -> None:
         args.out_dir.mkdir(parents=True, exist_ok=True)
         train_count = valid_count = 0
         train_seconds = valid_seconds = 0.0
-        train_path = args.out_dir / "train_aligned.jsonl"
-        valid_path = args.out_dir / "valid_aligned.jsonl"
+        train_path = args.out_dir / BUILT.format(split="train")
+        valid_path = args.out_dir / BUILT.format(split="valid")
         with train_path.open("wb") as train_handle, valid_path.open("wb") as valid_handle:
             for result in results:
                 assert result is not None

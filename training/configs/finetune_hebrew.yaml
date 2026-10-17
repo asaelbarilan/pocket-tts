@@ -20,8 +20,8 @@ start_from_pretrained: true
 reset_text_embedding: true  # the tokenizer is not the one these weights were trained with
 
 data:
-  train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_realigned.jsonl
-  valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_realigned.jsonl
+  train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+  valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
   max_duration_sec: 30.0
   max_voice_prompt_sec: 5.0
 

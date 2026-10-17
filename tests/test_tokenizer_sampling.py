@@ -5,6 +5,7 @@ import pytest
 
 from hebrew_training import build_tokenizer_corpus as builder
 from hebrew_training import train_tokenizer
+from hebrew_training.diacritizer import PythonOffsetsTokenizer
 from hebrew_training.tokenizer_charset import CharsetFilter
 from hebrew_training.tokenizer_experiment import choose_size
 from hebrew_training.tokenizer_sampling import SamplingSpec, sample_source
@@ -146,7 +147,7 @@ def test_diacritizer_python_offsets_adapter():
         def __call__(self, text):
             return {"offset_mapping": torch.tensor([[[0, 1], [1, 2]]]), "input_ids": [1, 2]}
 
-    adapted = builder._PythonOffsetsTokenizer(FakeTokenizer())
+    adapted = PythonOffsetsTokenizer(FakeTokenizer())
     assert adapted.model_max_length == 512
     assert adapted("אב") == {"offset_mapping": [[[0, 1], [1, 2]]], "input_ids": [1, 2]}
 
@@ -158,7 +159,7 @@ def test_diacritizer_deduplicates_normalization_expanded_offsets():
         def __call__(self, text):
             return {"offset_mapping": torch.tensor([[[0, 1], [0, 1], [0, 1], [1, 2]]])}
 
-    encoded = builder._PythonOffsetsTokenizer(FakeTokenizer())("…!")
+    encoded = PythonOffsetsTokenizer(FakeTokenizer())("…!")
     assert encoded["offset_mapping"] == [[[0, 1], [0, 0], [0, 0], [1, 2]]]
 
 

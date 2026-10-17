@@ -105,9 +105,11 @@ def test_dictionary_extension_is_grapheme_only_and_source_is_read_only(tmp_path)
     dictionary = tmp_path / "hebrew_graphemes.dict"
     dictionary.write_text("שלום\tש\tל\tו\tמ\n", encoding="utf-8")
     source = dictionary.read_bytes()
-    manifest = tmp_path / "valid_aligned.jsonl"
+    manifest = tmp_path / "valid.jsonl"
     manifest.write_text(json.dumps(sample("ג'ץ"), ensure_ascii=False) + "\n", encoding="utf-8")
-    args = Namespace(viter_dictionary=dictionary, splits=["valid"], folder=tmp_path)
+    args = Namespace(
+        viter_dictionary=dictionary, splits=["valid"], folder=tmp_path, input_stage="auto"
+    )
     merged = tmp_path / "merged.tsv"
     aligner.prepare_viter_dictionary(args, merged)
     assert "ג'ץ\tג' צ" in merged.read_text(encoding="utf-8")
@@ -120,7 +122,7 @@ def test_dictionary_extension_is_grapheme_only_and_source_is_read_only(tmp_path)
 
 
 def test_resume_rejects_backend_change_without_truncating_output(tmp_path):
-    output = tmp_path / "valid_realigned.jsonl"
+    output = tmp_path / "valid_aligned.jsonl"
     old = {"aligner": "mms"}
     handle, failed, _ = aligner.open_resumable_files(output, False, old)
     handle.write(b"preserve me\n")
@@ -142,3 +144,48 @@ def test_multiple_workers_on_same_gpu_have_distinct_readiness_ids(monkeypatch):
         aligner.worker_main("cuda:0", worker_id, args, tasks, results)
     assert results.get_nowait() == ("ready", "mms-cuda:0-0")
     assert results.get_nowait() == ("ready", "mms-cuda:0-1")
+
+
+def write_rows(path, rows):
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+
+
+def test_the_input_is_the_diacritized_file_when_there_is_one_else_the_built_one(tmp_path):
+    write_rows(tmp_path / "train.jsonl", [sample()])
+    assert aligner.source_path(tmp_path, "train") == tmp_path / "train.jsonl"
+    write_rows(tmp_path / "train_diac.jsonl", [sample()])
+    assert aligner.source_path(tmp_path, "train") == tmp_path / "train_diac.jsonl"
+    assert aligner.source_path(tmp_path, "train", "built") == tmp_path / "train.jsonl"
+    with pytest.raises(FileNotFoundError):
+        aligner.source_path(tmp_path, "valid")
+    with pytest.raises(FileNotFoundError):
+        aligner.source_path(tmp_path, "train_x", "diac")
+
+
+def test_the_first_rows_must_look_like_a_manifest_that_has_not_been_aligned(tmp_path):
+    path = tmp_path / "train.jsonl"
+    write_rows(path, [sample(), {"path": "x"}])
+    with pytest.raises(SystemExit, match="row 2 has no numeric `start`"):
+        aligner.source_path(tmp_path, "train")
+    already = {**sample(), "alignment_backend": "viter", "original_words": []}
+    write_rows(path, [already])
+    with pytest.raises(SystemExit, match="already has `alignment_backend`"):
+        aligner.source_path(tmp_path, "train")
+    write_rows(path, [{**sample(), "nikud": []}])
+    with pytest.raises(SystemExit, match="`nikud` list"):
+        aligner.source_path(tmp_path, "train")
+    write_rows(path, [{**sample(), "nikud": ["שָׁלוֹם"]}])
+    assert aligner.source_path(tmp_path, "train") == path
+    path.write_text("")
+    with pytest.raises(SystemExit, match="is empty"):
+        aligner.source_path(tmp_path, "train")
+
+
+def test_a_row_the_aligner_cannot_place_keeps_its_nikud(monkeypatch):
+    row = {**sample("שלום"), "nikud": ["שָׁלוֹם"], "alt_words": {"digits": []}}
+    monkeypatch.setattr(aligner, "_VITER_WORDS", set())  # nothing is in the dictionary
+    fallback = Mock()
+    fallback.align.return_value = [{"error": "no CTC path"}]
+    (outcome,) = aligner.align_viter_batch([(1, row)], options(), fallback)
+    assert outcome["row"]["nikud"] == ["שָׁלוֹם"]
+    assert outcome["row"]["alt_words"] == {"digits": []}

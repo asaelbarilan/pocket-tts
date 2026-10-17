@@ -1,4 +1,4 @@
-"""Realign official Pocket TTS manifests with Viter (default) or MMS CTC.
+"""Align official Pocket TTS manifests with Viter (default) or MMS CTC.
 
 The public entry point re-executes itself in the selected dedicated environment. Persistent
 workers load models once, while manifests and output files remain streaming.
@@ -6,8 +6,18 @@ workers load models once, while manifests and output files remain streaming.
 Example:
     uv run python hebrew_training/align_official_manifest.py /data/plenum
 
-This reads ``train_aligned.jsonl`` and ``valid_aligned.jsonl`` and writes
-``train_realigned.jsonl`` and ``valid_realigned.jsonl``. Source manifests are never modified.
+Reads ``train_diac.jsonl`` (the diacritize pass's output) when the folder has one, else
+``train.jsonl`` (the manifest builder's), likewise ``valid``, and writes ``train_aligned.jsonl``
+and ``valid_aligned.jsonl``. Source manifests are never modified.
+
+The row goes out as it came in with new word times: `words` keeps its text and its length and
+order, `transcript` is rebuilt from it, and every other key -- `nikud`, `alt_words`, ... -- is
+carried over untouched, so this pass and the diacritize pass can run in either order. A row
+that would come out with a different number of words is kept as it was instead.
+
+This file is run from its own virtualenv by path and imports nothing from `hebrew_training`:
+the stage file names below are a copy of hebrew_training/manifest_files.py, and a test keeps
+the two equal.
 """
 
 from __future__ import annotations
@@ -30,6 +40,14 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+BUILT = "{split}.jsonl"
+DIACRITIZED = "{split}_diac.jsonl"
+ALIGNED = "{split}_aligned.jsonl"
+# A row with either of these has been through this stage, and aligning it again would
+# overwrite `original_words` with the already-aligned words.
+ALREADY_ALIGNED_KEYS = ("alignment_backend", "original_words")
+VERIFY_ROWS = 20
 
 SAMPLE_RATE = 16_000
 PRE_PADDING = 0.5
@@ -59,7 +77,17 @@ def clean(text: str) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "folder", type=Path, help="Directory containing train_aligned.jsonl and valid_aligned.jsonl"
+        "folder",
+        type=Path,
+        help="Directory holding train(_diac).jsonl and valid(_diac).jsonl; the aligned files "
+        "are written beside them",
+    )
+    parser.add_argument(
+        "--input-stage",
+        choices=("auto", "built", "diac"),
+        default="auto",
+        help="Which file to read: auto takes {split}_diac.jsonl when it exists, else "
+        "{split}.jsonl; built or diac insists on one.",
     )
     parser.add_argument(
         "--splits",
@@ -137,6 +165,71 @@ def parse_args() -> argparse.Namespace:
         args.viter_dictionary or args.viter_environment / "models/hebrew_graphemes.dict"
     )
     return args
+
+
+def check_source_head(path: Path) -> None:
+    """Fail up front, naming the file, if the first rows are not what this pass reads."""
+    seen = 0
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            seen += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise SystemExit(f"{path} is not a JSON-lines manifest: {error}") from error
+            problem = source_row_problem(row)
+            if problem:
+                raise SystemExit(
+                    f"{path} is not an input for alignment: row {seen} {problem}. Expected the "
+                    "output of build_official_manifest or diacritize_official_manifest."
+                )
+            if seen == VERIFY_ROWS:
+                return
+    if not seen:
+        raise SystemExit(f"{path} is empty")
+
+
+def source_row_problem(row: Any) -> str | None:
+    if not isinstance(row, dict):
+        return "is not a JSON object"
+    if not isinstance(row.get("path"), str):
+        return "has no string `path`"
+    for key in ("start", "duration"):
+        if isinstance(row.get(key), bool) or not isinstance(row.get(key), int | float):
+            return f"has no numeric `{key}`"
+    words = row.get("words")
+    if words:
+        if not isinstance(words, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("word"), str) for item in words
+        ):
+            return "has a `words` entry without a string `word`"
+    elif not isinstance(row.get("transcript"), str):
+        return "has neither `words` nor a `transcript`"
+    for key in ALREADY_ALIGNED_KEYS:
+        if key in row:
+            return f"already has `{key}`, so it has been aligned"
+    nikud = row.get("nikud")
+    if nikud is not None and (not isinstance(nikud, list) or len(nikud) != len(words or [])):
+        return "has a `nikud` list that is not one entry per word"
+    return None
+
+
+def source_path(folder: Path, split: str, stage: str = "auto") -> Path:
+    """The manifest to align for `split`, checked: see `check_source_head`."""
+    built = folder / BUILT.format(split=split)
+    diacritized = folder / DIACRITIZED.format(split=split)
+    if stage == "built":
+        path = built
+    elif stage == "diac" or diacritized.is_file():
+        path = diacritized
+    else:
+        path = built
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    check_source_head(path)
+    return path
 
 
 def dedicated_python(environment: Path) -> Path:
@@ -290,6 +383,9 @@ def update_timings(
     first, last = timed[0]["start"], timed[-1]["end"]
     if last <= first:
         raise ValueError("alignment returned zero duration")
+    # `nikud` and `alt_words` are indexed by position in `words`, and are carried over as-is.
+    if row.get("words") and len(timed) != len(row["words"]):
+        raise ValueError(f"alignment returned {len(timed)} words for {len(row['words'])}")
     updated = original_snapshot(row)
     updated["alignment_backend"] = aligner
     updated["start"] = round(origin + first, 4)
@@ -414,7 +510,8 @@ def prepare_viter_dictionary(args: argparse.Namespace, destination: Path) -> Non
         raise ValueError("--viter-dictionary must be a Hebrew grapheme dictionary")
     added = 0
     for split in args.splits:
-        for batch in iter_batches(args.folder / f"{split}_aligned.jsonl", 0, 1024, None):
+        source = source_path(args.folder, split, args.input_stage)
+        for batch in iter_batches(source, 0, 1024, None):
             for _, row in batch:
                 for original in source_words(row):
                     word = clean_viter_word(original)
@@ -779,10 +876,9 @@ def write_batch(output: Any, failed: Any, outcomes: list[dict[str, Any]], rows: 
 
 
 def align_split(args: argparse.Namespace, split: str, devices: list[str]) -> None:
-    source = args.folder / f"{split}_aligned.jsonl"
-    output = args.folder / f"{split}_realigned.jsonl"
-    if not source.is_file():
-        raise FileNotFoundError(source)
+    source = source_path(args.folder, split, args.input_stage)
+    output = args.folder / ALIGNED.format(split=split)
+    print(f"{split}: aligning {source.name} into {output.name}", flush=True)
     progress, _ = progress_paths(output)
     configuration = {
         "aligner": args.aligner,

@@ -103,7 +103,7 @@ English-heavy input, 5% otherwise.
 
 | source | use | note |
 |---|---|---|
-| the training manifest itself | the Hebrew side | a `train_aligned.jsonl` is read as-is |
+| the training manifest itself | the Hebrew side | a `train.jsonl` is read as-is |
 | `HuggingFaceFW/fineweb` (`sample-10BT`) | the English 5-10% | ungated; a few MB is plenty for 4,000 pieces |
 | `HuggingFaceFW/fineweb-2` (`heb_Hebr`) | more Hebrew, if wanted | ungated, modern Hebrew; `hbo_Hebr` is Biblical, not what you want |
 
@@ -332,7 +332,7 @@ configured for it:
 
 | source | what it is | where it reads from |
 |---|---|---|
-| `manifest` | the model's own training text | `path`: a `tokenizer_corpus.txt`, a `train_aligned.jsonl`, or a folder |
+| `manifest` | the model's own training text | `path`: a `tokenizer_corpus.txt`, a `train.jsonl`, or a folder |
 | `hebrew` | general modern Hebrew | `path`, or `download: true` for FineWeb-2 `heb_Hebr` |
 | `hebrew_nikud` | vocalized Hebrew | `path` of supplied text, or `diacritize: true` with `diacritize_sources: [manifest, hebrew]` |
 | `english` | general English | `path`, or `download: true` for FineWeb `sample-10BT` |

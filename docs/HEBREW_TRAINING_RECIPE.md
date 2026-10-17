@@ -17,6 +17,11 @@ PYTHONUTF8=1 python -m hebrew_training.build_official_manifest \
     --corpus data/knesset_plenums --out-dir data/hebrew_official \
     --normalize-text --valid-hours 2.0
 
+# 3b. optional: vocalized (niqqud) forms of some rows, for training-time augmentation.
+#     Uses every GPU it finds; see hebrew_training/NIQQUD.md.
+#   python -m hebrew_training.diacritize_official_manifest data/hebrew_official \
+#       --model <dicta> --revision <pinned>
+
 # 4. alignment -- NOT needed here, this corpus ships transcript.aligned.json.
 #    If needed (a corpus without word timings), the model we tested:
 # PYTHONPATH=$(pwd) python -m data_prep.align_hebrew \
@@ -177,6 +182,22 @@ worker pool, writes directly to the output volume rather than the temporary spoo
 and reuses complete WAVs when a build is restarted. Budget output storage at about 165 MiB
 per wall-clock audio hour and set `--workers` for the available CPU and output-disk bandwidth.
 Use `--no-transcode-audio` only when retaining source paths is intentional.
+
+### Manifest stages
+
+The builder writes `train.jsonl` and `valid.jsonl`. Two optional passes read what the
+previous one wrote and name their output after themselves, so a file's name says what has
+been done to it:
+
+| stage | writes | adds |
+|---|---|---|
+| `build_official_manifest` | `train.jsonl`, `valid.jsonl` | the rows |
+| `diacritize_official_manifest` (optional) | `train_diac.jsonl`, `valid_diac.jsonl` | `nikud`: vocalized words, parallel to `words` |
+| `align_official_manifest` (optional) | `train_aligned.jsonl`, `valid_aligned.jsonl` | new word times |
+
+The aligner takes `_diac` when it exists, else the built file. Train on the last file you
+made. Neither optional pass changes the text or the number of `words`, so they can run in
+either order and `alt_words` stays valid; see `hebrew_training/NIQQUD.md` and `ALIGNMENT.md`.
 
 ### The one thing that is easy to get wrong here
 
@@ -394,8 +415,8 @@ model_config: pocket_tts/config/hebrew.yaml     # was english.yaml
 model_overrides:
   flow_lm.transformer.num_layers: 24            # leave as-is: this is what makes it the teacher
 data:
-  train_jsonl: data/hebrew_official/train_aligned.jsonl
-  valid_jsonl: data/hebrew_official/valid_aligned.jsonl
+  train_jsonl: data/hebrew_official/train.jsonl   # or train_diac / train_aligned: see "Manifest stages"
+  valid_jsonl: data/hebrew_official/valid.jsonl
 batch_size: 64                                  # see the batch note below
 grad_accum_steps: 1
 max_steps: 400000                               # 50000 if you only need intelligibility
@@ -414,8 +435,8 @@ distill_teacher_overrides:
   flow_lm.transformer.num_layers: 24                  # ...plus this, making it the teacher
 distill_teacher_weights: runs/finetune_language/checkpoint_00250000.pt  # <- your teacher run
 data:
-  train_jsonl: data/hebrew_official/train_aligned.jsonl
-  valid_jsonl: data/hebrew_official/valid_aligned.jsonl
+  train_jsonl: data/hebrew_official/train.jsonl   # the same file the teacher trained on
+  valid_jsonl: data/hebrew_official/valid.jsonl
 ```
 
 ```bash

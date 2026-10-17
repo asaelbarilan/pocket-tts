@@ -1,8 +1,23 @@
-# Official manifest realignment
+# Official manifest alignment
 
-`align_official_manifest.py` reads `valid_aligned.jsonl` and `train_aligned.jsonl`
-and writes `valid_realigned.jsonl` and `train_realigned.jsonl` in the same folder.
-The source manifests and audio are read-only.
+`align_official_manifest.py` reads `train_diac.jsonl` / `valid_diac.jsonl` when the folder
+has them (the optional diacritize pass, `NIQQUD.md`), otherwise `train.jsonl` / `valid.jsonl`
+from `build_official_manifest`, and writes `train_aligned.jsonl` and `valid_aligned.jsonl`
+in the same folder. The source manifests and audio are read-only. `--input-stage built`
+or `diac` pins which file is read. The aligner needs nothing but the builder's rows (a `_diac`
+file is those rows plus `nikud`), so it checks their structure and does not compare file dates;
+delete a stale `_diac` file if the manifest was rebuilt.
+
+Before aligning anything it checks the first 20 rows of each input: `path`, numeric `start`
+and `duration`, `words` entries with a string `word`, no `alignment_backend` /
+`original_words` (the file has not been aligned already), and a `nikud` list, if present,
+with one entry per word.
+
+The aligner changes only the word times (and `start` / `duration`, and `transcript`, which
+is rebuilt from `words`). `words` keeps its text, its length and its order, and every other
+key -- `nikud`, `alt_words`, `speaker` -- is carried over, so this pass and the diacritize pass
+give the same rows in either order. A row that would come out with a different number of
+words is kept as it was, never written misaligned with its `nikud` or `alt_words`.
 
 ## Isolated runtimes
 
@@ -91,11 +106,11 @@ a batch; rows without a speaker use the recording path as their speaker key.
   dropping those words (notably standalone digit tokens).
 - `alignment_backend` is `viter`, `mms`, or `original`.
 - Fallback rows include `alignment_fallback_reason`; retained-original rows also
-  include `alignment_error` and an entry in `*_realigned.failed.jsonl`.
+  include `alignment_error` and an entry in `*_aligned.failed.jsonl`.
 - Explicit MMS-only mode retains its previous error handling: unsuccessful rows
   are recorded in the failure file rather than written to the output.
 
-Progress is saved in `*_realigned.progress.json`; repeat the same command to
+Progress is saved in `*_aligned.progress.json`; repeat the same command to
 resume. Backend/model/beam settings must match the saved progress to prevent
 mixing configurations. Completed outputs are skipped. Use `--overwrite` to
 restart an output, including when replacing an earlier MMS migration with Viter.
