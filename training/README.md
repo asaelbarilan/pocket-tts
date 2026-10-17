@@ -180,6 +180,51 @@ same WER as a scratch run about 2.5x sooner.
 
 Training the model in two steps like this works better than training a 6-layer model from scratch.
 
+### Mixing datasets: a training curriculum
+
+`data.train_jsonl` / `data.valid_jsonl` take one manifest each. To train on several datasets,
+and to change how much of each you see as the run goes, replace them with `data.datasets` and
+`data.curriculum` (a full example: `configs/finetune_hebrew_curriculum.yaml`):
+
+```yaml
+data:
+  datasets:
+    hebrew:  {train_jsonl: he/train.jsonl, valid_jsonl: he/valid.jsonl, valid_weight: 0.6}
+    english: {train_jsonl: en/train.jsonl, valid_jsonl: en/valid.jsonl, valid_weight: 0.4}
+  curriculum:                              # phases run in order
+    - {steps: 15000,  mix: {hebrew: 1}}
+    - {steps: 235000, mix: {hebrew: 0.9, english: 0.1}}
+```
+
+**Training.** A phase lasts `steps` optimizer steps and has a constant `mix`: the share of
+*samples* each dataset supplies (relative weights, normalized; a dataset left out is 0%).
+`max_steps` is the sum of the phases, so leave it out (writing a different one is an error).
+Each micro-batch of `batch_size` samples comes from one dataset. The choice is a
+deterministic quota rather than a random draw, so the mix is exact over a phase even when a
+step has few micro-batches (`grad_accum_steps * GPUs`), and every rank computes the same
+schedule without talking to the others. A dataset that runs out of rows reshuffles and starts
+again (rollover); it keeps its position when a phase stops using it and a later one brings it
+back. The learning-rate schedule is unchanged and spans the whole run.
+
+**Validation is a fixed benchmark, not a mirror of the phase.** `valid_weight` is each
+dataset's share of the `num_valid_batches` budget (relative weights, normalized; 0 leaves the
+dataset out of validation; required, so a dataset is never left out by accident). A dataset
+whose validation set cannot fill its share (it needs `batch_size` rows per GPU for each
+batch) gives the rest to the others, in proportion to their weights; the plan is printed at
+startup. Because the benchmark does not move, a dataset can get worse while its phase has not
+started yet (or after it ended) and you can see it. `valid/loss` etc. are the whole benchmark;
+`valid/<dataset>/loss` is each dataset on its own. Validation and a checkpoint also happen at
+the end of every phase, besides `valid_freq` / `ckpt_freq`
+(`curriculum_checkpoint_at_phase_end: false` turns the checkpoint off).
+
+`progress.jsonl` gets a `phase` event whenever one starts, and its `train` records carry the
+current phase and `epochs` per dataset (passes over this rank's shard). The same two are in
+wandb as `train/phase` and `data/epochs/<dataset>`.
+
+Resuming restarts inside the right phase with the right mix. What is not restored is each
+dataset's shuffle position: like a plain run, the loaders start from the beginning of a new
+shuffle.
+
 ### Reproducing our results
 
 If you train on 2k hours of HiFiTTS-2 and batch size 64, this is the metrics progress you should expect to see:

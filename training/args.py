@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from training.curriculum import Curriculum, parse_curriculum
 from training.text_augment import (
     DEFAULT_ALT_WORD_SWAP_PROB,
     DEFAULT_ALT_WORDS_SAMPLE_PROB,
@@ -37,10 +38,32 @@ class DataArgs:
     alt_word_swap_prob: float = DEFAULT_ALT_WORD_SWAP_PROB
     # P(each word after the cut is trained in its vocalized `nikud` form); 0 = off.
     nikud_word_prob: float = DEFAULT_NIKUD_WORD_PROB
+    # A training curriculum over several datasets, used instead of train_jsonl / valid_jsonl
+    # (setting both is an error). See training/curriculum.py for the format. When set,
+    # max_steps is the sum of the phases' steps.
+    datasets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    curriculum: list[dict[str, Any]] = field(default_factory=list)
+    # Also validate and checkpoint when a phase ends, to see what each phase did.
+    curriculum_checkpoint_at_phase_end: bool = True
 
     def __post_init__(self) -> None:
         for name in ("alt_words_sample_prob", "alt_word_swap_prob", "nikud_word_prob"):
             check_probability(f"data.{name}", getattr(self, name))
+        if self.datasets or self.curriculum:
+            if self.train_jsonl or self.valid_jsonl:
+                raise ValueError(
+                    "data.train_jsonl / data.valid_jsonl and data.datasets / data.curriculum "
+                    "are alternatives: list the manifests under data.datasets instead"
+                )
+            self.resolve_curriculum()  # fail at load time, not after the model is built
+
+    def resolve_curriculum(self) -> Curriculum | None:
+        """The validated curriculum, or None for a plain train_jsonl run."""
+        if not (self.datasets or self.curriculum):
+            return None
+        return parse_curriculum(
+            self.datasets, self.curriculum, self.curriculum_checkpoint_at_phase_end
+        )
 
 
 @dataclass
@@ -201,7 +224,17 @@ def _from_dict(cls, data: dict[str, Any]):
 def load_args(path: str | Path) -> TrainArgs:
     with open(path) as f:
         raw = yaml.safe_load(f)
-    return _from_dict(TrainArgs, raw)
+    args = _from_dict(TrainArgs, raw)
+    curriculum = args.data.resolve_curriculum()
+    if curriculum is not None:
+        # The phases define how long the run is; a max_steps that disagrees is a mistake.
+        if "max_steps" in raw and raw["max_steps"] != curriculum.total_steps:
+            raise ValueError(
+                f"max_steps is {raw['max_steps']} but the curriculum phases add up to "
+                f"{curriculum.total_steps} steps: drop max_steps, or change a phase"
+            )
+        args.max_steps = curriculum.total_steps
+    return args
 
 
 def dump_args(args: TrainArgs) -> str:

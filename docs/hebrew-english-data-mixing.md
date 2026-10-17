@@ -161,8 +161,11 @@ LibriTTS-R takes word times from the MFA TextGrids in `cdminix/libritts-r-aligne
 onto the corpus's cased, punctuated text. Their docstrings give the rest, including the
 download sizes (metadata ~6 GiB for HiFiTTS-2, ~130 MB for LibriTTS-R).
 
-Mixing with Hebrew is left to the data config: the trainer reads one `train_jsonl`, so combine
-the manifests (`cat`, repeating a file to weight it).
+Mixing with Hebrew is done in the data config: list each manifest under `data.datasets` and
+give the share of each per phase in `data.curriculum`, see
+[Mixing datasets](../training/README.md#mixing-datasets-a-training-curriculum). (Before that
+existed the trainer read one `train_jsonl`, so manifests were combined with `cat`, repeating a
+file to weight it.)
 
 ---
 

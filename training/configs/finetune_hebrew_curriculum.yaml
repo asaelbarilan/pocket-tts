@@ -1,0 +1,110 @@
+# TEMPLATE: finetune_hebrew.yaml with a training curriculum. The phase lengths and mixes
+# below are an example of the format, not a tested recipe: set your own.
+#
+# Hebrew finetune of the released 24-layer teacher. Copied from finetune_language.yaml;
+# only the paths and the sample sentences differ, every training parameter is upstream's.
+# Kyutai measured this shape on 976h of Czech: 12% WER by 10k steps where a scratch run was
+# still at 46%, both settling at 10-12%. Keep lr at 2e-4: the text embedding starts random,
+# so the backbone has to move with it. optim.schedule is `constant` here, not the `cosine`
+# scratch.yaml uses; leave it.
+#
+# Run:  uv run torchrun --nproc-per-node 8 training/train.py training/configs/finetune_hebrew_curriculum.yaml
+#
+# Before the run, build the tokenizer. It is a Hebrew + niqqud + English mix, charset-filtered
+# (see hebrew_training/configs/tokenizer_hebrew.yaml):
+#   python -m hebrew_training.build_tokenizer_corpus \
+#       --config hebrew_training/configs/tokenizer_hebrew.yaml --train
+# then copy artifacts/tokenizer/tokenizer.model to tokenizers/hebrew.model (or change the path
+# below). The vocabulary size is not set here: n_bins is read from the tokenizer file.
+model_config: pocket_tts/config/english_2026-04_24l.yaml
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: tokenizers/hebrew.model
+start_from_pretrained: true
+reset_text_embedding: true  # the tokenizer is not the one these weights were trained with
+
+data:
+  # Datasets and a curriculum replace train_jsonl / valid_jsonl (see training/curriculum.py).
+  datasets:
+    plenum:  # Hebrew
+      train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
+      valid_weight: 0.6  # share of the validation benchmark, whatever phase the run is in
+    hifitts2:  # English, to keep it speaking English (hebrew_training/build_hifitts2_manifest.py)
+      train_jsonl: data/english/hifitts2/train.jsonl
+      valid_jsonl: data/english/hifitts2/valid.jsonl
+      valid_weight: 0.25
+    libritts_r:  # English, clean (hebrew_training/build_libritts_r_manifest.py)
+      train_jsonl: data/english/libritts_r/train.jsonl
+      valid_jsonl: data/english/libritts_r/valid.jsonl
+      valid_weight: 0.15
+  # Phases run in order; `steps` are optimizer steps and `mix` is a ratio of samples
+  # (relative weights, a dataset left out is 0%). A dataset that runs out of rows starts
+  # over, and keeps its place across phases. max_steps below is the total of these.
+  curriculum:
+    - steps: 15000  # Hebrew only: WER plateaus by ~15k (see max_steps in finetune_hebrew.yaml)
+      mix: {plenum: 1}
+    - steps: 235000  # then some English back in, to keep it speaking English
+      mix: {plenum: 0.9, hifitts2: 0.05, libritts_r: 0.05}
+  # Validate and checkpoint at each phase end too, to see what the phase did.
+  curriculum_checkpoint_at_phase_end: true
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 5.0
+  # Text variants for rows that carry `alt_words` (digits) / `nikud`; these are the defaults,
+  # written out. See training/text_augment.py. 0 turns a feature off (swap_prob 0 still
+  # swaps one span per chosen sample).
+  alt_words_sample_prob: 0.30  # share of samples with digits instead of spelled-out numbers
+  alt_word_swap_prob: 0.60  # per number, in a chosen sample; at least one is always swapped
+  nikud_word_prob: 0.10  # per word, trained with its niqqud
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+# Enable per-layer compilation for better steady-state throughput. Startup can take
+# several minutes on this 24-layer model.
+compile: true
+
+run_dir: runs/finetune_hebrew_curriculum  # a run resumes from the newest checkpoint here
+# Per-rank batch: 8 GPUs x 8 samples keeps the upstream effective batch size of 64.
+batch_size: 8
+grad_accum_steps: 1
+# max_steps is not set: it is the total of the curriculum phases (250000 here).
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+ckpt_freq: 2500
+# Upstream keeps 3. At ckpt_freq 2500 that is only the last 7500 steps, and this config's
+# own comment says WER plateaus by ~15k -- so the checkpoint you want would be deleted long
+# before the run ends. On the earlier Hebrew run the best-sounding checkpoint was step 8000.
+# 40 covers the first 100k steps at roughly 2.5 GB each (the released 24-layer file is
+# 1.24 GB, and a .pt carries raw plus EMA weights); drop it if disk is tight, never to 3.
+num_ckpt_keep: 40
+# Upstream default is 10000, which on a run that plateaus by 15k gives samples at 10k and
+# 20k only. Match valid_freq so there is something to listen to and to score.
+sample_freq: 2500
+sample_cfg_coef: 2.0
+
+# The trainer synthesizes exactly these every sample_freq steps. args.py defaults them to
+# English, which through a Hebrew tokenizer produces samples nobody can judge or score.
+# One per kind of text the tokenizer carries, so each sample shows whether that kind still
+# works: plain Hebrew, an English word mid-sentence, vocalized Hebrew. If one degrades while
+# the others hold, the tokenizer corpus is where to look. (No digits sentence: the manifest is
+# normalized, so the model is never given digits.)
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
+  - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית עבור אזרחי המדינה."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
+  - "תודה רבה, אני מסיים כאן את דבריי."
+  - "למה בעצם אנחנו צריכים ללמוד היסטוריה אם בסוף אנחנו חוזרים על אותן טעויות שוב ושוב?"

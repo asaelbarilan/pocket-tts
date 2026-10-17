@@ -34,6 +34,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from training.args import TrainArgs, dump_args, load_args, save_args
 from training.checkpointing import EMA, latest_checkpoint, load_checkpoint, save_checkpoint
+from training.curriculum import (
+    CurriculumLoader,
+    MixSchedule,
+    Stream,
+    combine_validation,
+    count_lines,
+    plan_validation,
+)
 from training.dataloader import DataLoader, encode_batch
 from training.distributed import (
     any_across_ranks,
@@ -111,16 +119,24 @@ def setup(config_path: str) -> Run:
         logger.info(f"torch {torch.__version__} | {device} ({gpu}) | world size {world_size}")
         logger.info(f"resolved config from {config_path}:\n{dump_args(args).rstrip()}")
 
-    for name, path in (
-        ("train_jsonl", args.data.train_jsonl),
-        ("valid_jsonl", args.data.valid_jsonl),
-    ):
+    manifests = [("train_jsonl", args.data.train_jsonl), ("valid_jsonl", args.data.valid_jsonl)]
+    curriculum = args.data.resolve_curriculum()
+    if curriculum is not None:
+        manifests = [
+            (f"datasets.{name}.train_jsonl", curriculum.datasets[name].train_jsonl)
+            for name in curriculum.train_names
+        ] + [
+            (f"datasets.{name}.valid_jsonl", curriculum.datasets[name].valid_jsonl)
+            for name in curriculum.valid_names
+        ]
+    for name, path in manifests:
         if path and not Path(path).exists():
             raise SystemExit(
                 f"{name} not found: {path}\n"
                 "Prepare a dataset first, e.g.:\n"
                 "    python -m training.scripts.prepare_data --hours 200\n"
-                "or point data.train_jsonl / data.valid_jsonl at your own manifests."
+                "or point data.train_jsonl / data.valid_jsonl (or data.datasets) at your own "
+                "manifests."
             )
 
     if rank == 0:
@@ -221,24 +237,68 @@ def main(config_path: str) -> None:
     progress, start_step = run.progress, run.start_step
 
     tokenize = model.flow_lm.conditioner.tokenizer.sp.encode
-    train_loader = iter(
-        DataLoader(
-            args.data.train_jsonl,
-            tokenize,
-            args.batch_size,
-            mimi.sample_rate,
-            mimi.frame_rate,
-            args.data.max_duration_sec,
-            args.data.max_voice_prompt_sec,
-            rank,
-            run.world_size,
-            seed=args.seed + rank,
-            shuffle=args.data.shuffle,
-            alt_words_sample_prob=args.data.alt_words_sample_prob,
-            alt_word_swap_prob=args.data.alt_word_swap_prob,
-            nikud_word_prob=args.data.nikud_word_prob,
+    curriculum = args.data.resolve_curriculum()
+    mixed: CurriculumLoader | None = None
+    valid_plan: dict[str, int] = {}
+    current_phase = -1
+    if curriculum is None:
+        train_loader = iter(
+            make_loader(
+                args.data.train_jsonl,
+                args,
+                tokenize,
+                mimi,
+                rank,
+                run.world_size,
+                seed=args.seed + rank,
+                shuffle=args.data.shuffle,
+            )
         )
-    )
+
+        def next_batch(step: int, micro: int):
+            return next(train_loader)
+
+        has_valid = bool(args.data.valid_jsonl)
+    else:
+        schedule = MixSchedule(curriculum, args.grad_accum_steps * run.world_size)
+        schedule.fast_forward(start_step)
+
+        def open_stream(name: str) -> Stream:
+            loader = make_loader(
+                curriculum.datasets[name].train_jsonl,
+                args,
+                tokenize,
+                mimi,
+                rank,
+                run.world_size,
+                seed=args.seed + rank,
+                shuffle=args.data.shuffle,
+            )
+            return iter(loader), len(loader.entries)
+
+        mixed = CurriculumLoader(schedule, open_stream, rank, run.world_size, args.batch_size)
+        next_batch = mixed.next_batch
+        valid_plan = plan_validation(
+            curriculum,
+            {
+                name: count_lines(curriculum.datasets[name].valid_jsonl)
+                for name in curriculum.valid_names
+            },
+            args.batch_size,
+            run.world_size,
+            args.num_valid_batches,
+        )
+        has_valid = bool(valid_plan)
+        if rank == 0:
+            logger.info(f"curriculum, {curriculum.total_steps} steps:\n{curriculum.describe()}")
+            if valid_plan:
+                shown = ", ".join(f"{n}: {b}" for n, b in valid_plan.items())
+                logger.info(f"validation benchmark, batches of {args.batch_size} per rank: {shown}")
+        if start_step and rank == 0:
+            logger.info(
+                f"resuming at step {start_step}, in phase {curriculum.phase_index(start_step) + 1}"
+                ": the mix continues, but each dataset's shuffle restarts from its beginning"
+            )
 
     autocast = torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
@@ -257,9 +317,19 @@ def main(config_path: str) -> None:
         lr = lr_at(step, args)
         for group in optimizer.param_groups:
             group["lr"] = lr
+        if curriculum is not None and curriculum.phase_index(step) != current_phase:
+            current_phase = curriculum.phase_index(step)
+            mix = curriculum.phases[current_phase].mix
+            if rank == 0:
+                shown = ", ".join(f"{name} {share:.1%}" for name, share in mix.items())
+                logger.info(
+                    f"curriculum phase {current_phase + 1}/{len(curriculum.phases)} "
+                    f"from step {step + 1}: {shown}"
+                )
+                progress.log("phase", step + 1, phase=current_phase + 1, mix=mix)
         optimizer.zero_grad()
         for micro in range(args.grad_accum_steps):
-            batch = next(train_loader)
+            batch = next_batch(step, micro)
             if rank == 0 and first_step and micro == 0:
                 logger.info(
                     "first batch loaded; running forward/backward (CUDA compilation may continue)"
@@ -321,13 +391,20 @@ def main(config_path: str) -> None:
             logger.info(
                 f"step {step + 1} | lr {lr:.2e} | grad {grad_norm:.2f} | {speed:.2f} it/s | {shown}"
             )
-            progress.log("train", step + 1, values, lr=lr, grad_norm=grad_norm.item(), it_s=speed)
+            # Passes over each dataset so far (this rank's shard): whole numbers are rollovers.
+            epochs = {} if mixed is None else mixed.epochs()
+            extra = {} if mixed is None else {"phase": current_phase + 1, "epochs": epochs}
+            progress.log(
+                "train", step + 1, values, lr=lr, grad_norm=grad_norm.item(), it_s=speed, **extra
+            )
             wandb.log(
                 {
                     **{f"train/{key}": value for key, value in values.items()},
                     "train/lr": lr,
                     "train/grad_norm": grad_norm.item(),
                     "train/iterations_per_second": speed,
+                    **({"train/phase": current_phase + 1} if mixed is not None else {}),
+                    **{f"data/epochs/{name}": value for name, value in epochs.items()},
                 },
                 step=step + 1,
             )
@@ -359,8 +436,13 @@ def main(config_path: str) -> None:
                     step=step + 1,
                 )
 
-        if (step + 1) % args.valid_freq == 0 and args.data.valid_jsonl:
-            valid_metrics = validate(model, mimi, args, device, rank, run.world_size, step + 1)
+        # A phase's end is also evaluated and saved: with a fixed benchmark that is the
+        # cleanest read on what the phase did to every dataset.
+        phase_end = curriculum is not None and (step + 1) in curriculum.boundaries
+        if ((step + 1) % args.valid_freq == 0 or phase_end) and has_valid:
+            valid_metrics = validate(
+                model, mimi, args, device, rank, run.world_size, step + 1, valid_plan
+            )
             progress.log("valid", step + 1, valid_metrics)
             if rank == 0:
                 wandb.log(
@@ -368,7 +450,11 @@ def main(config_path: str) -> None:
                 )
             model.train()
 
-        if rank == 0 and (step + 1) % args.ckpt_freq == 0:
+        # The last step is saved after the loop, whatever the reason it is a boundary.
+        save_phase_end = (
+            phase_end and args.data.curriculum_checkpoint_at_phase_end and step + 1 < args.max_steps
+        )
+        if rank == 0 and ((step + 1) % args.ckpt_freq == 0 or save_phase_end):
             save_checkpoint(args.run_dir, step + 1, model, optimizer, ema, args.num_ckpt_keep, mimi)
             progress.log("checkpoint", step + 1)
 
@@ -382,28 +468,53 @@ def main(config_path: str) -> None:
     shutdown_distributed()
 
 
+def make_loader(
+    jsonl: str,
+    args: TrainArgs,
+    tokenize,
+    mimi,
+    rank: int,
+    world_size: int,
+    *,
+    seed: int,
+    shuffle: bool,
+    fixed_draws: bool = False,
+) -> DataLoader:
+    return DataLoader(
+        jsonl,
+        tokenize,
+        args.batch_size,
+        mimi.sample_rate,
+        mimi.frame_rate,
+        args.data.max_duration_sec,
+        args.data.max_voice_prompt_sec,
+        rank,
+        world_size,
+        seed=seed,
+        shuffle=shuffle,
+        alt_words_sample_prob=args.data.alt_words_sample_prob,
+        alt_word_swap_prob=args.data.alt_word_swap_prob,
+        nikud_word_prob=args.data.nikud_word_prob,
+        fixed_draws=fixed_draws,
+    )
+
+
 @torch.no_grad()
-def validate(
-    model, mimi, args: TrainArgs, device, rank: int, world_size: int, step: int
+def _valid_pass(
+    model, mimi, args: TrainArgs, device, rank: int, world_size: int, jsonl: str, num_batches: int
 ) -> dict[str, float]:
-    model.eval()
+    """Mean of each metric over the first `num_batches` batches of `jsonl`, averaged over ranks."""
     tokenize = model.flow_lm.conditioner.tokenizer.sp.encode
     loader = iter(
-        DataLoader(
-            args.data.valid_jsonl,
+        make_loader(
+            jsonl,
+            args,
             tokenize,
-            args.batch_size,
-            mimi.sample_rate,
-            mimi.frame_rate,
-            args.data.max_duration_sec,
-            args.data.max_voice_prompt_sec,
+            mimi,
             rank,
             world_size,
             seed=0,
             shuffle=False,
-            alt_words_sample_prob=args.data.alt_words_sample_prob,
-            alt_word_swap_prob=args.data.alt_word_swap_prob,
-            nikud_word_prob=args.data.nikud_word_prob,
             # Same digit/niqqud draws for a row on every evaluation, so scores compare.
             fixed_draws=True,
         )
@@ -413,10 +524,10 @@ def validate(
     )
     totals: dict[str, float] = {}
     n = 0
-    # The loader is endless and we stop after num_valid_batches: closing it stops its
+    # The loader is endless and we stop after num_batches: closing it stops its
     # prefetch thread and I/O pool instead of leaving them blocked for the rest of the run.
     with closing(loader):
-        for _ in range(args.num_valid_batches):
+        for _ in range(num_batches):
             try:
                 batch = next(loader)
             except StopIteration:
@@ -436,7 +547,50 @@ def validate(
                 if v.numel() == 1:
                     totals[k] = totals.get(k, 0.0) + v.item()
             n += 1
-    averaged = {k: avg_across_ranks(v / max(1, n)) for k, v in totals.items()}
+    return {k: avg_across_ranks(v / max(1, n)) for k, v in totals.items()}
+
+
+@torch.no_grad()
+def validate(
+    model,
+    mimi,
+    args: TrainArgs,
+    device,
+    rank: int,
+    world_size: int,
+    step: int,
+    plan: dict[str, int] | None = None,
+) -> dict[str, float]:
+    """Validation metrics. With a curriculum, `plan` is the number of batches per dataset:
+    the plain keys are the whole benchmark and `<dataset>/<key>` are each dataset's."""
+    model.eval()
+    if plan:
+        curriculum = args.data.resolve_curriculum()
+        per_dataset = {
+            name: _valid_pass(
+                model,
+                mimi,
+                args,
+                device,
+                rank,
+                world_size,
+                curriculum.datasets[name].valid_jsonl,
+                batches,
+            )
+            for name, batches in plan.items()
+        }
+        averaged = combine_validation(per_dataset, plan)
+    else:
+        averaged = _valid_pass(
+            model,
+            mimi,
+            args,
+            device,
+            rank,
+            world_size,
+            args.data.valid_jsonl,
+            args.num_valid_batches,
+        )
     if rank == 0:
         shown = {k: f"{v:.4f}" for k, v in averaged.items()}
         logger.info(f"valid @ step {step}: {shown}")
