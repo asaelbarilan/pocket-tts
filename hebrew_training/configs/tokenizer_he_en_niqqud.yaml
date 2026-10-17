@@ -1,0 +1,41 @@
+# Reproducible local tokenizer experiment. All generated data stays under /artifacts/.
+# uv run --no-sync python -m hebrew_training.tokenizer_experiment --config <this file>
+vocab_size: 8000
+# All 18 niqqud marks, including rare holam-haser/meteg/rafe not found in small samples.
+required_chars: "\u05B0\u05B1\u05B2\u05B3\u05B4\u05B5\u05B6\u05B7\u05B8\u05B9\u05BA\u05BB\u05BC\u05BD\u05BF\u05C1\u05C2\u05C7"
+target_mb: 32  # maximum pool for the nested 4/8/16/32M-character size sweep
+output_dir: artifacts/tokenizer-he-en-niqqud/pool32
+cache_dir: artifacts/tokenizer-he-en-niqqud/cache32
+sampling:
+  mode: bounded
+  seed: 1729
+  holdout_chars: 150000
+  holdout_fraction: 0.1
+  window_bytes: 65536
+  max_document_chars: 4000
+  max_read_mb: 2048
+charset:
+  allow: [latin, hebrew, niqqud, cantillation, digits, punctuation]
+  on_foreign: drop-line
+  fold: true
+sources:
+  manifest:
+    pct: 20
+    path: /mlspeech/hebrew/pockettts-data/committee/train_realigned.jsonl
+  hebrew:
+    pct: 40
+    path: /mlspeech/hebrew/raw_sources/fineweb_heb_corpus/he
+  hebrew_nikud:
+    pct: 20
+    diacritize: true
+    diacritize_sources: [manifest, hebrew]
+  english:
+    pct: 20
+    path: /mlspeech/hebrew/raw_sources/fineweb_heb_corpus/en
+diacritizer:
+  model: artifacts/tokenizer-he-en-niqqud/dicta-model
+  # Local snapshot downloaded at revision 4dfc20b94565d7868e1c8c00bf039d38c071a062.
+  device: cuda:0
+  batch_size: 32
+  dtype: bfloat16
+  preserve_matres: true

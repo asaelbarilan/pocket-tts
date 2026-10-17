@@ -28,7 +28,7 @@ sources:
   # The training manifest's own text -- tokenizer_corpus.txt from prepare_data_v2.py, or a
   # train_aligned.jsonl (its "transcript"). Rebuild whenever the training corpus changes.
   manifest:
-    pct: 15
+    pct: 20
     path: data/hebrew_official/train_aligned.jsonl
   # General modern Hebrew. A folder of FineWeb-2 heb_Hebr parquet/jsonl dumps, or set
   # `download: true` (and drop `path`) to stream it from HuggingFaceFW/fineweb-2.
@@ -37,16 +37,17 @@ sources:
     path: null
     download: false
   # Vocalized Hebrew. Either text you already have (`path`), or `diacritize: true` to
-  # diacritize the `hebrew` text with the diacritizer below. That is the slow step and wants
+  # diacritize extra manifest/general Hebrew with the model below. That is the slow step and wants
   # a GPU; its output is cached.
   hebrew_nikud:
-    pct: 15
+    pct: 20
     path: null
     diacritize: true
+    diacritize_sources: [manifest, hebrew]
   # General English. A folder of FineWeb dumps, or `download: true` for
   # HuggingFaceFW/fineweb (sample-10BT).
   english:
-    pct: 30
+    pct: 20
     path: null
     download: false
 

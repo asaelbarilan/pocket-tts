@@ -13,8 +13,8 @@ Four kinds of text, each optional, in shares of **characters** (not lines or doc
     manifest      the training manifest's own text -- what the model actually trains on.
                   Rebuild whenever the training corpus changes.
     hebrew        general modern Hebrew (FineWeb-2 `heb_Hebr` or any Hebrew text).
-    hebrew_nikud  vocalized Hebrew. Either text you already have, or the `hebrew` text
-                  diacritized with a DictaBERT model (`diacritize: true`).
+    hebrew_nikud  vocalized Hebrew. Either supplied text, or extra sampled manifest/general
+                  Hebrew diacritized with a DictaBERT model (`diacritize: true`).
     english       general English (FineWeb or any English text).
 
 A source with `pct: 0` is not used at all and needs nothing configured. The shares of the
@@ -36,20 +36,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import yaml
 
 from hebrew_training.tokenizer_charset import (
+    CANTILLATION,
     CATEGORIES,
+    NIQQUD,
     CharsetFilter,
     add_charset_args,
     has_hebrew,
     has_latin,
     niqqud_rate,
 )
+from hebrew_training.tokenizer_sampling import SamplingSpec, digest, sample_source
 from hebrew_training.tokenizer_text import find_files, iter_documents, lines_of
 
 SOURCE_NAMES = ("manifest", "hebrew", "hebrew_nikud", "english")
@@ -68,6 +72,7 @@ class SourceSpec:
     download: bool = False
     # hebrew_nikud only: generate the text by diacritizing the `hebrew` source.
     diacritize: bool = False
+    diacritize_sources: list[str] = field(default_factory=lambda: ["hebrew"])
 
 
 @dataclass
@@ -84,16 +89,22 @@ class DiacritizerSpec:
     model: str | None = None
     device: str = "cuda"
     batch_size: int = 32
+    revision: str | None = None
+    dtype: str = "float32"
+    preserve_matres: bool = True
 
 
 @dataclass
 class TokenizerConfig:
     vocab_size: int = 8000
+    required_chars: str = ""
     target_mb: float = 16.0
     output_dir: Path = Path("artifacts/tokenizer")
     cache_dir: Path = Path("artifacts/tokenizer/cache")
+    vocalization_seed_dir: Path | None = None
     charset: CharsetSpec = field(default_factory=CharsetSpec)
     diacritizer: DiacritizerSpec = field(default_factory=DiacritizerSpec)
+    sampling: SamplingSpec = field(default_factory=SamplingSpec)
     sources: dict[str, SourceSpec] = field(
         default_factory=lambda: {name: SourceSpec() for name in SOURCE_NAMES}
     )
@@ -114,11 +125,11 @@ def load_config(path: Path | None) -> TokenizerConfig:
     unknown = set(sources) - set(SOURCE_NAMES)
     if unknown:
         raise ValueError(f"sources: unknown {sorted(unknown)}; expected {list(SOURCE_NAMES)}")
-    nested = {"charset": CharsetSpec, "diacritizer": DiacritizerSpec}
+    nested = {"charset": CharsetSpec, "diacritizer": DiacritizerSpec, "sampling": SamplingSpec}
     for key, cls in nested.items():
         raw[key] = _build(cls, raw.get(key) or {}, key)
-    for key in ("output_dir", "cache_dir"):
-        if key in raw:
+    for key in ("output_dir", "cache_dir", "vocalization_seed_dir"):
+        if key in raw and raw[key] is not None:
             raw[key] = Path(raw[key])
     config = _build(TokenizerConfig, raw, "config")
     config.sources = {
@@ -207,6 +218,14 @@ def validate(config: TokenizerConfig) -> dict[str, SourceSpec]:
         raise SystemExit(f"vocab_size must be positive, got {config.vocab_size}")
     if config.target_mb <= 0:
         raise SystemExit(f"target_mb must be positive, got {config.target_mb}")
+    if config.sampling.mode not in ("prefix", "bounded"):
+        raise SystemExit("sampling.mode must be prefix or bounded")
+    if config.diacritizer.batch_size < 1 or config.diacritizer.dtype not in (
+        "float32",
+        "float16",
+        "bfloat16",
+    ):
+        raise SystemExit("invalid diacritizer batch_size or dtype")
     active = {n: s for n, s in config.sources.items() if s.pct > 0}
     if any(s.pct < 0 for s in config.sources.values()):
         raise SystemExit("source shares cannot be negative")
@@ -242,19 +261,33 @@ def validate(config: TokenizerConfig) -> dict[str, SourceSpec]:
             )
     used = dict(active)
     if "hebrew_nikud" in active and active["hebrew_nikud"].diacritize:
-        hebrew = config.sources["hebrew"]
-        if not hebrew.path and not hebrew.download:
+        names = active["hebrew_nikud"].diacritize_sources
+        if not names or len(names) != len(set(names)) or set(names) - {"manifest", "hebrew"}:
             raise SystemExit(
-                "hebrew_nikud.diacritize works from the `hebrew` source, which has no path "
-                "and no download. Point sources.hebrew.path at plain Hebrew text (its pct may "
-                "stay 0), or give hebrew_nikud its own path of vocalized text."
+                "diacritize_sources must list manifest and/or hebrew without duplicates"
             )
-        used["hebrew"] = hebrew
+        for name in names:
+            source = config.sources[name]
+            if not source.path and not source.download:
+                raise SystemExit(
+                    f"hebrew_nikud.diacritize needs the `{name}` source path or download"
+                )
+            used[name] = source
     # Fail on a missing folder now, not after an hour of diacritizing.
-    for spec in used.values():
+    for name, spec in used.items():
+        if name == "hebrew_nikud" and spec.diacritize:
+            continue
         if spec.path:
-            find_files(Path(spec.path))
-    CharsetFilter(config.charset.allow, config.charset.on_foreign, config.charset.fold)
+            files = find_files(Path(spec.path))
+            if config.sampling.mode == "bounded" and any(
+                p.suffix.lower() not in (".txt", ".jsonl") for p in files
+            ):
+                raise SystemExit("bounded sampling needs uncompressed .txt/.jsonl sources")
+        elif config.sampling.mode == "bounded":
+            raise SystemExit("bounded sampling needs local source paths, not downloads")
+    charset = CharsetFilter(config.charset.allow, config.charset.on_foreign, config.charset.fold)
+    if any(charset._map(c) != c for c in config.required_chars):
+        raise SystemExit("required_chars must be allowed by the charset without folding/removal")
     return active
 
 
@@ -301,7 +334,17 @@ def load_source(
 ) -> list[str]:
     keep = _keep_for(name)
     if spec.path:
-        lines = collect(iter_documents(Path(spec.path)), want_chars, charset, keep)
+        if config.sampling.mode == "bounded":
+            lines = sample_source(
+                spec.path,
+                want_chars,
+                charset,
+                keep,
+                config.sampling,
+                config.cache_dir / "samples" / name,
+            )
+        else:
+            lines = collect(iter_documents(Path(spec.path)), want_chars, charset, keep)
         print(f"  {name}: {len(lines)} lines from {spec.path}")
         return lines
 
@@ -316,25 +359,89 @@ def load_source(
             print(f"  {name}: reusing {len(lines)} cached lines from {cached}")
             return lines
     repo, subset = DOWNLOADS[name]
-    print(f"  {name}: streaming {repo} ({subset}) for {want_chars / 1e6:.1f} MB", flush=True)
+    print(f"  {name}: streaming {repo} ({subset}) for {want_chars / 1e6:.1f}M chars", flush=True)
     lines = collect(_stream(repo, subset), want_chars, charset, keep)
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return lines
 
 
+def _without_hebrew_marks(text: str) -> str:
+    return "".join(c for c in text if c not in NIQQUD and c not in CANTILLATION)
+
+
+class _PythonOffsetsTokenizer:
+    """Avoid thousands of scalar tensor operations in Dicta's Python reconstruction loop.
+
+    The model's predict() only iterates/compares offsets; Python integers give identical
+    results without the overhead of indexing zero-dimensional CPU tensors per character.
+    """
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def __getattr__(self, name):
+        return getattr(self.tokenizer, name)
+
+    def __call__(self, *args, **kwargs):
+        encoded = self.tokenizer(*args, **kwargs)
+        if "offset_mapping" in encoded:
+            offsets = encoded["offset_mapping"].tolist()
+            for row in offsets:
+                seen = set()
+                for span in row:
+                    key = tuple(span)
+                    # NFKC expands e.g. ellipsis into three tokens with the same original
+                    # one-character span. Dicta otherwise emits the original char three times.
+                    if span[1] - span[0] == 1:
+                        if key in seen:
+                            span[1] = span[0]
+                        seen.add(key)
+            encoded["offset_mapping"] = offsets
+        return encoded
+
+
 def diacritize(
     cached: Path, lines: list[str], want_chars: int, spec: DiacritizerSpec, charset: CharsetFilter
 ) -> list[str]:
-    """Nikud onto plain Hebrew, cached because it is the slow step. Resumes where it stopped.
-
-    Deliberately the *same* text as the `hebrew` slice rather than fresh documents: it teaches
-    the tokenizer both spellings of one vocabulary instead of two disjoint ones.
-    """
+    """Vocalize plain Hebrew with a provenance-checked, input-cursor-based resume cache."""
     import re
 
+    provenance = {"inputs": digest(lines), "model": asdict(spec), "charset": charset.describe()}
+    progress_path = cached.with_suffix(".progress.json")
+    progress = {"provenance": provenance, "next_input": 0, "deduplicated_offsets": True}
+    if progress_path.exists():
+        progress = json.loads(progress_path.read_text())
+        if progress["provenance"] != provenance:
+            raise ValueError(f"stale diacritizer cache {cached}; use a new cache directory")
+    elif cached.exists():
+        raise ValueError(f"unversioned diacritizer cache {cached}; use a new cache directory")
     done = cached.read_text(encoding="utf-8").splitlines() if cached.exists() else []
-    if sum(map(len, done)) >= want_chars:
+    if len(done) != progress.get("output_lines", len(done)):
+        raise ValueError(f"incomplete diacritizer cache {cached}; use a new cache directory")
+    if not progress.get("deduplicated_offsets"):
+        # Strict migration for caches from before the offset fix. Only the proven ellipsis
+        # triplication is repaired; any other content change requires a fresh cache.
+        if progress["next_input"] != len(done):
+            raise ValueError(f"legacy cache {cached} has rejected lines; use a new cache directory")
+        repaired = []
+        for plain, marked in zip(lines, done):
+            if _without_hebrew_marks(marked) != _without_hebrew_marks(plain):
+                if _without_hebrew_marks(plain).replace("…", "………") != _without_hebrew_marks(
+                    marked
+                ):
+                    raise ValueError(f"unexpected content change in {cached}; use a new cache")
+                marked = marked.replace("………", "…")
+                if _without_hebrew_marks(marked) != _without_hebrew_marks(plain):
+                    raise ValueError(f"cannot safely repair {cached}; use a new cache")
+            repaired.append(marked)
+        done = repaired
+        temporary = cached.with_suffix(".tmp")
+        temporary.write_text("\n".join(done) + "\n", encoding="utf-8")
+        temporary.replace(cached)
+        progress["deduplicated_offsets"] = True
+        progress_path.write_text(json.dumps(progress) + "\n")
+    if sum(map(len, done)) >= want_chars or progress["next_input"] >= len(lines):
         print(f"  hebrew_nikud: reusing {len(done)} cached lines")
         return done
 
@@ -346,16 +453,35 @@ def diacritize(
     # in tokenizer.json; under transformers 5.x AutoTokenizer builds a word-level BertTokenizer
     # from vocab.txt instead, tokenizing every Hebrew word as [UNK]. predict() then returns
     # repeated prefixes with no nikud at all -- no error, just quiet rubbish.
-    tokenizer = PreTrainedTokenizerFast.from_pretrained(spec.model)
-    model = AutoModel.from_pretrained(spec.model, trust_remote_code=True).eval().to(spec.device)
+    tokenizer = _PythonOffsetsTokenizer(
+        PreTrainedTokenizerFast.from_pretrained(spec.model, revision=spec.revision)
+    )
+    model = (
+        AutoModel.from_pretrained(spec.model, revision=spec.revision, trust_remote_code=True)
+        .eval()
+        .to(device=spec.device, dtype=getattr(torch, spec.dtype))
+    )
     cached.parent.mkdir(parents=True, exist_ok=True)
     have = sum(map(len, done))
     ws = re.compile(r"\s+")
+    start_input = progress["next_input"]
     with cached.open("a", encoding="utf-8", newline="\n") as handle:
-        for i in range(len(done), len(lines), spec.batch_size):
+        for i in range(progress["next_input"], len(lines), spec.batch_size):
+            batch = lines[i : i + spec.batch_size]
             with torch.inference_mode():
-                marked = model.predict(lines[i : i + spec.batch_size], tokenizer)
-            if i == len(done):
+                kwargs = {"mark_matres_lectionis": ""} if spec.preserve_matres else {}
+                marked = model.predict(batch, tokenizer, **kwargs)
+            if len(marked) != len(batch) or (
+                spec.preserve_matres
+                and any(
+                    _without_hebrew_marks(a) != _without_hebrew_marks(b)
+                    for a, b in zip(batch, marked)
+                )
+            ):
+                raise ValueError(
+                    "diacritizer changed non-niqqud content or returned the wrong batch size"
+                )
+            if i == start_input:
                 rate = niqqud_rate("".join(marked))
                 if rate < _NIKUD_FLOOR:
                     raise SystemExit(
@@ -368,9 +494,16 @@ def diacritize(
                     handle.write(line + "\n")
                     done.append(line)
                     have += len(line)
+            handle.flush()
+            progress.update(next_input=min(i + spec.batch_size, len(lines)), output_lines=len(done))
+            temporary = progress_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(progress) + "\n")
+            temporary.replace(progress_path)
+            if (i // spec.batch_size) % 100 == 0:
+                print(f"  vocalized {have:,}/{want_chars:,} chars", flush=True)
             if have >= want_chars:
                 break
-    print(f"  hebrew_nikud: {len(done)} lines, {have / 1e6:.1f} MB")
+    print(f"  hebrew_nikud: {len(done)} lines, {have / 1e6:.1f}M chars")
     return done
 
 
@@ -384,36 +517,94 @@ def clip(lines: list[str], want_chars: int) -> list[str]:
     return out
 
 
+def _vocalization_seed(config: TokenizerConfig, charset: CharsetFilter):
+    """A validated prefix from a smaller pool, so extending a sweep does not redo inference."""
+    if config.vocalization_seed_dir is None:
+        return [], []
+    seed = config.vocalization_seed_dir
+    progress = json.loads((seed / "hebrew_nikud.progress.json").read_text())
+    inputs = (seed / "vocalization_input.txt").read_text(encoding="utf-8").splitlines()
+    outputs = (seed / "hebrew_nikud.txt").read_text(encoding="utf-8").splitlines()
+    if progress["provenance"] != {
+        "inputs": digest(inputs),
+        "model": asdict(config.diacritizer),
+        "charset": charset.describe(),
+    } or not progress.get("deduplicated_offsets"):
+        raise ValueError("vocalization seed provenance does not match the current model/charset")
+    if progress["next_input"] != len(outputs) or progress["output_lines"] != len(outputs):
+        raise ValueError("vocalization seed must have one accepted output per processed input")
+    prefix = inputs[: progress["next_input"]]
+    if any(_without_hebrew_marks(a) != _without_hebrew_marks(b) for a, b in zip(prefix, outputs)):
+        raise ValueError("vocalization seed changed non-niqqud content")
+    return prefix, outputs
+
+
 def build(config: TokenizerConfig, active: dict[str, SourceSpec]) -> Path:
     charset = CharsetFilter(config.charset.allow, config.charset.on_foreign, config.charset.fold)
     budget = {n: int(config.target_mb * 1e6 * s.pct / 100) for n, s in active.items()}
     print(
-        f"building {config.target_mb:g} MB: "
+        f"building {config.target_mb:g}M chars: "
         + ", ".join(f"{n} {s.pct:g}%" for n, s in active.items())
     )
     print(charset.describe())
 
     generated = "hebrew_nikud" in active and active["hebrew_nikud"].diacritize
+    vocal_sources = active["hebrew_nikud"].diacritize_sources if generated else []
+    seed_inputs, seed_outputs = _vocalization_seed(config, charset) if generated else ([], [])
+    seed_chars = sum(map(len, seed_outputs))
+    extra = max(0, budget["hebrew_nikud"] - seed_chars) // len(vocal_sources) if generated else 0
     pools: dict[str, list[str]] = {}
-    for name, spec in active.items():
+    for name in dict.fromkeys([*active, *vocal_sources]):
+        spec = config.sources[name]
         if name == "hebrew_nikud" and generated:
             continue
-        # The vocalized slice is cut from the same pool, so that pool has to cover both.
-        want = budget[name]
-        if generated and name == "hebrew":
-            want = max(want, budget["hebrew_nikud"])
+        want = budget.get(name, 0) + (extra if name in vocal_sources else 0)
         pools[name] = load_source(name, spec, want, config, charset)
     if generated:
-        if "hebrew" not in pools:  # pct 0: still the text the vocalized slice is made from
-            pools["hebrew"] = load_source(
-                "hebrew", config.sources["hebrew"], budget["hebrew_nikud"], config, charset
+        # Equal-character slices of fresh sampled text from each requested domain. Interleave
+        # them so the diacritizer's early stop cannot consume just the first domain.
+        candidates = []
+        for name in vocal_sources:
+            plain_count = len(clip(pools[name], budget.get(name, 0)))
+            candidates.append(clip(pools[name][plain_count:], extra))
+        # Round-robin by characters, not lines: committee lines tend to be much shorter.
+        positions = [0] * len(candidates)
+        consumed = [0] * len(candidates)
+        vocal_input = list(seed_inputs)
+        while any(positions[j] < len(c) for j, c in enumerate(candidates)):
+            j = min(
+                (j for j, c in enumerate(candidates) if positions[j] < len(c)),
+                key=lambda j: consumed[j],
+            )
+            line = candidates[j][positions[j]]
+            vocal_input.append(line)
+            positions[j] += 1
+            consumed[j] += len(line)
+        config.cache_dir.mkdir(parents=True, exist_ok=True)
+        (config.cache_dir / "vocalization_input.txt").write_text(
+            "\n".join(vocal_input) + "\n", encoding="utf-8"
+        )
+        cached_vocal = config.cache_dir / "hebrew_nikud.txt"
+        if seed_outputs and not cached_vocal.exists():
+            cached_vocal.write_text("\n".join(seed_outputs) + "\n", encoding="utf-8")
+            cached_vocal.with_suffix(".progress.json").write_text(
+                json.dumps(
+                    {
+                        "provenance": {
+                            "inputs": digest(vocal_input),
+                            "model": asdict(config.diacritizer),
+                            "charset": charset.describe(),
+                        },
+                        "next_input": len(seed_inputs),
+                        "output_lines": len(seed_outputs),
+                        "deduplicated_offsets": True,
+                        "seed_dir": str(config.vocalization_seed_dir),
+                    }
+                )
+                + "\n"
             )
         pools["hebrew_nikud"] = diacritize(
-            config.cache_dir / "hebrew_nikud.txt",
-            pools["hebrew"],
-            budget["hebrew_nikud"],
-            config.diacritizer,
-            charset,
+            cached_vocal, vocal_input, budget["hebrew_nikud"], config.diacritizer, charset
         )
     elif "hebrew_nikud" in active:
         rate = niqqud_rate("".join(pools["hebrew_nikud"]))
@@ -429,13 +620,17 @@ def build(config: TokenizerConfig, active: dict[str, SourceSpec]) -> Path:
     with out.open("w", encoding="utf-8", newline="\n") as handle:
         for name in active:
             handle.write("\n".join(slices[name]) + "\n")
+    slice_dir = config.output_dir / "source_slices"
+    slice_dir.mkdir(exist_ok=True)
+    for name, lines in slices.items():
+        (slice_dir / f"{name}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     got = {n: sum(map(len, v)) for n, v in slices.items()}
     whole = sum(got.values()) or 1
-    print(f"\n-> {out}  ({whole / 1e6:.2f} MB)")
+    print(f"\n-> {out}  ({whole / 1e6:.2f}M chars)")
     for name, spec in active.items():
         print(
-            f"   {name:13s} {got[name] / 1e6:6.2f} MB  {100 * got[name] / whole:5.1f}%  "
+            f"   {name:13s} {got[name] / 1e6:6.2f}M chars  {100 * got[name] / whole:5.1f}%  "
             f"(asked {spec.pct:g}%)  {len(slices[name])} lines"
         )
     short = [n for n in active if got[n] < 0.95 * budget[n]]
@@ -450,6 +645,10 @@ def build(config: TokenizerConfig, active: dict[str, SourceSpec]) -> Path:
         "got_pct": {n: round(100 * got[n] / whole, 2) for n in active},
         "chars": got,
         "short": short,
+        "vocalization_sources": vocal_sources,
+        "vocalization_input_chars": dict(zip(vocal_sources, consumed)) if generated else {},
+        "vocalization_seed_dir": str(config.vocalization_seed_dir) if generated else None,
+        "vocalization_seed_chars": seed_chars,
     }
     (config.output_dir / "corpus_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return out
@@ -465,13 +664,20 @@ def main(argv: list[str] | None = None) -> None:
         from hebrew_training import train_tokenizer
 
         # corpus.txt was just written through the charset filter, so it is not applied twice.
-        model = train_tokenizer.train([corpus], config.output_dir, config.vocab_size)
+        model = train_tokenizer.train(
+            [corpus], config.output_dir, config.vocab_size, required_chars=config.required_chars
+        )
         train_tokenizer.report(model)
         print(f"\nSet flow_lm.lookup_table.tokenizer_path to {model}; n_bins follows it.")
     else:
+        required = (
+            f" --required-chars {shlex.quote(config.required_chars)}"
+            if config.required_chars
+            else ""
+        )
         print(
             f"\nNext:\n  python -m hebrew_training.train_tokenizer --input {corpus} "
-            f"--output-dir {config.output_dir} --vocab-size {config.vocab_size}"
+            f"--output-dir {config.output_dir} --vocab-size {config.vocab_size}{required}"
         )
 
 

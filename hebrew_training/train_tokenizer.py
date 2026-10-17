@@ -53,6 +53,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
+        "--required-chars",
+        default="",
+        help="Reserve these characters even if absent from the corpus.",
+    )
+    parser.add_argument(
         "--vocab-size",
         type=int,
         default=DEFAULT_VOCAB_SIZE,
@@ -79,12 +84,15 @@ def train(
     output_dir: Path,
     vocab_size: int = DEFAULT_VOCAB_SIZE,
     charset: CharsetFilter | None = None,
+    required_chars: str = "",
 ) -> Path:
     """Fit the tokenizer on `inputs` and write `output_dir/tokenizer.model`.
 
     Lines are fed to SentencePiece as they are read and filtered; no intermediate corpus file
     is written (SentencePiece keeps its own in-memory copy to shuffle, whatever the input).
     """
+    if charset is not None and any(charset._map(c) != c for c in required_chars):
+        raise ValueError("required_chars must be allowed by the charset without folding/removal")
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = output_dir / "tokenizer"
     lines = iter_lines(inputs, charset)
@@ -110,6 +118,7 @@ def train(
         vocab_size=vocab_size,
         model_type="unigram",
         character_coverage=1.0,
+        required_chars=required_chars,
         byte_fallback=True,
         split_digits=True,
         normalization_rule_name="identity",
@@ -151,7 +160,9 @@ def report(model: Path) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    model = train(args.input, args.output_dir, args.vocab_size, filter_from_args(args))
+    model = train(
+        args.input, args.output_dir, args.vocab_size, filter_from_args(args), args.required_chars
+    )
     report(model)
 
 

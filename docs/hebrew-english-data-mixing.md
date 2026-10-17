@@ -334,7 +334,7 @@ configured for it:
 |---|---|---|
 | `manifest` | the model's own training text | `path`: a `tokenizer_corpus.txt`, a `train_aligned.jsonl`, or a folder |
 | `hebrew` | general modern Hebrew | `path`, or `download: true` for FineWeb-2 `heb_Hebr` |
-| `hebrew_nikud` | vocalized Hebrew | `path` of text you already have, or `diacritize: true` to vocalize the `hebrew` text |
+| `hebrew_nikud` | vocalized Hebrew | `path` of supplied text, or `diacritize: true` with `diacritize_sources: [manifest, hebrew]` |
 | `english` | general English | `path`, or `download: true` for FineWeb `sample-10BT` |
 
 Every `path` is a local file or folder (`.txt`, `.jsonl` with a `text` or `transcript` field,
@@ -350,7 +350,7 @@ download shards yourself and point `path` at them.
 `dicta-il/dictabert-large-char-menaked`). That is a model download that executes the model
 repo's own code (`trust_remote_code`), which is why the model id is written in the config and
 not defaulted in code; a local directory works too. It is the slow step and wants a GPU. It
-vocalizes the *same* text as the `hebrew` slice (see section 5). The run stops if the first
+vocalizes extra text from the requested source pools, balanced by input characters. The run stops if the first
 batch comes back with under 5% niqqud, since a wrong tokenizer for this model fails silently
 by returning plain text.
 
@@ -367,10 +367,13 @@ The run prints the shares it actually got beside the ones it asked for and names
 that ran short. The manifest slice is the one that has to be rebuilt whenever the training
 corpus changes.
 
-The default shares (manifest 15 / hebrew 40 / niqqud 15 / english 30) are a heavier English
+The default shares (manifest 20 / hebrew 40 / niqqud 20 / english 20) are a heavier English
 and general-Hebrew mix than section 5's measured one. Treat them as a starting point and compare
 tokens per character on held-out text of each kind before committing to a long run;
 `train_tokenizer.py` prints it for one sentence of each kind and how many fell back to bytes.
+
+For bounded seeded sampling, held-out evaluation and an actual corpus-size sweep, see
+[the tokenizer experiment](TOKENIZER_EXPERIMENT.md). Its generated artifacts stay outside Git.
 
 ### The character-set safety filter
 
