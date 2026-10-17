@@ -4,6 +4,12 @@ Each line is {"path": ..., "duration": ..., "transcript": ...}. One sample =
 one utterance (cropped to max_duration_sec) + its transcript tokens + a voice
 prompt (a random window elsewhere in the same file). Lines are sharded across
 ranks by line index.
+
+Rows with `words` are cut at a random word boundary and trained on the words after the cut
+(`words` IS the text; `transcript` is only used when no cut exists). Two optional row keys vary
+that text per sample, see training/text_augment.py: `alt_words` (spelled-out numbers swapped
+for the digits the corpus wrote) and `nikud` (a vocalized form of each word). Rows without
+them behave exactly as before and consume no random numbers.
 """
 
 import json
@@ -22,8 +28,18 @@ import torch
 from torchcodec.decoders import AudioDecoder
 
 from pocket_tts.data.audio_utils import convert_audio
+from training.text_augment import (
+    DEFAULT_ALT_WORD_SWAP_PROB,
+    DEFAULT_ALT_WORDS_SAMPLE_PROB,
+    DEFAULT_NIKUD_WORD_PROB,
+    TextAugment,
+    derive_seed,
+    render_text,
+)
 
 logger = logging.getLogger(__name__)
+
+STOP_POLL_SEC = 0.1  # how often a prefetch worker blocked on a full queue checks for a stop
 
 
 @dataclass
@@ -33,6 +49,15 @@ class Entry:
     transcript: str
     words: list | None = None  # [{"word", "start", "end"}] from training.scripts.align_data
     start: float = 0.0  # offset of the utterance inside the audio file (long recordings)
+    # {"digits": [{"from", "to", "replace"}]}: spans of `words` that can be swapped for digits
+    alt_words: dict | None = None
+    nikud: list[str] | None = None  # one vocalized string per entry of `words`
+    # Seed of this sample's alt_words/nikud draws; None when the row has neither key or both
+    # features are off, in which case the plain words are used and nothing is drawn.
+    text_seed: int | None = None
+    # Seed of this sample's cut generator; set only by a `fixed_draws` loader (validation).
+    # None: the cut is drawn from the loader's shared `rng`.
+    cut_seed: int | None = None
 
 
 @dataclass
@@ -103,7 +128,20 @@ class DataLoader:
         seed: int = 0,
         shuffle: bool = True,
         io_workers: int = 16,
+        alt_words_sample_prob: float = DEFAULT_ALT_WORDS_SAMPLE_PROB,
+        alt_word_swap_prob: float = DEFAULT_ALT_WORD_SWAP_PROB,
+        nikud_word_prob: float = DEFAULT_NIKUD_WORD_PROB,
+        fixed_draws: bool = False,
     ):
+        """The three probabilities are documented in training/text_augment.py and apply only
+        to rows carrying `alt_words` / `nikud` (a ValueError outside [0, 1]).
+
+        `fixed_draws` (validation) makes every random choice for a row, the cut (or the
+        fallback prompt window) and the alt_words/nikud draws, a pure function of
+        (seed, path, start): the same on every pass, in any row order and however the I/O
+        threads are scheduled. Off (training), the cut comes from the shared `self.rng` and
+        each text draw gets a fresh seed, so a row varies from epoch to epoch.
+        """
         self.jsonl = jsonl
         self.entries = load_entries(jsonl, rank, world_size)
         self.tokenize = tokenize
@@ -116,6 +154,14 @@ class DataLoader:
         self.io_workers = io_workers
         self._failures = 0
         self.rng = random.Random(seed)
+        self.seed = seed
+        self.text_aug = TextAugment(alt_words_sample_prob, alt_word_swap_prob, nikud_word_prob)
+        self.fixed_draws = fixed_draws
+        # A stream of its own, drawn from in `get_entry` only (sequential, outside the
+        # pool), so the cut/shuffle stream above is never touched by text augmentation.
+        self._text_rng = random.Random(f"text:{seed}")
+
+    text_aug = TextAugment()  # class default for loaders built without __init__ (tests)
 
     MIN_CUT_SEC = 1.0  # keep at least this much audio on both sides of a cut
     TRAIL_SEC = 0.2  # silence kept after the last word, so EOS has a consistent target
@@ -139,7 +185,23 @@ class DataLoader:
         ends = [w["end"] for w in entry.words if w.get("end") is not None]
         return max(ends) if ends else None
 
+    def _words_text(self, entry: Entry, first_word: int) -> str:
+        """The text of `words[first_word:]`, with this sample's digit/niqqud variants."""
+        return render_text(
+            [w["word"] for w in entry.words],
+            entry.nikud,
+            entry.alt_words,
+            first_word,
+            entry.text_seed,
+            self.text_aug,
+        )
+
     def _sample(self, entry: Entry) -> tuple[np.ndarray, torch.Tensor, np.ndarray, int]:
+        # Training draws the cut from the shared `self.rng`. That runs on the pool threads in
+        # whatever order they are scheduled, which is fine for training but would hand a
+        # validation row a different cut from one evaluation to the next. A `fixed_draws`
+        # loader gives each row its own generator instead, so the cut depends on the row only.
+        rng = self.rng if entry.cut_seed is None else random.Random(f"cut:{entry.cut_seed}")
         if entry.words:
             # Cut the utterance at a random point between two aligned words:
             # audio before the cut = voice conditioning, audio after = target,
@@ -169,8 +231,8 @@ class DataLoader:
                 ]
                 cuts = eligible or cuts[:1]  # degenerate windows: earliest valid cut
             if cuts:
-                cut, i = self.rng.choice(cuts)
-                text = " ".join(w["word"] for w in entry.words[i:])
+                cut, i = rng.choice(cuts)
+                text = self._words_text(entry, i)
                 tokens = torch.tensor(self.tokenize(text), dtype=torch.long)
                 # Trim to the last word (plus a short tail) rather than the end
                 # of the file: 12% of utterances carry >1s of trailing silence,
@@ -197,10 +259,14 @@ class DataLoader:
         end = min(entry.duration, last + self.TRAIL_SEC) if last is not None else entry.duration
         duration = min(end, self.max_duration_sec)
         wav = _load_window(entry.path, entry.start, duration, self.sample_rate)
-        tokens = torch.tensor(self.tokenize(entry.transcript), dtype=torch.long)
+        # Rows with digit/niqqud variants take their text from `words` (cut at word 0), the
+        # same text a cut sample would get; every other row keeps its transcript as before.
+        use_words = entry.words and entry.text_seed is not None
+        text = self._words_text(entry, 0) if use_words else entry.transcript
+        tokens = torch.tensor(self.tokenize(text), dtype=torch.long)
         # No alignment: voice prompt from a random window of the same file.
         fallback_sec = self.max_voice_prompt_sec if self.max_voice_prompt_sec > 0 else 3.0
-        prompt_start = self.rng.uniform(0, max(0.0, entry.duration - fallback_sec))
+        prompt_start = rng.uniform(0, max(0.0, entry.duration - fallback_sec))
         prompt, length = self._cap_prompt(
             _load_window(entry.path, entry.start + prompt_start, fallback_sec, self.sample_rate)
         )
@@ -208,12 +274,26 @@ class DataLoader:
 
     def get_entry(self, index: int) -> Entry:
         d = json.loads(self.entries[index])
+        start = float(d.get("start", 0.0))
+        words = d.get("words")
+        alt_words, nikud = d.get("alt_words"), d.get("nikud")
+        text_seed = cut_seed = None
+        if self.fixed_draws:
+            cut_seed = derive_seed(self.seed, d["path"], start)
+        # Only rows with something to vary (and only while a feature that applies to them is
+        # on) get a seed, so every other row draws nothing, bit-identical to before.
+        if words and self.text_aug.wants(bool(alt_words), bool(nikud)):
+            text_seed = cut_seed if self.fixed_draws else self._text_rng.getrandbits(63)
         return Entry(
             d["path"],
             float(d["duration"]),
             d["transcript"],
-            d.get("words"),
-            float(d.get("start", 0.0)),
+            words,
+            start,
+            alt_words,
+            nikud,
+            text_seed,
+            cut_seed,
         )
 
     def _sample_or_none(self, entry: Entry) -> tuple | None:
@@ -231,12 +311,19 @@ class DataLoader:
         return _prefetch(self._batches())
 
     def _batches(self) -> Iterator[Batch]:
+        pool = ThreadPoolExecutor(max_workers=self.io_workers)
+        try:
+            yield from self._batches_on(pool)
+        finally:
+            # Also when the consumer stops early (generator closed) or a check below raises.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _batches_on(self, pool: ThreadPoolExecutor) -> Iterator[Batch]:
         self._failures = 0
         # Each sample is two small reads from network storage, so the loader is
         # latency-bound rather than CPU-bound: fetching a batch's samples
         # concurrently keeps the GPUs fed. sphn releases the GIL, so threads are
         # enough. Without this a cold, wide corpus starves training (~2x).
-        pool = ThreadPoolExecutor(max_workers=self.io_workers)
         if len(self.entries) < self.batch_size:
             raise ValueError(
                 f"{len(self.entries)} usable entries for this rank but batch_size="
@@ -285,20 +372,66 @@ class DataLoader:
 
 
 def _prefetch(iterator: Iterator[Batch], depth: int = 4) -> Iterator[Batch]:
-    """Run the (synchronous, IO-bound) loader in a background thread."""
+    """Run the (synchronous, IO-bound) loader in a background thread.
+
+    Closing the returned generator (`contextlib.closing`, or just dropping the last reference)
+    stops the thread: it sets `stop`, the worker notices within `STOP_POLL_SEC` even when
+    blocked on a full queue, closes the loader's own generator from its own thread (which
+    shuts down the loader's I/O pool) and exits. Without that, a consumer that stops early,
+    as validation does after `num_valid_batches`, leaves a thread blocked in `q.put` forever.
+    """
     q: queue.Queue = queue.Queue(maxsize=depth)
+    stop = threading.Event()
+
+    def put(item) -> bool:
+        """False if the consumer is gone, so the worker should stop instead of waiting."""
+        while not stop.is_set():
+            try:
+                q.put(item, timeout=STOP_POLL_SEC)
+            except queue.Full:
+                continue
+            return True
+        return False
 
     def worker():
-        for item in iterator:
-            q.put(item)
-        q.put(None)
+        # An exception must reach the consumer: if this thread just died, `q.get()` below
+        # would wait forever on an end marker that never comes.
+        try:
+            for item in iterator:
+                if not put(item):
+                    return
+        except BaseException as exc:  # noqa: BLE001 — re-raised in the consuming thread
+            put(_WorkerFailure(exc))
+            return
+        else:
+            put(None)
+        finally:
+            # A generator can only be closed by the thread running it, which is this one.
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
 
     threading.Thread(target=worker, daemon=True).start()
-    while True:
-        item = q.get()
-        if item is None:
-            return
-        yield item
+    try:
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            if isinstance(item, _WorkerFailure):
+                raise item.exc
+            yield item
+    finally:
+        stop.set()
+        while True:  # free the batches still queued
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+
+
+@dataclass
+class _WorkerFailure:
+    exc: BaseException
 
 
 @torch.no_grad()

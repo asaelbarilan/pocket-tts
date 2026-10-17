@@ -6,6 +6,13 @@ from typing import Any
 
 import yaml
 
+from training.text_augment import (
+    DEFAULT_ALT_WORD_SWAP_PROB,
+    DEFAULT_ALT_WORDS_SAMPLE_PROB,
+    DEFAULT_NIKUD_WORD_PROB,
+    check_probability,
+)
+
 
 @dataclass
 class DataArgs:
@@ -19,6 +26,21 @@ class DataArgs:
     # <= 0 removes the window (any word boundary; full-prefix prompt).
     max_voice_prompt_sec: float = 5.0
     shuffle: bool = True
+    # Text variants for manifest rows that carry the optional `alt_words` / `nikud` keys (see
+    # training/text_augment.py). Rows without those keys, and so every English manifest, are
+    # not affected. All three are probabilities in [0, 1]; the defaults apply when a config
+    # does not mention them. Validation uses the same values, with draws fixed per row.
+    # P(a sample with `alt_words` gets spelled-out numbers swapped for digits at all); 0 = off.
+    alt_words_sample_prob: float = DEFAULT_ALT_WORDS_SAMPLE_PROB
+    # P(each span is swapped | the sample was chosen); if none was, one random span is, so a
+    # chosen sample always has at least one swap. Only spans after the cut are candidates.
+    alt_word_swap_prob: float = DEFAULT_ALT_WORD_SWAP_PROB
+    # P(each word after the cut is trained in its vocalized `nikud` form); 0 = off.
+    nikud_word_prob: float = DEFAULT_NIKUD_WORD_PROB
+
+    def __post_init__(self) -> None:
+        for name in ("alt_words_sample_prob", "alt_word_swap_prob", "nikud_word_prob"):
+            check_probability(f"data.{name}", getattr(self, name))
 
 
 @dataclass

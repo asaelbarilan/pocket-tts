@@ -23,6 +23,7 @@ import logging
 import signal
 import sys
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -233,6 +234,9 @@ def main(config_path: str) -> None:
             run.world_size,
             seed=args.seed + rank,
             shuffle=args.data.shuffle,
+            alt_words_sample_prob=args.data.alt_words_sample_prob,
+            alt_word_swap_prob=args.data.alt_word_swap_prob,
+            nikud_word_prob=args.data.nikud_word_prob,
         )
     )
 
@@ -397,6 +401,11 @@ def validate(
             world_size,
             seed=0,
             shuffle=False,
+            alt_words_sample_prob=args.data.alt_words_sample_prob,
+            alt_word_swap_prob=args.data.alt_word_swap_prob,
+            nikud_word_prob=args.data.nikud_word_prob,
+            # Same digit/niqqud draws for a row on every evaluation, so scores compare.
+            fixed_draws=True,
         )
     )
     autocast = torch.autocast(
@@ -404,26 +413,29 @@ def validate(
     )
     totals: dict[str, float] = {}
     n = 0
-    for _ in range(args.num_valid_batches):
-        try:
-            batch = next(loader)
-        except StopIteration:
-            break
-        latents, mask, voice_prompt_latents, num_voice_prompt_frames = encode_batch(
-            mimi, batch, device
-        )
-        with autocast:
-            _, metrics = model(
-                latents,
-                mask,
-                batch.text_tokens,
-                voice_prompt_latents,
-                num_voice_prompt_frames=num_voice_prompt_frames,
+    # The loader is endless and we stop after num_valid_batches: closing it stops its
+    # prefetch thread and I/O pool instead of leaving them blocked for the rest of the run.
+    with closing(loader):
+        for _ in range(args.num_valid_batches):
+            try:
+                batch = next(loader)
+            except StopIteration:
+                break
+            latents, mask, voice_prompt_latents, num_voice_prompt_frames = encode_batch(
+                mimi, batch, device
             )
-        for k, v in metrics.items():
-            if v.numel() == 1:
-                totals[k] = totals.get(k, 0.0) + v.item()
-        n += 1
+            with autocast:
+                _, metrics = model(
+                    latents,
+                    mask,
+                    batch.text_tokens,
+                    voice_prompt_latents,
+                    num_voice_prompt_frames=num_voice_prompt_frames,
+                )
+            for k, v in metrics.items():
+                if v.numel() == 1:
+                    totals[k] = totals.get(k, 0.0) + v.item()
+            n += 1
     averaged = {k: avg_across_ranks(v / max(1, n)) for k, v in totals.items()}
     if rank == 0:
         shown = {k: f"{v:.4f}" for k, v in averaged.items()}

@@ -8,8 +8,9 @@ and a teacher path pointing at an architecture the distill step cannot load.
 from pathlib import Path
 
 import pytest
+import yaml
 
-from training.args import TrainArgs, _from_dict, load_args
+from training.args import TrainArgs, _from_dict, dump_args, load_args
 from training.modules.builders import load_model_config
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -20,6 +21,9 @@ DISTILL = CONFIGS / "depth_distill.yaml"
 # or not at all, and 400k steps is where expressivity settles (see README).
 MIN_EFFECTIVE_BATCH = 64
 MIN_SCRATCH_STEPS = 400_000
+
+TEXT_KEYS = ("alt_words_sample_prob", "alt_word_swap_prob", "nikud_word_prob")
+TEXT_DEFAULTS = {"alt_words_sample_prob": 0.30, "alt_word_swap_prob": 0.60, "nikud_word_prob": 0.10}
 
 
 @pytest.mark.parametrize("path", sorted(CONFIGS.glob("*.yaml")), ids=lambda p: p.name)
@@ -87,6 +91,48 @@ class TestArgValidation:
         """A key the parser doesn't recognize is a setting the user thinks is applied."""
         with pytest.raises(ValueError, match="distill_seed_layers"):
             _from_dict(TrainArgs, {"distill_seed_layers": "first"})
+
+
+class TestTextVariantProbabilities:
+    """Digit/niqqud variants: defaults in code, written out in the Hebrew configs only."""
+
+    def test_defaults_apply_when_a_config_does_not_mention_them(self):
+        for name in (
+            "scratch.yaml",
+            "finetune.yaml",
+            "finetune_language.yaml",
+            "depth_distill.yaml",
+        ):
+            data = load_args(CONFIGS / name).data
+            assert {k: getattr(data, k) for k in TEXT_KEYS} == TEXT_DEFAULTS
+
+    @pytest.mark.parametrize("name", ["finetune_hebrew.yaml", "depth_distill_hebrew.yaml"])
+    def test_hebrew_configs_spell_out_the_defaults(self, name):
+        raw = yaml.safe_load((CONFIGS / name).read_text())["data"]
+        assert {k: raw[k] for k in TEXT_KEYS} == TEXT_DEFAULTS
+        data = load_args(CONFIGS / name).data
+        assert {k: getattr(data, k) for k in TEXT_KEYS} == TEXT_DEFAULTS
+
+    @pytest.mark.parametrize("name", ["scratch", "finetune", "finetune_language", "depth_distill"])
+    def test_english_configs_do_not_mention_them(self, name):
+        raw = yaml.safe_load((CONFIGS / f"{name}.yaml").read_text())
+        assert not set(TEXT_KEYS) & set(raw.get("data", {}))
+
+    @pytest.mark.parametrize("key", TEXT_KEYS)
+    @pytest.mark.parametrize("bad", [-0.1, 1.5])
+    def test_out_of_range_is_rejected(self, key, bad):
+        with pytest.raises(ValueError, match=key):
+            _from_dict(TrainArgs, {"data": {key: bad}})
+
+    @pytest.mark.parametrize("key", TEXT_KEYS)
+    def test_zero_and_one_are_accepted_and_integers_become_floats(self, key):
+        for edge in (0, 1):
+            value = getattr(_from_dict(TrainArgs, {"data": {key: edge}}).data, key)
+            assert value == edge
+            assert isinstance(value, float)
+
+    def test_the_resolved_config_records_them(self):
+        assert "nikud_word_prob: 0.1" in dump_args(TrainArgs())
 
 
 class TestVocabSizeFollowsTheTokenizer:

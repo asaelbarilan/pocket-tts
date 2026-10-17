@@ -24,6 +24,12 @@ data:
   valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
   max_duration_sec: 30.0
   max_voice_prompt_sec: 5.0
+  # Text variants for rows that carry `alt_words` (digits) / `nikud`; these are the defaults,
+  # written out. See training/text_augment.py. 0 turns a feature off (swap_prob 0 still
+  # swaps one span per chosen sample).
+  alt_words_sample_prob: 0.30  # share of samples with digits instead of spelled-out numbers
+  alt_word_swap_prob: 0.60  # per number, in a chosen sample; at least one is always swapped
+  nikud_word_prob: 0.10  # per word, trained with its niqqud
 
 flow:
   type: lsd
