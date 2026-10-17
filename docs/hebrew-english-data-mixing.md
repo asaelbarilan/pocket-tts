@@ -140,6 +140,30 @@ audio first. Add English audio only if that set fails.
 If it is needed, LJSpeech (24 h) or a slice of HiFiTTS-2 is the obvious source, and
 HiFiTTS-2 is already wired into Kyutai's `prepare_data.py`.
 
+### Building the English manifests (about 1,000 h)
+
+Two builders write the same row format as `build_official_manifest`, each into a folder that
+holds everything training reads (rows, per-utterance 24 kHz FLAC, no network access needed):
+
+```bash
+# diverse half: ~750 h, ~56 GB kept (+~48 GB of MP3 traffic, deleted chapter by chapter)
+python -m hebrew_training.build_hifitts2_manifest --out-dir data/english/hifitts2 --hours 750
+# clean half: ~250 h, ~23 GB kept (clean subsets only; the pool holds ~240 h after filtering)
+python -m hebrew_training.build_libritts_r_manifest --out-dir data/english/libritts_r --hours 250
+```
+
+Why 75/25: the clean LibriTTS-R subsets hold only ~245 h (the 310 h "other" subset is the noisy
+half), while HiFiTTS-2 has ~5k speakers and long utterances that cut well. `--hours` is the TRAIN
+target; raising it later reuses every file already downloaded. Changing the audio format cannot
+reuse them: the script says so and asks before deleting and rebuilding. HiFiTTS-2 reads Kyutai's
+published alignments (`kyutai/hifitts2-aligned`) and keeps rows with `src_wer <= 0.1`;
+LibriTTS-R takes word times from the MFA TextGrids in `cdminix/libritts-r-aligned` and maps them
+onto the corpus's cased, punctuated text. Their docstrings give the rest, including the
+download sizes (metadata ~6 GiB for HiFiTTS-2, ~130 MB for LibriTTS-R).
+
+Mixing with Hebrew is left to the data config: the trainer reads one `train_jsonl`, so combine
+the manifests (`cat`, repeating a file to weight it).
+
 ---
 
 ## 4. Nikud, and the objection that nobody will run the normalizer

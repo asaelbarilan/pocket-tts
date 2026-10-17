@@ -79,15 +79,19 @@ import subprocess
 import sys
 import tempfile
 import time
-import unicodedata
 from array import array
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 from hebrew_training.manifest_files import BUILT
+from hebrew_training.official_manifest_common import (
+    DurationStats,
+    clean,
+    format_seconds,
+    stable_bucket,
+)
 
-_WS = re.compile(r"\s+")
 _HEBREW = re.compile(r"[֐-׿]")
 
 # Resolved from this file, not the working directory: the earlier relative default broke
@@ -224,25 +228,6 @@ def parse_args() -> argparse.Namespace:
     if args.max_spool_gib <= 0:
         parser.error("--max-spool-gib must be positive")
     return args
-
-
-def clean(text: str) -> str:
-    return _WS.sub(" ", unicodedata.normalize("NFC", text)).strip()
-
-
-def stable_bucket(key: str) -> float:
-    return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:8], "big") / 2**64
-
-
-def format_seconds(seconds: float) -> str:
-    total = max(0, round(seconds))
-    hours, remainder = divmod(total, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m {seconds:02d}s"
-    if minutes:
-        return f"{minutes}m {seconds:02d}s"
-    return f"{seconds}s"
 
 
 def load_normalizer(directory: Path):
@@ -823,8 +808,7 @@ def main() -> None:
     spool_bytes = context.Value("Q", 0, lock=False)
     spool_lock = context.Lock()
     results: list[tuple[Path, str | None, float, int] | None] = [None] * len(recordings)
-    duration_counts: dict[float, int] = {}
-    uncuttable = 0
+    duration_stats = DurationStats()
     progress_started = time.monotonic()
     progress_last_report = progress_started
     progress_last_count = 0
@@ -844,12 +828,11 @@ def main() -> None:
             totals[key] += value
 
     def collect(result) -> None:
-        nonlocal completed_recordings, progress_last_count, progress_last_report, uncuttable
+        nonlocal completed_recordings, progress_last_count, progress_last_report
         index, path, speaker, seconds, count, durations, stats = result
         results[index] = (path, speaker, seconds, count)
         for duration in durations:
-            duration_counts[duration] = duration_counts.get(duration, 0) + 1
-            uncuttable += duration < 2.0
+            duration_stats.add(duration)
         add_stats(stats)
         completed_recordings += 1
 
@@ -993,32 +976,8 @@ def main() -> None:
             f"{len(valid_speakers)} speakers"
         )
 
-        # Compute exact quantiles from bounded unique-duration counts rather than retaining
-        # one heavyweight Python object per row.
-        ordered_durations = sorted(duration_counts.items())
-
-        def duration_at(index: int) -> float:
-            seen = 0
-            for duration, count in ordered_durations:
-                seen += count
-                if seen > index:
-                    return duration
-            raise AssertionError("duration index is out of range")
-
-        row_count = totals["kept"]
-        middle = row_count // 2
-        median = duration_at(middle)
-        if row_count % 2 == 0:
-            median = (duration_at(middle - 1) + median) / 2
-        print(
-            f"row duration : median {median:.2f} s, "
-            f"p10 {duration_at(row_count // 10):.2f}, "
-            f"p90 {duration_at(9 * row_count // 10):.2f}, max {ordered_durations[-1][0]:.2f}"
-        )
-        print(
-            f"uncuttable (<2.0 s, prompt would overlap target): {uncuttable} "
-            f"({100 * uncuttable / row_count:.2f}%)"
-        )
+        for line in duration_stats.lines():
+            print(line)
         print(f"wrote {train_path} and {valid_path}")
     finally:
         shutil.rmtree(spool_dir, ignore_errors=True)
