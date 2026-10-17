@@ -15,6 +15,17 @@ Row schema (see `get_entry` in training/dataloader.py):
 window for the voice prompt. Word times are RELATIVE to `start`, because align_data.py
 keys on (path, start) and aligns inside that window.
 
+Optional, written only for rows where --normalize-text spelled out a number:
+
+    "alt_words": {"digits": [{"from": 1, "to": 2, "replace": ["ב-14:30"]}]}
+
+Each label (only "digits" so far) maps to spans of `words`, `from`..`to` inclusive, that
+can be swapped for the `replace` words -- the form the corpus wrote before normalization.
+Alternates carry no timings; a loader derives them from the words they replace, or swaps
+after it has chosen its cut (see `swap_alternates`). Loaders that do not know the key
+ignore it. The indices are only valid for the exact `words` list of the row, so any step
+that rewrites `words` must keep it one-to-one or drop `alt_words`.
+
 `words` IS THE TEXT. training/dataloader.py:150 builds what it trains on by joining
 `words`, and reads `transcript` only in the fallback branch where no word-boundary cut
 exists. So anything done to the text -- normalization above all -- has to be done to
@@ -223,9 +234,11 @@ def load_normalizer(directory: Path):
     """The same Hebrew normalizer the earlier pipeline used -- number expansion,
     word replacements, punctuation handling. Only the slicing was replaced; this was not.
 
-    Returns `normalize(words: list[str]) -> list[str]`, one result per word. The earlier
-    pipeline normalized a whole slice at once; calling it word by word is what drops the
-    context it depends on, so the whole word list must go in together."""
+    Returns `normalize(words: list[str]) -> list[WordNormalization]`, one result per word:
+    `.text` is what the word became, `.consumed` the later words it swallowed (the unit in
+    `2.5 kg`). The earlier pipeline normalized a whole slice at once; calling it word by
+    word is what drops the context it depends on, so the whole word list must go in
+    together."""
     if not directory.exists():
         raise SystemExit(
             f"--normalize-text needs the normalizer, and {directory} does not exist.\n"
@@ -239,13 +252,14 @@ def load_normalizer(directory: Path):
         from hebrew_tts_normalizer import (  # type: ignore
             TTSNormalizeOptions,
             load_word_replacements,
-            normalize_tts_words,
+            normalize_tts_words_detailed,
         )
     except ImportError as error:
         raise SystemExit(
             f"The normalizer in {directory} is too old or incomplete ({error}).\n"
-            "It must provide normalize_tts_words(), which normalizes words with their "
-            "neighbours as context. Update the hebrew-tts-data-tools checkout."
+            "It must provide normalize_tts_words_detailed(), which normalizes words with "
+            "their neighbours as context and reports the words a result absorbed. "
+            "Update the hebrew-tts-data-tools checkout."
         ) from error
 
     options = TTSNormalizeOptions(
@@ -256,7 +270,9 @@ def load_normalizer(directory: Path):
         remove_parentheses=False,
     )
     replacements = load_word_replacements()
-    return lambda words: normalize_tts_words(words, options=options, word_replacements=replacements)
+    return lambda words: normalize_tts_words_detailed(
+        words, options=options, word_replacements=replacements
+    )
 
 
 def normalize_words(
@@ -288,11 +304,39 @@ def normalize_words(
     A word whose output starts with punctuation (a lone "." that Whisper timed as its own
     word) is glued onto the previous word, as the normalizer does for a whole sentence.
     """
+    return normalize_words_with_alternates(words, normalize, before, after)[0]
+
+
+def normalize_words_with_alternates(
+    words: list[dict], normalize, before: Sequence[str] = (), after: Sequence[str] = ()
+) -> tuple[list[dict], dict | None]:
+    """normalize_words, plus the written-with-digits form of every number it spelled out.
+
+    Returns `(words, alt_words)`. `alt_words` is None when nothing was spelled out, else
+    `{"digits": [{"from": i, "to": j, "replace": [...]}]}`: `words[i..j]` (inclusive) is
+    what the digits form `replace` was turned into. The indices are into the returned
+    `words`, so they stay valid only for that exact list.
+
+    A span is made for an input word that contains a digit and was changed. `replace` holds
+    the source words as written, wrapper quotes and trailing punctuation included, so the
+    swapped-in text is what the corpus really said. Cases that need care:
+
+    - a unit spoken with its number (`2.5 kg`) is part of one span; the normalizer reports
+      it as consumed, otherwise it would look like a dropped word. When the unit falls
+      outside `words` (in the next row's context) the span is not emitted, because swapping
+      it back would lose the unit;
+    - a lone punctuation word glued onto the end of a span is appended to `replace` as well;
+    - a word that vanished (`[5]`), came out unchanged, or whose first output piece was glued
+      onto the previous word has nothing to replace and gets no span.
+    """
+    offset = len(before)
     results = normalize([*before, *(word["word"] for word in words), *after])
-    results = results[len(before) : len(before) + len(words)]
+    results = results[offset : offset + len(words)]
+    source = [clean(word["word"]) for word in words]
     out: list[dict] = []
-    for word, text in zip(words, results):
-        parts = clean(text).split()
+    spans: list[dict] = []
+    for index, (word, result) in enumerate(zip(words, results)):
+        parts = clean(result.text).split()
         if not parts:
             continue
         if len(parts) == 1:
@@ -301,13 +345,97 @@ def normalize_words(
             start, end = float(word["start"]), float(word["end"])
             step = (end - start) / len(parts)
             pieces = [
-                {"word": part, "start": start + index * step, "end": start + (index + 1) * step}
-                for index, part in enumerate(parts)
+                {"word": part, "start": start + n * step, "end": start + (n + 1) * step}
+                for n, part in enumerate(parts)
             ]
-        if out and pieces[0]["word"][0] in _GLUED_PUNCTUATION:
+        glued_first = bool(out) and pieces[0]["word"][0] in _GLUED_PUNCTUATION
+        if glued_first:
             glued = pieces.pop(0)
             out[-1] = {**out[-1], "word": out[-1]["word"] + glued["word"], "end": glued["end"]}
+            if spans and spans[-1]["to"] == len(out) - 1:
+                spans[-1]["replace"][-1] += glued["word"]
+        span = None
+        if pieces and not glued_first:
+            span = _digits_span(source, results, offset, index, parts, len(out), len(pieces))
+        if span is not None:
+            spans.append(span)
         out.extend(pieces)
+    return out, ({"digits": spans} if spans else None)
+
+
+def _digits_span(
+    source: list[str],
+    results: list,
+    offset: int,
+    index: int,
+    parts: list[str],
+    first: int,
+    count: int,
+) -> dict | None:
+    """The span for `source[index]` if it is a number the normalizer spelled out.
+
+    `offset` is how many context words precede the row in the list the normalizer saw: its
+    `consumed` indices count from there, `source` and `results` from the row's first word.
+    """
+    if not any(character.isdigit() for character in source[index]):
+        return None
+    last = max([index, *(consumed - offset for consumed in results[index].consumed)])
+    if last >= len(source):
+        return None
+    # Words between the number and what it swallowed must be silent, or they would need a
+    # span of their own and the two would overlap.
+    if any(clean(results[between].text) for between in range(index + 1, last + 1)):
+        return None
+    replace = [token for word in source[index : last + 1] for token in word.split()]
+    if not replace or replace == parts:
+        return None
+    return {"from": first, "to": first + count - 1, "replace": replace}
+
+
+def validate_alt_words(alt_words: dict, word_count: int) -> None:
+    """Raise ValueError unless every label's spans are in range, ordered and disjoint."""
+    for label, spans in alt_words.items():
+        previous_to = -1
+        for span in spans:
+            first, last, replace = span["from"], span["to"], span["replace"]
+            if not 0 <= first <= last < word_count:
+                raise ValueError(
+                    f"alt_words[{label!r}] span {first}..{last} outside {word_count} words"
+                )
+            if first <= previous_to:
+                raise ValueError(
+                    f"alt_words[{label!r}] span {first}..{last} overlaps or is unordered"
+                )
+            if not replace or any(
+                not token or token != token.strip() or " " in token for token in replace
+            ):
+                raise ValueError(
+                    f"alt_words[{label!r}] span {first}..{last} has a bad replace {replace!r}"
+                )
+            previous_to = last
+
+
+def swap_alternates(
+    words: Sequence[str],
+    spans: Sequence[dict],
+    first_word: int = 0,
+    use: Sequence[bool] | None = None,
+) -> list[str]:
+    """`words[first_word:]` with the chosen `spans` swapped for their `replace` words.
+
+    This is the reference for what a training loader should do: cut first, then swap. A
+    span the cut falls inside (`from < first_word <= to`) is left spoken, since the
+    audio for its first words is gone. `use[i]` says whether to swap `spans[i]`; default all.
+    """
+    out: list[str] = []
+    position = first_word
+    for number, span in enumerate(spans):
+        if span["from"] < first_word or (use is not None and not use[number]):
+            continue
+        out.extend(words[position : span["from"]])
+        out.extend(span["replace"])
+        position = span["to"] + 1
+    out.extend(words[position:])
     return out
 
 
@@ -516,9 +644,10 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
             continue
 
         words = [word for segment in group for word in segment["words"]]
+        alt_words = None
         if normalize is not None:
             before, after = context_words(groups, index, args)
-            words = normalize_words(words, normalize, before, after)
+            words, alt_words = normalize_words_with_alternates(words, normalize, before, after)
         if not words:
             stats["no_hebrew"] += 1
             continue
@@ -541,16 +670,18 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
             for word in words
         ]
 
-        rows.append(
-            {
-                "path": str(audio.resolve()),
-                "start": round(start, 4),
-                "duration": round(duration, 4),
-                "transcript": text,
-                "words": timed,
-                "speaker": speaker,
-            }
-        )
+        row = {
+            "path": str(audio.resolve()),
+            "start": round(start, 4),
+            "duration": round(duration, 4),
+            "transcript": text,
+            "words": timed,
+            "speaker": speaker,
+        }
+        if alt_words:
+            validate_alt_words(alt_words, len(timed))
+            row["alt_words"] = alt_words
+        rows.append(row)
         stats["kept"] += 1
     if rows and args.transcode_audio:
         manifest_audio, created = transcode_audio(audio, recording, args.out_dir)

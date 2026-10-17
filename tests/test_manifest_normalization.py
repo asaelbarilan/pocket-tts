@@ -255,3 +255,127 @@ def test_rows_do_not_borrow_context_across_a_long_silence(normalize, tmp_path: P
     rows, _ = manifest.segment_rows(recording, _segment_args(tmp_path), normalize, random.Random(0))
 
     assert [row["transcript"] for row in rows] == ["אחרי ארבע עשרה", "ימים עברו"]
+
+
+def _alternates(normalize, text: str, **context):
+    words, alt = manifest.normalize_words_with_alternates(_words(text), normalize, **context)
+    return _spoken(words), alt
+
+
+def test_a_number_gets_a_digits_alternate_over_the_words_it_became(normalize) -> None:
+    words, alt = _alternates(normalize, "הגענו ב-14:30 למלון")
+    assert words == ["הגענו", "בשתיים", "וחצי", "למלון"]
+    assert alt == {"digits": [{"from": 1, "to": 2, "replace": ["ב-14:30"]}]}
+
+
+def test_text_without_digits_has_no_alternates(normalize) -> None:
+    assert _alternates(normalize, "שלום עולם, מה שלומך")[1] is None
+    # Normalized, but not from a digit: an abbreviation or a Latin letter is not "digits".
+    assert _alternates(normalize, 'מה זה ק"מ ו-m')[1] is None
+
+
+def test_every_number_in_a_row_gets_its_own_span(normalize) -> None:
+    words, alt = _alternates(normalize, "אחרי 14 ימים ו-3 שנים וגם 2 אנשים")
+    assert words == ["אחרי", "ארבעה", "עשר", "ימים", "ושלוש", "שנים", "וגם", "שני", "אנשים"]
+    assert alt["digits"] == [
+        {"from": 1, "to": 2, "replace": ["14"]},
+        {"from": 4, "to": 4, "replace": ["ו-3"]},
+        {"from": 7, "to": 7, "replace": ["2"]},
+    ]
+
+
+def test_replace_keeps_the_source_as_written(normalize) -> None:
+    words, alt = _alternates(normalize, 'זה קרה ב"1995" ואז (5) ימים 50%.')
+    spans = alt["digits"]
+    assert [span["replace"] for span in spans] == [['ב"1995"'], ["(5)"], ["50%."]]
+    assert words[-1].endswith(".")
+
+
+def test_a_separated_unit_is_part_of_the_span(normalize) -> None:
+    words, alt = _alternates(normalize, "שקלנו 2.5 kg של תפוחים")
+    assert words == ["שקלנו", "שניים", "וחצי", "קילוגרם", "של", "תפוחים"]
+    assert alt["digits"] == [{"from": 1, "to": 3, "replace": ["2.5", "kg"]}]
+
+
+def test_a_unit_in_the_next_row_makes_no_span(normalize) -> None:
+    # Swapping "2.5" back would lose the "kg" that the number's spoken form absorbed.
+    words, alt = _alternates(normalize, "שקלנו 2.5", after=["kg", "של"])
+    assert words == ["שקלנו", "שניים", "וחצי", "קילוגרם"]
+    assert alt is None
+
+
+def test_a_glued_punctuation_word_is_appended_to_the_span(normalize) -> None:
+    words, alt = _alternates(normalize, "בשנת 1995 . אחרי")
+    assert words[-2:] == ["וחמש.", "אחרי"]
+    assert alt["digits"] == [{"from": 1, "to": 5, "replace": ["1995."]}]
+
+
+def test_unchanged_or_vanished_digits_make_no_span(normalize) -> None:
+    assert _alternates(normalize, "שלום [5] עולם")[1] is None
+
+
+def test_alternate_indices_survive_dropped_words(normalize) -> None:
+    # A lone quote and a removed bracket word vanish; the indices count the words that remain.
+    words, alt = _alternates(normalize, 'א " ב 14 ג')
+    assert words == ["א", "ב", "ארבע", "עשרה", "ג"]
+    assert alt == {"digits": [{"from": 2, "to": 3, "replace": ["14"]}]}
+    words, alt = _alternates(normalize, "מה [הערה] 14 ימים")
+    assert words == ["מה", "ארבעה", "עשר", "ימים"]
+    assert alt == {"digits": [{"from": 1, "to": 2, "replace": ["14"]}]}
+
+
+def test_swapping_every_span_restores_the_digits_text(normalize) -> None:
+    text = "אנחנו סופרים למעלה מ-65 פצועים רק בשנת 2025 לעומת 21 פצועים . ב-14:30 הגענו"
+    words, alt = _alternates(normalize, text)
+    swapped = manifest.swap_alternates(words, alt["digits"])
+    assert swapped == [
+        "אנחנו", "סופרים", "למעלה", "מ-65", "פצועים", "רק", "בשנת", "2025", "לעומת", "21",
+        "פצועים.", "ב-14:30", "הגענו",
+    ]  # fmt: skip
+
+
+def test_a_cut_inside_a_span_leaves_it_spoken(normalize) -> None:
+    words, alt = _alternates(normalize, "הגענו ב-14:30 למלון")
+    spans = alt["digits"]
+    assert manifest.swap_alternates(words, spans, first_word=0) == ["הגענו", "ב-14:30", "למלון"]
+    # Cut after "בשתיים": the first words of the span are gone, so keep "וחצי" as spoken.
+    assert manifest.swap_alternates(words, spans, first_word=2) == ["וחצי", "למלון"]
+    assert manifest.swap_alternates(words, spans, first_word=3) == ["למלון"]
+    assert manifest.swap_alternates(words, spans, use=[False]) == words
+
+
+def test_validate_alt_words_rejects_broken_spans() -> None:
+    good = {
+        "digits": [{"from": 1, "to": 2, "replace": ["14"]}, {"from": 4, "to": 4, "replace": ["3"]}]
+    }
+    manifest.validate_alt_words(good, 5)
+    for bad in (
+        {"digits": [{"from": 1, "to": 5, "replace": ["14"]}]},  # out of range
+        {"digits": [{"from": 3, "to": 2, "replace": ["14"]}]},  # inverted
+        {
+            "digits": [
+                {"from": 1, "to": 3, "replace": ["1"]},
+                {"from": 3, "to": 4, "replace": ["2"]},
+            ]
+        },
+        {
+            "digits": [
+                {"from": 2, "to": 2, "replace": ["1"]},
+                {"from": 0, "to": 0, "replace": ["2"]},
+            ]
+        },
+        {"digits": [{"from": 1, "to": 1, "replace": []}]},
+        {"digits": [{"from": 1, "to": 1, "replace": ["a b"]}]},
+    ):
+        with pytest.raises(ValueError):
+            manifest.validate_alt_words(bad, 5)
+
+
+def test_rows_carry_alt_words_only_when_a_number_was_spoken(normalize, tmp_path: Path) -> None:
+    recording = _recording_with_split_number(tmp_path, gap=0.1)
+    rows, _ = manifest.segment_rows(recording, _segment_args(tmp_path), normalize, random.Random(0))
+
+    assert rows[0]["alt_words"] == {"digits": [{"from": 1, "to": 2, "replace": ["14"]}]}
+    assert "alt_words" not in rows[1]
+    # The alternates index the row's own words.
+    assert [word["word"] for word in rows[0]["words"]][1:3] == ["ארבעה", "עשר"]
