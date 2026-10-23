@@ -1,0 +1,40 @@
+{"id": "plain_01", "category": "plain", "text": "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."}
+{"id": "plain_02", "category": "plain", "text": "הוועדה דנה בהצעת החוק ואישרה אותה בקריאה ראשונה."}
+{"id": "plain_03", "category": "plain", "text": "אמא שלי מכינה מרק ירקות כל יום שישי בצהריים."}
+{"id": "plain_04", "category": "plain", "text": "הגשם ירד כל הלילה, ובבוקר הרחובות היו מלאים שלוליות."}
+{"id": "plain_05", "category": "plain", "text": "תודה רבה על העזרה, באמת לא הייתי מצליח בלעדיך."}
+{"id": "plain_06", "category": "plain", "text": "הילדים חזרו מבית הספר, הניחו את התיקים ויצאו לשחק בחצר."}
+{"id": "nikud_01", "category": "nikud", "text": "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."}
+{"id": "nikud_02", "category": "nikud", "text": "הַיֶּלֶד הַקָּטָן יָשַׁב עַל הַכִּסֵּא וְקָרָא סֵפֶר."}
+{"id": "nikud_03", "category": "nikud", "text": "בַּבֹּקֶר שָׁתִינוּ קָפֶה וְאָכַלְנוּ לֶחֶם טָרִי."}
+{"id": "nikud_04", "category": "nikud", "text": "הַמּוֹרָה בִּקְשָׁה מִן הַתַּלְמִידִים לִפְתֹּחַ אֶת הַמַּחְבָּרוֹת."}
+{"id": "nikud_05", "category": "nikud", "text": "כָּל הָעוֹלָם כֻּלּוֹ גֶּשֶׁר צַר מְאֹד, וְהָעִקָּר לֹא לְפַחֵד כְּלָל."}
+{"id": "nikud_06", "category": "nikud", "text": "בְּרֵאשִׁית בָּרָא אֱלֹהִים אֵת הַשָּׁמַיִם וְאֵת הָאָרֶץ."}
+{"id": "latin_01", "category": "latin_in_hebrew", "text": "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."}
+{"id": "latin_02", "category": "latin_in_hebrew", "text": "שלחתי לך את הקובץ ב-WhatsApp, תבדוק אם הוא הגיע."}
+{"id": "latin_03", "category": "latin_in_hebrew", "text": "הצוות משתמש ב-Python וב-PyTorch כדי לאמן את המודל."}
+{"id": "latin_04", "category": "latin_in_hebrew", "text": "נפגשנו ב-Zoom בשעה תשע, והיא איחרה בעשר דקות."}
+{"id": "latin_05", "category": "latin_in_hebrew", "text": "ה-CEO של החברה הודיע על הפסקת ה-support למוצר הישן."}
+{"id": "latin_06", "category": "latin_in_hebrew", "text": "קניתי את הכרטיסים ב-Booking ושילמתי ב-PayPal."}
+{"id": "english_01", "category": "english", "text": "The quick brown fox jumps over the lazy dog."}
+{"id": "english_02", "category": "english", "text": "Please leave a message after the beep, and I will call you back."}
+{"id": "english_03", "category": "english", "text": "Our next meeting is scheduled for Thursday at half past three."}
+{"id": "english_04", "category": "english", "text": "She said the results were far better than anyone had expected."}
+{"id": "loan_01", "category": "loanword_hebrew_script", "text": "שמתי את הסמארטפון על השולחן ליד הלפטופ."}
+{"id": "loan_02", "category": "loanword_hebrew_script", "text": "הטלוויזיה בסלון מחוברת לאינטרנט באמצעות ראוטר חדש."}
+{"id": "loan_03", "category": "loanword_hebrew_script", "text": "הזמנתי המבורגר, צ'יפס וקולה במסעדה ליד התחנה."}
+{"id": "loan_04", "category": "loanword_hebrew_script", "text": "המנהל ביקש פידבק על הפרזנטציה לפני הדדליין."}
+{"id": "loan_05", "category": "loanword_hebrew_script", "text": "הפרויקט בסטטוס אדום, והקליינט מחכה לאפדייט."}
+{"id": "num_01", "category": "numbers", "text": "בשנת 1948, בשעה 14:30, עלה השיעור ב-2.5 אחוזים."}
+{"id": "num_02", "category": "numbers", "text": "הישיבה תתקיים ב-12 במרץ 2026 באולם 3."}
+{"id": "num_03", "category": "numbers", "text": "מספר הטלפון שלי הוא 052-1234567, אפשר להתקשר אחרי 18:00."}
+{"id": "num_04", "category": "numbers", "text": "התקציב גדל מ-1,200,000 שקלים ל-3,450,000 שקלים בתוך שנתיים."}
+{"id": "num_05", "category": "numbers", "text": "הרכבת יוצאת ב-07:45 ומגיעה ב-09:20, נסיעה של שעה ו-35 דקות."}
+{"id": "num_06", "category": "numbers", "text": "72% מהמשתתפים ענו נכון על 18 מתוך 20 השאלות."}
+{"id": "homo_01", "category": "homograph", "text": "הספר סיפר לי שהוא קרא ספר על תספורות.", "note": "ha-sapar (barber) then sefer (book) -- same spelling, two words"}
+{"id": "homo_02", "category": "homograph", "text": "היא רוצה לנסוע מחר, והוא רוצה להישאר כאן.", "note": "rotza (f) then rotze (m)"}
+{"id": "homo_03", "category": "homograph", "text": "אני לא אוכל לאכול עכשיו, כי כבר אכלתי בבוקר.", "note": "uchal (I can), not ochel (eating)"}
+{"id": "homo_04", "category": "homograph", "text": "המורה החדשה אמרה למורה הוותיק שהשיעור כבר התחיל.", "note": "mora (f) then more (m)"}
+{"id": "homo_05", "category": "homograph", "text": "בוקר טוב, אמר הבוקר לפרות שלו ברפת.", "note": "boker (morning) then boker (cowboy)"}
+{"id": "homo_06", "category": "homograph", "text": "דובר הכנסת אמר שכבר דובר על כך בוועדה בשבוע שעבר.", "note": "dover (spokesman) then dubar (was discussed)"}
+{"id": "homo_07", "category": "homograph", "text": "המלך מלך ארבעים שנה על הממלכה כולה.", "note": "melech (king) then malach (reigned)"}

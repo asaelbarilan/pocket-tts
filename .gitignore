@@ -113,3 +113,5 @@ italk.yaml
 /data*/
 runs/
 tokenizers/
+
+/deploy/validation_cache/

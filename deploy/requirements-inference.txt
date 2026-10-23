@@ -1,0 +1,15 @@
+# Runtime deps for hebrew_tts_infer.py (the pinned versions it was tested with).
+# torch is not listed: install it for your platform (CPU/CUDA/MPS), torch>=2.5, tested 2.13.
+# (2.4.0 produces wrong audio.) See https://pytorch.org/get-started/locally/
+numpy==2.5.2
+pydantic==2.13.4
+sentencepiece==0.2.2
+beartype==0.22.9
+safetensors==0.8.0
+scipy==1.18.0
+einops==0.8.2
+huggingface_hub==1.28.0
+requests==2.34.2
+soundfile==0.14.0
+PyYAML==6.0.3
+typing_extensions==4.16.0

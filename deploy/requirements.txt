@@ -1,0 +1,18 @@
+# Runtime deps of deploy/hebrew_tts_server.py, pinned to the versions it was tested with.
+# torch is installed separately in the Dockerfile from the CPU-only wheel index.
+numpy==2.5.2
+pydantic==2.13.4
+sentencepiece==0.2.2
+beartype==0.22.9
+safetensors==0.8.0
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32
+scipy==1.18.0
+einops==0.8.2
+huggingface_hub==1.28.0
+requests==2.34.2
+soundfile==0.14.0
+PyYAML==6.0.3
+typing_extensions==4.16.0
+tqdm==4.70.0
