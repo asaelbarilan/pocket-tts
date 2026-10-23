@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dataloader preview</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #fff; --fg: #1c2024; --muted: #6a7280; --line: #dfe3e8;
+    --accent: #2f6fed; --accent-fg: #fff; --warn: #b45309; --err: #b91c1c; --chip: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121417; --card: #1b1e23; --fg: #e6e8eb; --muted: #98a1ae; --line: #2c3139;
+      --accent: #5b8cff; --accent-fg: #0b1020; --warn: #f0a24b; --err: #f87171; --chip: #262b32;
+    }
+  }
+  [x-cloak] { display: none !important; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px; margin-top: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  label.inline { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 6px; }
+  select, input[type=number] { font: inherit; color: var(--fg); background: var(--bg);
+         border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 90px; }
+  input[type=number] { width: 110px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+           border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .55; cursor: wait; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+                   font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--bg); }
+  .seg button.on { background: var(--accent); color: var(--accent-fg); }
+  details > summary { cursor: pointer; font-weight: 600; }
+  .params { margin-top: 10px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 9px;
+          font-size: 12px; margin: 0 4px 2px 0; }
+  .chip.aug { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  .hint { color: var(--warn); font-size: 12px; }
+  .error { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent);
+           border: 1px solid var(--err); border-radius: 8px; padding: 8px 12px; margin-top: 14px;
+           white-space: pre-wrap; }
+  .status { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .sample { display: grid; gap: 8px; }
+  .sample h3 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .text { direction: rtl; text-align: right; font-size: 22px; line-height: 1.6; padding: 6px 10px;
+          background: var(--bg); border-radius: 8px; border: 1px solid var(--line); }
+  .text.small { font-size: 14px; color: var(--muted); padding: 3px 10px; }
+  .audio { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .audio > div { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  audio { height: 36px; max-width: 100%; }
+  .meta { font-size: 12px; color: var(--muted); word-break: break-all; }
+  .pieces { direction: rtl; text-align: right; font-family: ui-monospace, monospace; font-size: 12px; }
+  .pieces span { display: inline-block; border: 1px solid var(--line); border-radius: 4px;
+                 padding: 0 4px; margin: 2px; }
+</style>
+</head>
+<body>
+<main x-data="preview()" x-init="init()" x-cloak>
+  <h1>Dataloader preview</h1>
+  <div class="sub" x-show="cfg">
+    <span x-text="cfg?.config"></span> ·
+    <span x-text="cfg?.sample_rate + ' Hz'"></span> ·
+    tokenizer <span x-text="cfg?.tokenizer"></span>
+  </div>
+
+  <div class="error" x-show="fatal" x-text="fatal"></div>
+
+  <template x-if="cfg">
+    <div>
+      <section class="card">
+        <div class="row">
+          <label>Set
+            <span class="seg">
+              <button :class="{on: split==='train'}" @click="split='train'; pickDataset()">train</button>
+              <button :class="{on: split==='valid'}" @click="split='valid'; pickDataset()">eval</button>
+            </span>
+          </label>
+          <label>Phase
+            <select x-model.number="phase" @change="pickDataset()">
+              <template x-for="p in cfg.phases" :key="p.index">
+                <option :value="p.index" x-text="phaseLabel(p)"></option>
+              </template>
+            </select>
+          </label>
+          <label>Dataset
+            <select x-model="dataset">
+              <option value="">all in the phase mix</option>
+              <template x-for="name in datasetOptions" :key="name">
+                <option :value="name" x-text="name"></option>
+              </template>
+            </select>
+          </label>
+        </div>
+        <div style="margin-top:8px">
+          <span class="sub">drawn from:</span>
+          <template x-for="[name, share] in effectiveMix" :key="name">
+            <span class="chip" x-text="name + ' ' + (share * 100).toFixed(1).replace(/\.0$/, '') + '%'"></span>
+          </template>
+          <span class="hint" x-show="effectiveMix.length === 0">no <span x-text="split === 'train' ? 'train' : 'validation'"></span> manifest for this selection</span>
+        </div>
+
+        <details class="params" :open="paramsOpen" @toggle="paramsOpen = $event.target.open">
+          <summary>Loader parameters <span class="sub">(<span x-text="split === 'train' ? 'train' : 'eval'"></span>; changing any reloads the loader)</span></summary>
+          <div class="row" style="margin-top:10px">
+            <label>seed <input type="number" step="1" x-model.number="p.seed"></label>
+            <label>batch size <input type="number" min="1" max="64" step="1" x-model.number="p.batch_size"></label>
+            <label>max duration (s) <input type="number" min="0.1" step="any" x-model.number="p.max_duration_sec"></label>
+            <label>max voice prompt (s) <input type="number" step="any" x-model.number="p.max_voice_prompt_sec"></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label>digits: sample prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_words_sample_prob"></label>
+            <label>digits: swap prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_word_swap_prob"></label>
+            <label>niqqud: word prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.nikud_word_prob"></label>
+            <label class="inline"><input type="checkbox" x-model="p.shuffle"> shuffle</label>
+            <label class="inline" title="Validation mode: every random choice for a row depends only on (seed, path, start)"><input type="checkbox" x-model="p.fixed_draws"> fixed draws</label>
+            <button @click="resetParams()">Reset to config</button>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <label>Skip batches first
+            <input type="number" min="0" max="10000" step="1" x-model.number="skip">
+          </label>
+          <button class="primary" :disabled="loading" @click="next(false)"
+                  x-text="loading ? 'Loading…' : (dirty || !batch ? 'Load batch' : 'Next batch')"></button>
+          <button :disabled="loading" @click="next(true)" title="Rebuild the loaders and start from the beginning">Restart</button>
+          <span class="hint" x-show="dirty && batch">Selection changed: the next batch reloads the loader from the start.</span>
+        </div>
+        <div class="status" x-show="batch">
+          Batch #<span x-text="batch?.number"></span> from <b x-text="batch?.dataset"></b>
+          <span x-show="batch?.skipped"> · skipped <span x-text="batch?.skipped"></span></span>
+          <span x-show="batch?.reloaded"> · loader (re)built</span>
+          · <span x-text="batch?.elapsed_ms"></span> ms
+          <template x-for="[name, n] in Object.entries(batch?.status.batches_drawn ?? {})" :key="name">
+            <span> · <span x-text="name"></span>: <span x-text="n"></span> batches,
+              <span x-text="batch.status.rows[name]"></span> rows,
+              epoch <span x-text="(batch.status.epochs[name] ?? 0).toFixed(2)"></span><span
+                x-show="batch.status.unreadable_skipped[name]" class="hint">,
+                <span x-text="batch.status.unreadable_skipped[name]"></span> unreadable skipped</span></span>
+          </template>
+        </div>
+      </section>
+
+      <div class="error" x-show="error" x-text="error"></div>
+
+      <template x-for="s in (batch?.samples ?? [])" :key="batch.id + ':' + s.index">
+        <section class="card sample">
+          <h3>
+            #<span x-text="s.index + 1"></span>
+            <span class="chip" x-text="batch.dataset"></span>
+            <span class="chip" x-text="s.token_ids.length + ' tokens'"></span>
+            <span class="chip aug" x-show="s.augmented">digits/niqqud draw</span>
+            <span class="chip" x-show="!s.has_words">no alignment</span>
+            <span class="chip" x-show="s.has_alt_words">has digits</span>
+            <span class="chip" x-show="s.has_nikud">has niqqud</span>
+          </h3>
+          <div class="text" dir="rtl" x-text="s.text"></div>
+          <div class="audio">
+            <div><span>prompt · <span x-text="s.prompt_sec.toFixed(2)"></span> s</span>
+              <audio controls preload="auto" :id="'p' + s.index" :src="s.prompt_url"></audio></div>
+            <div><span>target · <span x-text="s.target_sec.toFixed(2)"></span> s</span>
+              <audio controls preload="auto" :id="'t' + s.index" :src="s.target_url"></audio></div>
+            <button @click="playBoth(s.index)">▶ prompt, then target</button>
+          </div>
+          <details>
+            <summary class="meta">source row &amp; tokens</summary>
+            <div class="meta" style="margin:6px 0"><span x-text="s.path"></span>
+              (start <span x-text="s.start"></span> s, row <span x-text="s.row_duration"></span> s)</div>
+            <div class="text small" dir="rtl" x-text="s.transcript"></div>
+            <div class="pieces" dir="rtl" style="margin-top:6px">
+              <template x-for="(piece, i) in s.pieces" :key="i"><span :title="s.token_ids[i]" x-text="piece"></span></template>
+            </div>
+          </details>
+        </section>
+      </template>
+    </div>
+  </template>
+</main>
+
+<script>
+// Alpine state is a Proxy, which structuredClone cannot copy.
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+function preview() {
+  return {
+    cfg: null, fatal: '', error: '',
+    split: 'train', phase: 0, dataset: '', skip: 0,
+    params: {train: {}, valid: {}}, paramsOpen: false,
+    batch: null, loading: false, loadedSpec: null,
+
+    async init() {
+      try {
+        const r = await fetch('/api/config');
+        if (!r.ok) throw new Error(await r.text());
+        this.cfg = await r.json();
+        this.params = clone(this.cfg.defaults);
+      } catch (e) { this.fatal = 'Could not load the config: ' + e.message; }
+    },
+
+    get p() { return this.params[this.split]; },
+    get currentPhase() { return this.cfg.phases.find(p => p.index === this.phase); },
+    // Datasets of the phase that have a manifest for the chosen set.
+    get datasetOptions() {
+      const key = this.split === 'train' ? 'train_jsonl' : 'valid_jsonl';
+      return Object.keys(this.currentPhase.mix).filter(n => this.cfg.datasets[n][key]);
+    },
+    get effectiveMix() {
+      if (!this.cfg) return [];
+      const names = this.dataset ? [this.dataset] : this.datasetOptions;
+      const weights = names.map(n => this.dataset ? 1 : this.currentPhase.mix[n]);
+      const total = weights.reduce((a, b) => a + b, 0);
+      return total > 0 ? names.map((n, i) => [n, weights[i] / total]) : [];
+    },
+    get dirty() { return this.loadedSpec !== JSON.stringify(this.spec()); },
+
+    phaseLabel(p) {
+      if (!this.cfg.is_curriculum) return '0 · single dataset';
+      const mix = Object.entries(p.mix).map(([n, w]) => `${n} ${(w * 100).toFixed(0)}%`).join(', ');
+      return `${p.index} · ${p.steps} steps · ${mix}`;
+    },
+    pickDataset() { if (this.dataset && !this.datasetOptions.includes(this.dataset)) this.dataset = ''; },
+    resetParams() { this.params[this.split] = clone(this.cfg.defaults[this.split]); },
+    spec() {
+      return {phase: this.phase, split: this.split, dataset: this.dataset || null, params: this.p};
+    },
+
+    async next(reload) {
+      this.loading = true; this.error = '';
+      const spec = this.spec();
+      try {
+        const r = await fetch('/api/next', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({spec, skip: Number(this.skip) || 0, reload}),
+        });
+        const body = await r.json();
+        if (!r.ok) {
+          const d = body.detail;
+          throw new Error(Array.isArray(d) ? d.map(x => `${x.loc.slice(1).join('.')}: ${x.msg}`).join('\n') : d);
+        }
+        this.batch = body;
+        this.loadedSpec = JSON.stringify(spec);
+      } catch (e) {
+        this.error = e.message;
+        this.loadedSpec = null; // the server dropped its loader on an error
+      } finally { this.loading = false; }
+    },
+
+    playBoth(i) {
+      const a = document.getElementById('p' + i), b = document.getElementById('t' + i);
+      document.querySelectorAll('audio').forEach(x => x.pause());
+      a.currentTime = 0; b.currentTime = 0;
+      a.onended = () => b.play();
+      a.play();
+    },
+  };
+}
+</script>
+</body>
+</html>

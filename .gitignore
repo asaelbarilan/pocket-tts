@@ -78,6 +78,7 @@ target/
 /artifacts/
 /eval_data/
 /runs/
+/hebrew_training/data_preview/mock/
 /exports/
 /logs/
 /.pytest-tmp/
