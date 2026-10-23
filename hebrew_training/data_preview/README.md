@@ -19,6 +19,12 @@ Open http://127.0.0.1:8765. Alpine.js is loaded from a CDN, nothing to build.
 - **Loader parameters**: seed, batch size, max durations, digit/niqqud probabilities, shuffle,
   fixed draws. Defaults are the config's for train and training's validation settings for eval
   (seed 0, no shuffle, fixed draws). Changing anything rebuilds the loader from its start.
+- **Rows per manifest**: the unmodified `DataLoader` reads its whole manifest into memory when
+  built (and again on each reload), which is slow and huge for millions of rows. With a row
+  count set (or `--max-rows N` as the default), each loader is given a random subset of that
+  many rows instead: picked by random byte offsets, no pass over the file, kept in order and
+  cached under `~/.cache/pocket_tts/data_preview` (`--cache-dir`). Shuffle, epochs and "skip"
+  then cover the subset. The page warns when the selected manifests are over 256 MB.
 - **Skip batches first**: draws and drops N batches, then shows the next. **Restart** rebuilds
   the loader.
 

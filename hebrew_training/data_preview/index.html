@@ -60,9 +60,12 @@
   .audio > div { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
   audio { height: 36px; max-width: 100%; }
   .meta { font-size: 12px; color: var(--muted); word-break: break-all; }
-  .pieces { direction: rtl; text-align: right; font-family: ui-monospace, monospace; font-size: 12px; }
-  .pieces span { display: inline-block; border: 1px solid var(--line); border-radius: 4px;
-                 padding: 0 4px; margin: 2px; }
+  /* Pieces are plain inline spans, no boxes or gaps, so a niqqud mark that belongs to the
+     same piece as its letter (or follows it in the next piece) is drawn on that letter as in
+     the text above; the alternating tint shows where the tokenizer cut. */
+  .pieces { direction: rtl; text-align: right; font-size: 24px; line-height: 1.8; }
+  .pieces span.even { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  .pieces span.odd { background: color-mix(in srgb, var(--warn) 25%, transparent); }
 </style>
 </head>
 <body>
@@ -117,6 +120,16 @@
             <label>batch size <input type="number" min="1" max="64" step="1" x-model.number="p.batch_size"></label>
             <label>max duration (s) <input type="number" min="0.1" step="any" x-model.number="p.max_duration_sec"></label>
             <label>max voice prompt (s) <input type="number" step="any" x-model.number="p.max_voice_prompt_sec"></label>
+            <label title="Random subset of each manifest given to the loader; 0 = the whole manifest (the loader reads all of it into memory)">rows per manifest (0 = all) <input type="number" min="0" step="1000" x-model.number="p.max_rows"></label>
+            <label x-show="p.max_rows > 0">row sample seed <input type="number" step="1" x-model.number="p.sample_seed"></label>
+          </div>
+          <div class="hint" style="margin-top:6px" x-show="bigManifest && !p.max_rows">
+            These manifests total <span x-text="fmtBytes(manifestBytes)"></span>. The loader reads a
+            whole manifest into memory before the first batch (and again on every reload): set
+            “rows per manifest” to work on a random subset.
+          </div>
+          <div class="sub" style="margin-top:6px" x-show="manifestBytes">
+            manifest size for this selection: <span x-text="fmtBytes(manifestBytes)"></span>
           </div>
           <div class="row" style="margin-top:10px">
             <label>digits: sample prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_words_sample_prob"></label>
@@ -146,7 +159,9 @@
           · <span x-text="batch?.elapsed_ms"></span> ms
           <template x-for="[name, n] in Object.entries(batch?.status.batches_drawn ?? {})" :key="name">
             <span> · <span x-text="name"></span>: <span x-text="n"></span> batches,
-              <span x-text="batch.status.rows[name]"></span> rows,
+              <span x-text="batch.status.rows[name]"></span> rows<span
+                x-show="batch.status.sampled_from_bytes[name]"> (sampled, manifest
+                <span x-text="fmtBytes(batch.status.sampled_from_bytes[name])"></span>)</span>,
               epoch <span x-text="(batch.status.epochs[name] ?? 0).toFixed(2)"></span><span
                 x-show="batch.status.unreadable_skipped[name]" class="hint">,
                 <span x-text="batch.status.unreadable_skipped[name]"></span> unreadable skipped</span></span>
@@ -180,9 +195,11 @@
             <div class="meta" style="margin:6px 0"><span x-text="s.path"></span>
               (start <span x-text="s.start"></span> s, row <span x-text="s.row_duration"></span> s)</div>
             <div class="text small" dir="rtl" x-text="s.transcript"></div>
-            <div class="pieces" dir="rtl" style="margin-top:6px">
-              <template x-for="(piece, i) in s.pieces" :key="i"><span :title="s.token_ids[i]" x-text="piece"></span></template>
+            <div class="meta" style="margin-top:6px">
+              tokenizer pieces, alternating tint = piece boundary (hover: id and code points).
+              <b x-show="markOnly(s) > 0"><span x-text="markOnly(s)"></span> piece(s) are a diacritic alone, cut from their letter.</b>
             </div>
+            <div class="pieces" dir="rtl"><template x-for="(piece, i) in s.pieces" :key="i"><span :class="i % 2 ? 'odd' : 'even'" :title="'id ' + s.token_ids[i] + ' · ' + codepoints(piece)" x-text="piece"></span></template></div>
           </details>
         </section>
       </template>
@@ -224,6 +241,20 @@ function preview() {
       const total = weights.reduce((a, b) => a + b, 0);
       return total > 0 ? names.map((n, i) => [n, weights[i] / total]) : [];
     },
+    // Size of the manifests the current selection would load.
+    get manifestBytes() {
+      if (!this.cfg) return 0;
+      const key = this.split === 'train' ? 'train_bytes' : 'valid_bytes';
+      return this.effectiveMix.reduce((sum, [n]) => sum + (this.cfg.datasets[n][key] || 0), 0);
+    },
+    get bigManifest() { return this.manifestBytes > this.cfg.large_manifest_bytes; },
+    fmtBytes(n) {
+      if (n == null) return '';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return n.toFixed(i ? 1 : 0) + ' ' + units[i];
+    },
     get dirty() { return this.loadedSpec !== JSON.stringify(this.spec()); },
 
     phaseLabel(p) {
@@ -256,6 +287,14 @@ function preview() {
         this.error = e.message;
         this.loadedSpec = null; // the server dropped its loader on an error
       } finally { this.loading = false; }
+    },
+
+    codepoints(piece) {
+      return [...piece].map(c => 'U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' ');
+    },
+    // Pieces made only of Hebrew points / cantillation marks (optionally after the ▁ word start).
+    markOnly(sample) {
+      return sample.pieces.filter(p => /^\u2581?[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]+$/.test(p)).length;
     },
 
     playBoth(i) {

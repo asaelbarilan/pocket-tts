@@ -22,6 +22,12 @@ next request; the stream then starts again from its beginning. Paths in the conf
 relative to the repo root, so the server changes to it, as training is run from there.
 
 The loaders are not thread-safe, so one request is served at a time.
+
+Big manifests: the DataLoader reads its whole manifest into memory when built, and is used
+here unchanged. For manifests of millions of rows, set the `rows` parameter (or `--max-rows`):
+each loader then gets a random subset of that many rows, cached on disk (manifest_sample.py).
+The loader's behaviour on those rows is exactly training's; what changes is that "an epoch"
+and the shuffle cover the subset, not the full manifest.
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from hebrew_training.data_preview.manifest_sample import SampledManifest, sample_manifest
 from training.args import TrainArgs, load_args
 from training.curriculum import Curriculum, CurriculumLoader, DatasetSpec, MixSchedule, Phase
 from training.dataloader import DataLoader
@@ -56,6 +63,8 @@ INDEX_HTML = Path(__file__).resolve().parent / "index.html"
 MAX_SKIP = 10_000
 PREVIEW_IO_WORKERS = 8
 SINGLE_DATASET = "default"  # name of the one dataset of a config without a curriculum
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "pocket_tts" / "data_preview"
+LARGE_MANIFEST_BYTES = 256 << 20  # the page suggests sampling rows above this
 
 
 class PreviewError(Exception):
@@ -72,6 +81,10 @@ class Params(BaseModel):
     alt_words_sample_prob: float = Field(ge=0, le=1)
     alt_word_swap_prob: float = Field(ge=0, le=1)
     nikud_word_prob: float = Field(ge=0, le=1)
+    # Preview only: the loader is given a random subset of this many rows of each manifest
+    # (0: the whole manifest, which the loader reads into memory). See manifest_sample.py.
+    max_rows: int = Field(ge=0)
+    sample_seed: int
 
 
 class Spec(BaseModel):
@@ -162,8 +175,16 @@ def single_dataset_curriculum(args: TrainArgs) -> Curriculum:
 class Session:
     """The config, the tokenizer, and the one live loader with the batch last returned."""
 
-    def __init__(self, config_path: Path, tokenizer_path: str | None):
+    def __init__(
+        self,
+        config_path: Path,
+        tokenizer_path: str | None,
+        max_rows: int = 0,
+        cache_dir: Path = DEFAULT_CACHE_DIR,
+    ):
         self.config_path = config_path
+        self.default_max_rows = max_rows
+        self.cache_dir = cache_dir
         self.args = load_args(config_path)
         self.curriculum = self.args.data.resolve_curriculum()
         self.is_curriculum = self.curriculum is not None
@@ -187,9 +208,17 @@ class Session:
         self.spec: Spec | None = None
         self.mixed: CurriculumLoader | None = None
         self.loaders: dict[str, PreviewDataLoader] = {}
+        self.sampled: dict[str, SampledManifest] = {}
         self.drawn = 0
         self.batch: LoadedBatch | None = None
         self._next_id = 0
+
+    @staticmethod
+    def _file_bytes(path: str) -> int | None:
+        try:
+            return Path(path).stat().st_size if path else None
+        except OSError:
+            return None
 
     def info(self) -> dict:
         data = self.args.data
@@ -198,6 +227,8 @@ class Session:
                 "train_jsonl": spec.train_jsonl,
                 "valid_jsonl": spec.valid_jsonl,
                 "valid_weight": spec.valid_weight,
+                "train_bytes": self._file_bytes(spec.train_jsonl),
+                "valid_bytes": self._file_bytes(spec.valid_jsonl),
             }
             for name, spec in self.curriculum.datasets.items()
         }
@@ -212,8 +243,11 @@ class Session:
             "alt_words_sample_prob": data.alt_words_sample_prob,
             "alt_word_swap_prob": data.alt_word_swap_prob,
             "nikud_word_prob": data.nikud_word_prob,
+            "max_rows": self.default_max_rows,
+            "sample_seed": 0,
         }
         return {
+            "large_manifest_bytes": LARGE_MANIFEST_BYTES,
             "config": str(self.config_path),
             "is_curriculum": self.is_curriculum,
             "datasets": datasets,
@@ -240,6 +274,7 @@ class Session:
             self.mixed.close()
         self.mixed = None
         self.loaders = {}
+        self.sampled = {}
         self.spec = None
         self.drawn = 0
 
@@ -266,8 +301,14 @@ class Session:
         sample_rate, frame_rate = self.sample_rate, self.frame_rate
 
         def open_stream(name: str):
+            manifest = getattr(datasets[name], attr)
+            if p.max_rows:
+                self.sampled[name] = sample_manifest(
+                    manifest, p.max_rows, p.sample_seed, self.cache_dir
+                )
+                manifest = str(self.sampled[name].path)
             loader = PreviewDataLoader(
-                getattr(datasets[name], attr),
+                manifest,
                 self.sp.encode,
                 p.batch_size,
                 sample_rate,
@@ -354,6 +395,7 @@ class Session:
             "batches_drawn": dict(self.mixed.batches_drawn),
             "epochs": self.mixed.epochs(),
             "rows": {name: len(loader.entries) for name, loader in self.loaders.items()},
+            "sampled_from_bytes": {n: s.source_bytes for n, s in self.sampled.items()},
             "unreadable_skipped": {name: l._failures for name, l in self.loaders.items()},
         }
 
@@ -425,6 +467,20 @@ def main() -> None:
         help="sentencepiece model to use instead of the config's "
         "model_overrides / model_config tokenizer_path (e.g. when it is not built on this machine)",
     )
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=0,
+        help="default for the page's `rows` parameter: give each loader a random subset of this "
+        "many rows per manifest instead of the whole file (0: whole). The DataLoader reads its "
+        "entire manifest into memory, so set this for manifests of millions of rows",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=DEFAULT_CACHE_DIR,
+        help="where the sampled manifests are kept (default: %(default)s)",
+    )
     cli = parser.parse_args()
 
     logging.basicConfig(
@@ -433,7 +489,7 @@ def main() -> None:
     config_path = cli.config.resolve()
     tokenizer = str(Path(cli.tokenizer).resolve()) if cli.tokenizer else None
     os.chdir(REPO_ROOT)  # the config's relative paths are relative to the repo root
-    session = Session(config_path, tokenizer)
+    session = Session(config_path, tokenizer, cli.max_rows, cli.cache_dir.expanduser().resolve())
     logger.info(
         "config %s: %s, tokenizer %s, %d Hz",
         config_path,
