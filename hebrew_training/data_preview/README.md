@@ -39,3 +39,28 @@ uv run python -m hebrew_training.data_preview.server hebrew_training/data_previe
 
 `mock/` (git-ignored) holds a small Hebrew + English manifest set pointing at one wav, a
 two-phase `curriculum.yaml` and a plain `single.yaml`.
+
+## Static export to S3
+
+A fixed set of batches as a static site (no server, no parameters to edit): `index.html` with
+Prev / Next (and ← → keys, `#3` in the URL opens the third batch), `style.css`, and one audio
+file per prompt and target. Drawn by the same loader as the live page.
+
+```bash
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # AWS_SESSION_TOKEN, AWS_DEFAULT_REGION if needed
+uv run --with boto3 python -m hebrew_training.data_preview.export_s3 \
+    training/configs/finetune_hebrew_curriculum.yaml \
+    --s3 s3://my-bucket/previews/hebrew-phase1 --phase 1 --batches 20
+```
+
+- `--split train|eval`, `--dataset NAME`, `--skip N`, and every loader parameter
+  (`--seed`, `--batch-size`, `--nikud-word-prob`, `--max-rows`, ...; defaults are the config's
+  for that split). `--audio-format flac` roughly halves the size (lossless).
+- Credentials are read from the environment and checked before any batch is built. boto3 is
+  not a project dependency: `uv run --with boto3` supplies it.
+- No ACLs are set. Make the prefix readable through the bucket policy, static website hosting or
+  CloudFront; the page itself only needs Range requests for audio, which S3 supports.
+- `index.html` is uploaded last, with `Cache-Control: no-cache`. Files of an earlier export
+  under the same prefix are overwritten, not deleted.
+- `--out-dir DIR` keeps a local copy (alone, without `--s3`, it needs no credentials);
+  `--endpoint-url` targets S3-compatible storage.

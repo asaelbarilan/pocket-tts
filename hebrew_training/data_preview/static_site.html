@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dataloader preview (static export)</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<link rel="stylesheet" href="style.css">
+<!-- Template of the page export_s3.py writes as index.html: __DATA__ below is replaced by the
+     exported batches. The sample cards mirror index.html (the live server's page). -->
+<script id="preview-data" type="application/json">__DATA__</script>
+</head>
+<body>
+<main x-data="viewer()" x-init="init()" x-cloak>
+  <h1>Dataloader preview <span class="sub">static export</span></h1>
+  <div class="sub">
+    <span x-text="site.config"></span> ·
+    <span x-text="site.sample_rate + ' Hz'"></span> ·
+    tokenizer <span x-text="site.tokenizer"></span> ·
+    exported <span x-text="site.generated"></span>
+  </div>
+
+  <section class="card">
+    <div>
+      <b x-text="site.split === 'train' ? 'train' : 'eval'"></b> set · phase <b x-text="site.phase"></b>
+      <span class="sub" x-show="site.dataset"> · dataset only: <span x-text="site.dataset"></span></span>
+      <span class="sub" x-show="site.skip"> · first <span x-text="site.skip"></span> batches skipped</span>
+    </div>
+    <div style="margin-top:6px">
+      <span class="sub">drawn from:</span>
+      <template x-for="[name, share] in Object.entries(site.mix)" :key="name">
+        <span class="chip" x-text="name + ' ' + (share * 100).toFixed(1).replace(/\.0$/, '') + '%'"></span>
+      </template>
+    </div>
+    <details style="margin-top:8px">
+      <summary>Loader parameters</summary>
+      <div class="meta" style="margin-top:6px">
+        <template x-for="[key, value] in Object.entries(site.params)" :key="key">
+          <span class="chip" x-text="key + ' = ' + value"></span>
+        </template>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <button :disabled="index === 0" @click="go(index - 1)">◀ Prev</button>
+      <button class="primary" :disabled="index === site.batches.length - 1" @click="go(index + 1)">Next ▶</button>
+      <label>Batch
+        <select :value="index" @change="go(+$event.target.value)">
+          <template x-for="(b, i) in site.batches" :key="i">
+            <option :value="i" :selected="i === index" x-text="(i + 1) + ' / ' + site.batches.length + ' · ' + b.dataset"></option>
+          </template>
+        </select>
+      </label>
+      <span class="sub">← → keys also work</span>
+    </div>
+    <div class="status">
+      Batch <span x-text="index + 1"></span> of <span x-text="site.batches.length"></span>
+      · from <b x-text="batch.dataset"></b>
+      · position #<span x-text="batch.number"></span> in the loader stream
+    </div>
+  </section>
+
+  <template x-for="s in batch.samples" :key="index + ':' + s.index">
+    <section class="card sample">
+      <h3>
+        #<span x-text="s.index + 1"></span>
+        <span class="chip" x-text="batch.dataset"></span>
+        <span class="chip" x-text="s.token_ids.length + ' tokens'"></span>
+        <span class="chip aug" x-show="s.augmented">digits/niqqud draw</span>
+        <span class="chip" x-show="!s.has_words">no alignment</span>
+        <span class="chip" x-show="s.has_alt_words">has digits</span>
+        <span class="chip" x-show="s.has_nikud">has niqqud</span>
+      </h3>
+      <div class="text" dir="rtl" x-text="s.text"></div>
+      <div class="audio">
+        <div><span>prompt · <span x-text="s.prompt_sec.toFixed(2)"></span> s</span>
+          <audio controls preload="metadata" :id="'p' + s.index" :src="s.prompt_file"></audio></div>
+        <div><span>target · <span x-text="s.target_sec.toFixed(2)"></span> s</span>
+          <audio controls preload="metadata" :id="'t' + s.index" :src="s.target_file"></audio></div>
+        <button @click="playBoth(s.index)">▶ prompt, then target</button>
+      </div>
+      <details>
+        <summary class="meta">source row &amp; tokens</summary>
+        <div class="meta" style="margin:6px 0"><span x-text="s.path"></span>
+          (start <span x-text="s.start"></span> s, row <span x-text="s.row_duration"></span> s)</div>
+        <div class="text small" dir="rtl" x-text="s.transcript"></div>
+        <div class="meta" style="margin-top:6px">
+          tokenizer pieces, alternating tint = piece boundary (hover: id and code points).
+          <b x-show="markOnly(s) > 0"><span x-text="markOnly(s)"></span> piece(s) are a diacritic alone, cut from their letter.</b>
+        </div>
+        <div class="pieces" dir="rtl"><template x-for="(piece, i) in s.pieces" :key="i"><span :class="i % 2 ? 'odd' : 'even'" :title="'id ' + s.token_ids[i] + ' · ' + codepoints(piece)" x-text="piece"></span></template></div>
+      </details>
+    </section>
+  </template>
+</main>
+
+<script>
+function viewer() {
+  const site = JSON.parse(document.getElementById('preview-data').textContent);
+  return {
+    site, index: 0,
+    get batch() { return this.site.batches[this.index]; },
+
+    init() {
+      this.fromHash();
+      window.addEventListener('hashchange', () => this.fromHash());
+      window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.altKey || e.metaKey || e.ctrlKey) return;
+        if (e.key === 'ArrowLeft') this.go(this.index - 1);
+        if (e.key === 'ArrowRight') this.go(this.index + 1);
+      });
+    },
+    // The batch is in the URL (#3 is the third), so a link points at one.
+    fromHash() {
+      const n = parseInt(location.hash.slice(1), 10);
+      this.index = Number.isInteger(n) ? Math.min(Math.max(n - 1, 0), this.site.batches.length - 1) : 0;
+      this.stopAudio();
+    },
+    go(i) {
+      if (i < 0 || i >= this.site.batches.length || i === this.index) return;
+      location.hash = '#' + (i + 1); // fromHash() does the rest
+      window.scrollTo({top: 0});
+    },
+    stopAudio() { document.querySelectorAll('audio').forEach(a => a.pause()); },
+
+    // The next three are the same as in index.html.
+    codepoints(piece) {
+      return [...piece].map(c => 'U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' ');
+    },
+    markOnly(sample) {
+      return sample.pieces.filter(p => /^\u2581?[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]+$/.test(p)).length;
+    },
+    playBoth(i) {
+      const a = document.getElementById('p' + i), b = document.getElementById('t' + i);
+      document.querySelectorAll('audio').forEach(x => x.pause());
+      a.currentTime = 0; b.currentTime = 0;
+      a.onended = () => b.play();
+      a.play();
+    },
+  };
+}
+</script>
+</body>
+</html>

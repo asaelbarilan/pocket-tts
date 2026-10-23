@@ -60,6 +60,7 @@ logger = logging.getLogger("data_preview")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INDEX_HTML = Path(__file__).resolve().parent / "index.html"
+STYLE_CSS = Path(__file__).resolve().parent / "style.css"  # shared with the static export
 MAX_SKIP = 10_000
 PREVIEW_IO_WORKERS = 8
 SINGLE_DATASET = "default"  # name of the one dataset of a config without a curriculum
@@ -209,6 +210,7 @@ class Session:
         self.mixed: CurriculumLoader | None = None
         self.loaders: dict[str, PreviewDataLoader] = {}
         self.sampled: dict[str, SampledManifest] = {}
+        self.mix: dict[str, float] = {}  # the datasets of the live loader, normalized
         self.drawn = 0
         self.batch: LoadedBatch | None = None
         self._next_id = 0
@@ -295,6 +297,7 @@ class Session:
             raise PreviewError(f"no {spec.split} manifest for the datasets of phase {spec.phase}")
         total = sum(mix.values())
         mix = {name: w / total for name, w in mix.items()}
+        self.mix = mix
         sub = Curriculum({name: datasets[name] for name in mix}, (Phase(1, mix),))
 
         p = spec.params
@@ -427,6 +430,10 @@ def create_app(session: Session) -> FastAPI:
     @app.get("/")
     def index():
         return FileResponse(INDEX_HTML, headers={"Cache-Control": "no-store"})
+
+    @app.get("/style.css")
+    def style():
+        return FileResponse(STYLE_CSS, media_type="text/css", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/config")
     def config():
