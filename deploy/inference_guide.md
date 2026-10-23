@@ -79,7 +79,12 @@ if wave is not None:                             # float32 tensor [samples] at t
    at decode time, so `TrainArgs()` defaults are fine.
 3. **Tokenize.** `flow_lm.conditioner.tokenizer.sp.encode(text)` gives token ids; make them a
    `torch.long` tensor. Pass the text as is: no normalization, no number expansion and no
-   chunking. The training evals do exactly this. Plain text and text with nikud both work.
+   chunking, with one exception: first run it through
+   `pocket_tts.utils.text_fold.fold_characters`. Training text had curly quotes (`’ “ ”`),
+   Unicode dashes (`– —`), the Hebrew geresh `׳` and invisible marks folded to plain
+   characters, so without the fold they reach the model as byte tokens it never saw.
+   Everything else (digits, abbreviations, punctuation) goes as written: the model was trained
+   on both forms. Plain text and text with nikud both work.
 4. **Encode the voice prompt.**
    - Read the audio (`pocket_tts.data.audio.audio_read`) and keep the first `prompt_seconds` (5).
    - Resample to 24 kHz mono (`pocket_tts.data.audio_utils.convert_audio(audio, sr, 24000, 1)`).

@@ -1,4 +1,4 @@
-"""Per-sample text variants for training: digits for spelled-out numbers, vocalized words.
+"""Per-sample text variants for training: the corpus's own spelling, vocalized words.
 
 Pure Python on purpose: no audio, torch or pocket_tts import, so the logic (and its tests)
 loads anywhere. `training/dataloader.py` calls `render_text` once per sample, after it has
@@ -7,14 +7,16 @@ chosen its cut.
 Manifest rows can carry two optional keys next to `words` (see hebrew_training/NIQQUD.md and
 the docstring of hebrew_training/build_official_manifest.py):
 
-    "alt_words": {"digits": [{"from": i, "to": j, "replace": ["14"]}, ...]}
+    "alt_words": {"norms": [{"from": i, "to": j, "replace": ["14"], "k": "n"}, ...]}
     "nikud": ["word with marks", ...]        # one per entry of `words`
 
 `words` is always the plain, spoken text. The two features only ever change what is
 trained on, never the audio:
 
-* Alternate words. `words[from..to]` is a number the normalizer spelled out and `replace` is
-  what the corpus wrote. With probability `alt_words_sample_prob` a sample gets alternates at
+* Alternate words. `words[from..to]` is something the normalizer rewrote (a spelled-out number,
+  an expanded abbreviation, a spelled Latin letter, a split hyphen, a collapsed `...`, a
+  stripped quote, ...) and `replace` is what the corpus wrote. `k`, a one-letter tag of the
+  kind of rewrite, is for tooling and is not read here. With probability `alt_words_sample_prob` a sample gets alternates at
   all; then each span is swapped with probability `alt_word_swap_prob`, and if none was, one
   random span is swapped, so a chosen sample always has at least one swap. Only spans that
   start at or after the cut are candidates: a span the cut falls inside is left spoken (its
@@ -23,7 +25,7 @@ trained on, never the audio:
   `nikud_word_prob`. No row-level gate and no at-least-one rule.
 
 The nikud draw comes first and the swap works on those strings, so a swapped-in span is always
-plain digits.
+the corpus's own plain tokens.
 
 REPRODUCIBILITY. Every draw comes from `random.Random` instances seeded from one integer per
 sample (`text_seed`), never from a shared generator, so the result does not depend on which
@@ -45,7 +47,7 @@ DEFAULT_ALT_WORD_SWAP_PROB = 0.60
 DEFAULT_NIKUD_WORD_PROB = 0.10
 
 # The only label of `alt_words` that exists. Others are ignored, not guessed at.
-DIGITS = "digits"
+NORMS = "norms"
 
 
 def check_probability(name: str, value: float) -> float:
@@ -60,7 +62,7 @@ def check_probability(name: str, value: float) -> float:
 
 @dataclass(frozen=True)
 class TextAugment:
-    # P(a sample with `alt_words` gets any alternate at all). 0 disables digits.
+    # P(a sample with `alt_words` gets any alternate at all). 0 disables them.
     alt_words_sample_prob: float = DEFAULT_ALT_WORDS_SAMPLE_PROB
     # P(a span is swapped | the sample was chosen). The sample is forced to swap one span if
     # none was drawn, so 0 here means exactly one span per chosen sample, not "off".
@@ -180,7 +182,7 @@ def render_text(
         if nikud and aug.nikud_word_prob > 0:
             rng = random.Random(f"{text_seed}:nikud")
             forms = vocalized_forms(words, nikud, first_word, aug.nikud_word_prob, rng)
-        spans = (alt_words or {}).get(DIGITS)
+        spans = (alt_words or {}).get(NORMS)
     if spans and aug.alt_words_sample_prob > 0:
         _check_spans(spans, len(words))
         rng = random.Random(f"{text_seed}:alt")

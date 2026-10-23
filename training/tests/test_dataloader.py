@@ -303,7 +303,7 @@ def test_training_draws_differ_between_visits_but_replay_with_the_seed(tmp_path,
 
 def test_cut_text_gets_nikud_and_digits_after_the_cut_only(tmp_path, silent_audio):
     row = _fixture_rows()[0]
-    words, nikud, spans = _words(row), row["nikud"], row["alt_words"]["digits"]
+    words, nikud, spans = _words(row), row["nikud"], row["alt_words"]["norms"]
     cut = 8  # span 5..6 is before the cut; spans 10..12, 14..15 and 20..21 survive
     texts = []
     loader = _text_loader(
@@ -348,7 +348,7 @@ def test_no_cut_fallback_uses_the_words_for_rows_with_variants(tmp_path, silent_
         "path": "x", "duration": 1.5, "transcript": "TRANSCRIPT NOT WORDS",
         "words": [{"word": w, "start": 0.4 * i, "end": 0.4 * i + 0.3}
                   for i, w in enumerate(["לפני", "ארבעה", "עשר", "ימים"])],
-        "alt_words": {"digits": [{"from": 1, "to": 2, "replace": ["14"]}]},
+        "alt_words": {"norms": [{"from": 1, "to": 2, "replace": ["14"]}]},
         "nikud": ["לִפְנֵי", "אַרְבָּעָה", "עָשָׂר", "יָמִים"],
     }  # fmt: skip
     old = _plain(short)

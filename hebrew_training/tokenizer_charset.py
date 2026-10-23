@@ -40,6 +40,10 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 
+# The conversions of hebrew_tts_normalizer._CHAR_CONVERSION_DICT. Defined once, in the package
+# inference ships, so the tokenizer's fold and the model's input fold cannot drift apart.
+from pocket_tts.utils.text_fold import FOLD
+
 CATEGORIES = ("latin", "hebrew", "niqqud", "cantillation", "digits", "punctuation")
 ON_FOREIGN = ("drop-line", "strip")
 
@@ -59,14 +63,6 @@ PUNCTUATION = frozenset(
     + "\u2026"  # ellipsis
     + "\u20aa\u20ac\u00a3\u00a5\u00b0"  # ₪ € £ ¥ °
 )
-
-# Same conversions as hebrew_tts_normalizer._CHAR_CONVERSION_DICT.
-FOLD = {
-    **dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u05be", "-"),
-    **dict.fromkeys("\u00ab\u00bb\u201c\u201d\u201e\u201f\u05f4", '"'),
-    **dict.fromkeys("\u2018\u2019\u201b\u05f3", "'"),
-    "\\": "",
-}
 
 _REMOVED_RANGES = (
     (0x05C4, 0x05C6),  # upper/lower dot and nun hafukha: not niqqud, not cantillation

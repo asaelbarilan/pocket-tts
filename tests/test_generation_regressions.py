@@ -13,10 +13,16 @@ def test_generate_audio_stream_uses_prepared_chunk_text(monkeypatch):
     calls = []
 
     def fake_split_into_best_sentences(
-        tokenizer, text_to_generate, max_tokens, pad_with_spaces_for_short_inputs, remove_semicolons
+        tokenizer,
+        text_to_generate,
+        max_tokens,
+        pad_with_spaces_for_short_inputs,
+        remove_semicolons,
+        fold_text,
     ):
         assert text_to_generate == "hi"
         assert pad_with_spaces_for_short_inputs is True
+        assert fold_text is True
         return ["hi"]
 
     def fake_generate_audio_stream_short_text(**kwargs):
@@ -31,6 +37,7 @@ def test_generate_audio_stream_uses_prepared_chunk_text(monkeypatch):
         model_recommended_frames_after_eos=None,
         pad_with_spaces_for_short_inputs=True,
         remove_semicolons=False,
+        fold_text=True,
         _generate_audio_stream_short_text=fake_generate_audio_stream_short_text,
     )
 

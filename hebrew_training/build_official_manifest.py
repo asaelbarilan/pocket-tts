@@ -15,16 +15,28 @@ Row schema (see `get_entry` in training/dataloader.py):
 window for the voice prompt. Word times are RELATIVE to `start`, because align_data.py
 keys on (path, start) and aligns inside that window.
 
-Optional, written only for rows where --normalize-text spelled out a number:
+Optional, written only for rows where --normalize-text changed a word:
 
-    "alt_words": {"digits": [{"from": 1, "to": 2, "replace": ["ב-14:30"]}]}
+    "alt_words": {"norms": [{"from": 1, "to": 2, "replace": ["ב-14:30"], "k": "n"}]}
 
-Each label (only "digits" so far) maps to spans of `words`, `from`..`to` inclusive, that
+Each label (only "norms" so far) maps to spans of `words`, `from`..`to` inclusive, that
 can be swapped for the `replace` words -- the form the corpus wrote before normalization.
+EVERY change the normalizer makes gets a span, not just numbers: a spelled-out number, an
+expanded abbreviation, a spelled Latin letter, a split hyphen, a collapsed `...`, a stripped
+quote or bracket, a folded curly apostrophe, a deleted emoji. Words it left alone have none.
 Alternates carry no timings; a loader derives them from the words they replace, or swaps
 after it has chosen its cut (see `swap_alternates`). Loaders that do not know the key
 ignore it. The indices are only valid for the exact `words` list of the row, so any step
 that rewrites `words` must keep it one-to-one or drop `alt_words`.
+
+`k` is an optional one-letter tag for the group of normalizer rules the span came from, kept
+to one character so manifests stay small. The loader does not read it; it is for counting
+(`migrate_alt_words` prints a census) and for weighting groups later. See NORM_KINDS.
+
+A word that produces no output of its own (a lone quote, an emoji, a removed bracket, the
+unit a number swallowed, a lone `.` glued onto the word before) has nothing to anchor a span
+to, so it is absorbed by the span of the word before it, whose `replace` then lists both.
+Words at the very start of a row with no word before them get no span.
 
 Writes `train.jsonl` and `valid.jsonl`. The optional later stages add to these rows and name
 their output after themselves (see manifest_files.py): `diacritize_official_manifest` adds a
@@ -82,6 +94,7 @@ import time
 from array import array
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from dataclasses import dataclass
 from pathlib import Path
 
 from hebrew_training.manifest_files import BUILT
@@ -91,8 +104,29 @@ from hebrew_training.official_manifest_common import (
     format_seconds,
     stable_bucket,
 )
+from pocket_tts.utils.text_fold import FOLD, NORMALIZER_CHAR_MAP
 
 _HEBREW = re.compile(r"[֐-׿]")
+
+# The label of `alt_words` that holds every normalizer replacement.
+NORMS = "norms"
+# `k` tags, one letter each: the group of normalizer rules a span came from. `_norm_kind`
+# decides from what the corpus wrote and what the normalizer made of it, in this priority.
+NORM_KINDS = {
+    "n": "number: digits, times, dates, ranges, units, identifiers",
+    "l": "Latin: a letter or acronym spelled out in Hebrew, `ה-API`",
+    "a": 'abbreviation or respelling: ד"ר, ת"א, the replacements table',
+    "h": "hyphen or dash that split a word in two",
+    "x": "vanished: an emoji, a lone quote or bracket, a deleted [note]",
+    "q": "quotes or brackets around a word that were stripped",
+    "p": "punctuation: `...` to `.`, `;` and `:` to `,`, a lone `.` glued on",
+    "c": "character fold: curly quotes, Unicode dashes, invisible marks",
+    "o": "anything else",
+}
+_DASHES = frozenset({"-"} | {char for char, plain in FOLD.items() if plain == "-"})
+_QUOTES_AND_BRACKETS = frozenset('"“”„‟«»()[]{}')
+_WRAPPED_TOKEN = re.compile(r"^[\"“”„‟«»(\[{]|[\"“”„‟«»)\]}]+[.,;:!?…]*$")
+_SENTENCE_PUNCTUATION = ".,;:!?…"
 
 # Resolved from this file, not the working directory: the earlier relative default broke
 # whenever the command was run from anywhere but the repo root. Assumes the two repos are
@@ -107,9 +141,12 @@ PROGRESS_SECONDS = 10.0
 PROGRESS_RECORDINGS = 10
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
+    """The builder's options. `migrate_alt_words` reuses them (`add_help=False`, as a parent
+    parser) so it can be given exactly the flags the manifest was built with."""
     parser = argparse.ArgumentParser(
-        description="Build Kyutai-format training manifests from an aligned Hebrew corpus."
+        description="Build Kyutai-format training manifests from an aligned Hebrew corpus.",
+        add_help=add_help,
     )
     parser.add_argument(
         "--corpus", type=Path, required=True, help="Root holding one directory per recording."
@@ -222,6 +259,11 @@ def parse_args() -> argparse.Namespace:
         default=200.0,
         help="Hard limit on JSON payload stored in the temporary spool (default: 200 GiB).",
     )
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    parser = build_parser()
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be at least 1")
@@ -307,37 +349,79 @@ def normalize_words(
     return normalize_words_with_alternates(words, normalize, before, after)[0]
 
 
+@dataclass
+class _Unit:
+    """The output words one input word produced, and the corpus words they stand for."""
+
+    head: int  # index of the input word that produced it
+    first: int  # its first and last words in the normalized list
+    last: int
+    raw: list[str]  # the corpus tokens, extended by the silent words that follow it
+    vanished: bool = False  # a word with no output of its own was absorbed
+    valid: bool = True
+
+
 def normalize_words_with_alternates(
     words: list[dict], normalize, before: Sequence[str] = (), after: Sequence[str] = ()
 ) -> tuple[list[dict], dict | None]:
-    """normalize_words, plus the written-with-digits form of every number it spelled out.
+    """normalize_words, plus the form the corpus wrote for every word the normalizer changed.
 
-    Returns `(words, alt_words)`. `alt_words` is None when nothing was spelled out, else
-    `{"digits": [{"from": i, "to": j, "replace": [...]}]}`: `words[i..j]` (inclusive) is
-    what the digits form `replace` was turned into. The indices are into the returned
-    `words`, so they stay valid only for that exact list.
+    Returns `(words, alt_words)`. `alt_words` is None when nothing changed, else
+    `{"norms": [{"from": i, "to": j, "replace": [...], "k": "n"}]}`: `words[i..j]` (inclusive)
+    is what the corpus words `replace` were turned into. The indices are into the returned
+    `words`, so they stay valid only for that exact list. `k` is a one-letter tag from
+    NORM_KINDS.
 
-    A span is made for an input word that contains a digit and was changed. `replace` holds
-    the source words as written, wrapper quotes and trailing punctuation included, so the
-    swapped-in text is what the corpus really said. Cases that need care:
+    There is one span per input word whose output differs from what was written, so a
+    spelled-out number, an expanded abbreviation, a split `ה-API`, a `...` collapsed to `.` and
+    a curly apostrophe all get one, and a word left alone gets none. `replace` holds the source
+    words as written, wrapper quotes and trailing punctuation included, so the swapped-in text
+    is what the corpus really said. Cases that need care:
 
-    - a unit spoken with its number (`2.5 kg`) is part of one span; the normalizer reports
-      it as consumed, otherwise it would look like a dropped word. When the unit falls
-      outside `words` (in the next row's context) the span is not emitted, because swapping
-      it back would lose the unit;
-    - a lone punctuation word glued onto the end of a span is appended to `replace` as well;
-    - a word that vanished (`[5]`), came out unchanged, or whose first output piece was glued
-      onto the previous word has nothing to replace and gets no span.
+    - a unit spoken with its number (`2.5 kg`) is part of one span; the normalizer reports it as
+      consumed, otherwise it would look like a dropped word. When the unit falls outside
+      `words` (in the next row's context), or another spoken word sits between the two, the
+      span is not emitted, because swapping it back would lose the unit;
+    - a word with no output of its own (a lone `"`, an emoji, a deleted `[note]`) or one whose
+      whole output was glued onto the word before (a lone `.`) is appended to the span of that
+      word, which is then a span even if the word itself was unchanged;
+    - a word whose first output piece was glued onto the word before but that says more
+      (`,שלום`) makes a span of its own, and the word before gets one too, since its output
+      changed;
+    - silent words before the first spoken word of the row have no word to attach to and get
+      no span.
     """
     offset = len(before)
     results = normalize([*before, *(word["word"] for word in words), *after])
     results = results[offset : offset + len(words)]
     source = [clean(word["word"]) for word in words]
+    # `.consumed` counts from the first context word; units[...] below count from the row's.
+    consumed_by = {
+        later - offset: head for head, result in enumerate(results) for later in result.consumed
+    }
+    outside = {
+        head
+        for head, result in enumerate(results)
+        if any(later - offset >= len(words) for later in result.consumed)
+    }
     out: list[dict] = []
-    spans: list[dict] = []
+    units: list[_Unit] = []
+    by_head: dict[int, _Unit] = {}
+    anchor: _Unit | None = None
     for index, (word, result) in enumerate(zip(words, results)):
         parts = clean(result.text).split()
+        raw = source[index].split()
         if not parts:
+            if anchor is None:
+                continue
+            head = consumed_by.get(index)
+            if head is not None and head != anchor.head:
+                # A spoken word sits between a number and the unit it swallowed.
+                if head in by_head:
+                    by_head[head].valid = False
+                continue
+            anchor.raw.extend(raw)
+            anchor.vanished = anchor.vanished or head is None
             continue
         if len(parts) == 1:
             pieces = [{**word, "word": parts[0]}]
@@ -348,48 +432,72 @@ def normalize_words_with_alternates(
                 {"word": part, "start": start + n * step, "end": start + (n + 1) * step}
                 for n, part in enumerate(parts)
             ]
-        glued_first = bool(out) and pieces[0]["word"][0] in _GLUED_PUNCTUATION
-        if glued_first:
+        if out and pieces[0]["word"][0] in _GLUED_PUNCTUATION:
             glued = pieces.pop(0)
             out[-1] = {**out[-1], "word": out[-1]["word"] + glued["word"], "end": glued["end"]}
-            if spans and spans[-1]["to"] == len(out) - 1:
-                spans[-1]["replace"][-1] += glued["word"]
-        span = None
-        if pieces and not glued_first:
-            span = _digits_span(source, results, offset, index, parts, len(out), len(pieces))
-        if span is not None:
-            spans.append(span)
+            if not pieces:
+                if anchor is not None:
+                    anchor.raw.extend(raw)
+                continue
+        unit = _Unit(
+            index, len(out), len(out) + len(pieces) - 1, list(raw), valid=index not in outside
+        )
+        units.append(unit)
+        by_head[index] = unit
+        anchor = unit
         out.extend(pieces)
-    return out, ({"digits": spans} if spans else None)
+
+    spans = []
+    for unit in units:
+        if not unit.valid or not unit.raw:
+            continue
+        got = [piece["word"] for piece in out[unit.first : unit.last + 1]]
+        if got == unit.raw:
+            continue
+        spans.append(
+            {
+                "from": unit.first,
+                "to": unit.last,
+                "replace": unit.raw,
+                "k": _norm_kind(unit.raw, got, unit.vanished),
+            }
+        )
+    return out, ({NORMS: spans} if spans else None)
 
 
-def _digits_span(
-    source: list[str],
-    results: list,
-    offset: int,
-    index: int,
-    parts: list[str],
-    first: int,
-    count: int,
-) -> dict | None:
-    """The span for `source[index]` if it is a number the normalizer spelled out.
+def _letters(text: str) -> str:
+    return "".join(char for char in text if char.isalpha())
 
-    `offset` is how many context words precede the row in the list the normalizer saw: its
-    `consumed` indices count from there, `source` and `results` from the row's first word.
-    """
-    if not any(character.isdigit() for character in source[index]):
-        return None
-    last = max([index, *(consumed - offset for consumed in results[index].consumed)])
-    if last >= len(source):
-        return None
-    # Words between the number and what it swallowed must be silent, or they would need a
-    # span of their own and the two would overlap.
-    if any(clean(results[between].text) for between in range(index + 1, last + 1)):
-        return None
-    replace = [token for word in source[index : last + 1] for token in word.split()]
-    if not replace or replace == parts:
-        return None
-    return {"from": first, "to": first + count - 1, "replace": replace}
+
+def _norm_kind(raw: list[str], got: list[str], vanished: bool) -> str:
+    """The NORM_KINDS tag for a span: what the normalizer did to `raw` to make `got`.
+
+    A heuristic read off the two forms, in priority order, since one span can be several
+    things at once (`ב-14:30` is a number and a hyphen; it is a number)."""
+    before, after = " ".join(raw), " ".join(got)
+    if vanished:
+        return "x"
+    if any(char.isdigit() for char in before):
+        return "n"
+    if _letters(before) != _letters(after):
+        return "l" if any(char.isascii() and char.isalpha() for char in before) else "a"
+    if sum(char in _DASHES for char in before) > sum(char in _DASHES for char in after):
+        return "h"
+    if "".join(raw) == "".join(got):
+        return "p"  # only the spacing changed: a lone `.` glued onto the word before
+    if any(_WRAPPED_TOKEN.search(token) for token in raw) and sum(
+        char in _QUOTES_AND_BRACKETS for char in before
+    ) > sum(char in _QUOTES_AND_BRACKETS for char in after):
+        return "q"
+    if [c for c in before if c in _SENTENCE_PUNCTUATION] != [
+        c for c in after if c in _SENTENCE_PUNCTUATION
+    ]:
+        return "p"
+    if any(char in NORMALIZER_CHAR_MAP for char in before):
+        return "c"
+    if before.count("'") + before.count('"') != after.count("'") + after.count('"'):
+        return "a"  # a geresh or gershayim added or dropped: the replacements table
+    return "o"
 
 
 def validate_alt_words(alt_words: dict, word_count: int) -> None:
@@ -411,6 +519,12 @@ def validate_alt_words(alt_words: dict, word_count: int) -> None:
             ):
                 raise ValueError(
                     f"alt_words[{label!r}] span {first}..{last} has a bad replace {replace!r}"
+                )
+            tag = span.get("k")
+            if tag is not None and not (isinstance(tag, str) and len(tag) == 1):
+                raise ValueError(
+                    f"alt_words[{label!r}] span {first}..{last} has a bad tag {tag!r}; "
+                    "it must be one character"
                 )
             previous_to = last
 

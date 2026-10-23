@@ -7,8 +7,8 @@ ranks by line index.
 
 Rows with `words` are cut at a random word boundary and trained on the words after the cut
 (`words` IS the text; `transcript` is only used when no cut exists). Two optional row keys vary
-that text per sample, see training/text_augment.py: `alt_words` (spelled-out numbers swapped
-for the digits the corpus wrote) and `nikud` (a vocalized form of each word). Rows without
+that text per sample, see training/text_augment.py: `alt_words` (rewritten words swapped back
+for what the corpus wrote: digits, abbreviations, punctuation, ...) and `nikud` (a vocalized form of each word). Rows without
 them behave exactly as before and consume no random numbers.
 """
 
@@ -49,7 +49,8 @@ class Entry:
     transcript: str
     words: list | None = None  # [{"word", "start", "end"}] from training.scripts.align_data
     start: float = 0.0  # offset of the utterance inside the audio file (long recordings)
-    # {"digits": [{"from", "to", "replace"}]}: spans of `words` that can be swapped for digits
+    # {"norms": [{"from", "to", "replace", "k"}]}: spans of `words` that can be swapped for the
+    # corpus's own spelling (`k` is a one-letter tag the loader ignores)
     alt_words: dict | None = None
     nikud: list[str] | None = None  # one vocalized string per entry of `words`
     # Seed of this sample's alt_words/nikud draws; None when the row has neither key or both

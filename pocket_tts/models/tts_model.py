@@ -86,6 +86,7 @@ class TTSModel(nn.Module):
         pad_with_spaces_for_short_inputs: bool = False,
         model_recommended_frames_after_eos: int | None = None,
         remove_semicolons: bool = False,
+        fold_text: bool = False,
     ):
         super().__init__()
         self.flow_lm = flow_lm
@@ -99,6 +100,7 @@ class TTSModel(nn.Module):
         self.pad_with_spaces_for_short_inputs: bool = pad_with_spaces_for_short_inputs
         self.model_recommended_frames_after_eos = model_recommended_frames_after_eos
         self.remove_semicolons = remove_semicolons
+        self.fold_text = fold_text
 
     @property
     def device(self) -> torch.device:
@@ -134,6 +136,7 @@ class TTSModel(nn.Module):
             pad_with_spaces_for_short_inputs=config.pad_with_spaces_for_short_inputs,
             model_recommended_frames_after_eos=config.model_recommended_frames_after_eos,
             remove_semicolons=config.remove_semicolons,
+            fold_text=config.fold_text,
         )
         return tts_model
 
@@ -655,11 +658,12 @@ class TTSModel(nn.Module):
             max_tokens,
             self.pad_with_spaces_for_short_inputs,
             remove_semicolons=self.remove_semicolons,
+            fold_text=self.fold_text,
         )
 
         for chunk in chunks:
             text_to_generate, frames_after_eos_guess = prepare_text_prompt(
-                chunk, self.pad_with_spaces_for_short_inputs, self.remove_semicolons
+                chunk, self.pad_with_spaces_for_short_inputs, self.remove_semicolons, self.fold_text
             )
             frames_after_eos_guess += 2
             effective_frames = (

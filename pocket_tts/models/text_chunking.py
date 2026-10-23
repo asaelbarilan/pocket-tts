@@ -6,12 +6,20 @@ boundaries and regrouped into chunks that fit `max_tokens`.
 
 import logging
 
+from pocket_tts.utils.text_fold import fold_characters
+
 logger = logging.getLogger(__name__)
 
 
 def prepare_text_prompt(
-    text: str, pad_with_spaces_for_short_inputs: bool, remove_semicolons: bool
+    text: str,
+    pad_with_spaces_for_short_inputs: bool,
+    remove_semicolons: bool,
+    fold_text: bool = False,
 ) -> tuple[str, int]:
+    if fold_text:
+        # Curly quotes, Unicode dashes and invisible marks never reached the model in training.
+        text = fold_characters(text)
     text = text.strip()
     if text == "":
         raise ValueError("Text prompt cannot be empty")
@@ -108,9 +116,10 @@ def split_into_best_sentences(
     max_tokens: int,
     pad_with_spaces_for_short_inputs: bool,
     remove_semicolons: bool,
+    fold_text: bool = False,
 ) -> list[str]:
     text_to_generate, _ = prepare_text_prompt(
-        text_to_generate, pad_with_spaces_for_short_inputs, remove_semicolons
+        text_to_generate, pad_with_spaces_for_short_inputs, remove_semicolons, fold_text
     )
     text_to_generate = text_to_generate.strip()
     tokens = tokenizer(text_to_generate)

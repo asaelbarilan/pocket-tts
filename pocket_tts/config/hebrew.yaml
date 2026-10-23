@@ -15,6 +15,10 @@ weights_path_without_voice_cloning: hf://kyutai/pocket-tts-without-voice-cloning
 # Human evals preferred this model at 0.3 (equal WER/similarity/speech rate).
 default_temperature: 0.3
 
+# Training text and the tokenizer corpus had curly quotes, Unicode dashes and invisible marks
+# folded to plain characters; fold the prompt the same way (pocket_tts/utils/text_fold.py).
+fold_text: true
+
 
 flow_lm:
   insert_bos_before_voice: true

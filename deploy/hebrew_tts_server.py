@@ -11,8 +11,9 @@ code (`TrainableTTS.generate`), so it matches the training evals: same CFG, EOS 
 temperature and decoding. The weights are the exported artifacts/model.safetensors, loaded
 through the config in artifacts/hebrew_24l.yaml.
 
-The text goes to the tokenizer as is (no chunking, no normalization), like the training evals
-do, and is generated in a single pass of at most `max_seconds`.
+The text goes to the tokenizer with only its characters folded (curly quotes, Unicode dashes,
+invisible marks -- what training saw), with no chunking and no other normalization, and is
+generated in a single pass of at most `max_seconds`.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from pocket_tts import TTSModel
 from pocket_tts.data.audio import audio_read
 from pocket_tts.data.audio_utils import convert_audio
 from pocket_tts.modules.stateful_module import init_states
+from pocket_tts.utils.text_fold import fold_characters
 from training.args import TrainArgs
 from training.modules.model import TrainableTTS
 from training.modules.samplers import LSD
@@ -107,7 +109,9 @@ class Engine:
         # The LSD sampler has no weights of its own at decode time; the wrapper only provides
         # the training-time `generate` (CFG, right-aligned batching, EOS countdown).
         self.model = TrainableTTS(flow_lm, LSD(normalize=False), TrainArgs()).eval()
-        self.tokenize = flow_lm.conditioner.tokenizer.sp.encode
+        sp_encode = flow_lm.conditioner.tokenizer.sp.encode
+        # Curly quotes, Unicode dashes and the like never reached the model in training.
+        self.tokenize = lambda text: sp_encode(fold_characters(text))
         self.n_layers = len(flow_lm.transformer.layers)
         logger.info(
             "loaded %d-layer model on %s in %.1fs",

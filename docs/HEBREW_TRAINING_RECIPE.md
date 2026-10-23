@@ -199,11 +199,17 @@ The aligner takes `_diac` when it exists, else the built file. Train on the last
 made. Neither optional pass changes the text or the number of `words`, so they can run in
 either order and `alt_words` stays valid; see `hebrew_training/NIQQUD.md` and `ALIGNMENT.md`.
 
-The loader uses both optional row keys: `alt_words` swaps spelled-out numbers for the digits
-the corpus wrote, `nikud` shows some words vocalized. Three probabilities in the `data:`
+The loader uses both optional row keys: `alt_words` swaps words the normalizer rewrote (numbers,
+abbreviations, spelled Latin letters, split hyphens, collapsed punctuation, stripped quotes,
+folded curly apostrophes, ...) back to what the corpus wrote, `nikud` shows some words
+vocalized. Three probabilities in the `data:`
 section of the config control it (defaults in code, written out in the Hebrew configs):
 `alt_words_sample_prob` 0.30, `alt_word_swap_prob` 0.60, `nikud_word_prob` 0.10. Old
 manifests have neither key and train exactly as before. See `hebrew_training/NIQQUD.md`.
+
+A manifest built before `alt_words` covered every rewrite (the label was `digits` and only
+numbers had spans) is brought up to date without re-aligning or re-diacritizing it, by
+`hebrew_training/migrate_alt_words.py`; see "Migrating alt_words" in `hebrew_training/NIQQUD.md`.
 
 ### The one thing that is easy to get wrong here
 

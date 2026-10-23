@@ -262,39 +262,41 @@ def _alternates(normalize, text: str, **context):
     return _spoken(words), alt
 
 
-def test_a_number_gets_a_digits_alternate_over_the_words_it_became(normalize) -> None:
+def _spans(alt) -> list[dict]:
+    return alt[manifest.NORMS]
+
+
+def test_a_number_gets_an_alternate_over_the_words_it_became(normalize) -> None:
     words, alt = _alternates(normalize, "הגענו ב-14:30 למלון")
     assert words == ["הגענו", "בשתיים", "וחצי", "למלון"]
-    assert alt == {"digits": [{"from": 1, "to": 2, "replace": ["ב-14:30"]}]}
+    assert alt == {"norms": [{"from": 1, "to": 2, "replace": ["ב-14:30"], "k": "n"}]}
 
 
-def test_text_without_digits_has_no_alternates(normalize) -> None:
+def test_text_the_normalizer_leaves_alone_has_no_alternates(normalize) -> None:
     assert _alternates(normalize, "שלום עולם, מה שלומך")[1] is None
-    # Normalized, but not from a digit: an abbreviation or a Latin letter is not "digits".
-    assert _alternates(normalize, 'מה זה ק"מ ו-m')[1] is None
+    assert _alternates(normalize, "You've been signed out.")[1] is None
 
 
 def test_every_number_in_a_row_gets_its_own_span(normalize) -> None:
     words, alt = _alternates(normalize, "אחרי 14 ימים ו-3 שנים וגם 2 אנשים")
     assert words == ["אחרי", "ארבעה", "עשר", "ימים", "ושלוש", "שנים", "וגם", "שני", "אנשים"]
-    assert alt["digits"] == [
-        {"from": 1, "to": 2, "replace": ["14"]},
-        {"from": 4, "to": 4, "replace": ["ו-3"]},
-        {"from": 7, "to": 7, "replace": ["2"]},
+    assert _spans(alt) == [
+        {"from": 1, "to": 2, "replace": ["14"], "k": "n"},
+        {"from": 4, "to": 4, "replace": ["ו-3"], "k": "n"},
+        {"from": 7, "to": 7, "replace": ["2"], "k": "n"},
     ]
 
 
 def test_replace_keeps_the_source_as_written(normalize) -> None:
     words, alt = _alternates(normalize, 'זה קרה ב"1995" ואז (5) ימים 50%.')
-    spans = alt["digits"]
-    assert [span["replace"] for span in spans] == [['ב"1995"'], ["(5)"], ["50%."]]
+    assert [span["replace"] for span in _spans(alt)] == [['ב"1995"'], ["(5)"], ["50%."]]
     assert words[-1].endswith(".")
 
 
 def test_a_separated_unit_is_part_of_the_span(normalize) -> None:
     words, alt = _alternates(normalize, "שקלנו 2.5 kg של תפוחים")
     assert words == ["שקלנו", "שניים", "וחצי", "קילוגרם", "של", "תפוחים"]
-    assert alt["digits"] == [{"from": 1, "to": 3, "replace": ["2.5", "kg"]}]
+    assert _spans(alt) == [{"from": 1, "to": 3, "replace": ["2.5", "kg"], "k": "n"}]
 
 
 def test_a_unit_in_the_next_row_makes_no_span(normalize) -> None:
@@ -307,36 +309,127 @@ def test_a_unit_in_the_next_row_makes_no_span(normalize) -> None:
 def test_a_glued_punctuation_word_is_appended_to_the_span(normalize) -> None:
     words, alt = _alternates(normalize, "בשנת 1995 . אחרי")
     assert words[-2:] == ["וחמש.", "אחרי"]
-    assert alt["digits"] == [{"from": 1, "to": 5, "replace": ["1995."]}]
+    assert _spans(alt) == [{"from": 1, "to": 5, "replace": ["1995", "."], "k": "n"}]
 
 
-def test_unchanged_or_vanished_digits_make_no_span(normalize) -> None:
-    assert _alternates(normalize, "שלום [5] עולם")[1] is None
+def test_a_lone_punctuation_word_after_an_unchanged_word_makes_a_span_for_that_word(
+    normalize,
+) -> None:
+    words, alt = _alternates(normalize, "שלום . עולם")
+    assert words == ["שלום.", "עולם"]
+    assert _spans(alt) == [{"from": 0, "to": 0, "replace": ["שלום", "."], "k": "p"}]
 
 
-def test_alternate_indices_survive_dropped_words(normalize) -> None:
-    # A lone quote and a removed bracket word vanish; the indices count the words that remain.
+def test_punctuation_that_says_more_than_it_glues_changes_both_neighbours(normalize) -> None:
+    words, alt = _alternates(normalize, "ממש ,כן")
+    assert words == ["ממש,", "כן"]
+    assert _spans(alt) == [
+        {"from": 0, "to": 0, "replace": ["ממש"], "k": "p"},
+        {"from": 1, "to": 1, "replace": [",כן"], "k": "p"},
+    ]
+
+
+def test_a_vanished_word_is_absorbed_by_the_word_before_it(normalize) -> None:
+    # A lone quote, an emoji and a removed bracket have no output to hang a span on.
     words, alt = _alternates(normalize, 'א " ב 14 ג')
     assert words == ["א", "ב", "ארבע", "עשרה", "ג"]
-    assert alt == {"digits": [{"from": 2, "to": 3, "replace": ["14"]}]}
+    assert _spans(alt) == [
+        {"from": 0, "to": 0, "replace": ["א", '"'], "k": "x"},
+        {"from": 2, "to": 3, "replace": ["14"], "k": "n"},
+    ]
     words, alt = _alternates(normalize, "מה [הערה] 14 ימים")
     assert words == ["מה", "ארבעה", "עשר", "ימים"]
-    assert alt == {"digits": [{"from": 1, "to": 2, "replace": ["14"]}]}
+    assert _spans(alt) == [
+        {"from": 0, "to": 0, "replace": ["מה", "[הערה]"], "k": "x"},
+        {"from": 1, "to": 2, "replace": ["14"], "k": "n"},
+    ]
+    assert _spans(_alternates(normalize, "שלום 😀 עולם")[1])[0]["replace"] == ["שלום", "😀"]
 
 
-def test_swapping_every_span_restores_the_digits_text(normalize) -> None:
-    text = "אנחנו סופרים למעלה מ-65 פצועים רק בשנת 2025 לעומת 21 פצועים . ב-14:30 הגענו"
+def test_words_vanishing_at_the_start_of_a_row_get_no_span(normalize) -> None:
+    words, alt = _alternates(normalize, '" שלום עולם')
+    assert words == ["שלום", "עולם"]
+    assert alt is None
+
+
+def test_a_number_split_from_its_unit_by_a_spoken_word_makes_no_span(normalize) -> None:
+    # The unit is silent, but a spoken word sits between it and the number that swallowed it, so
+    # no single span could swap the number back without reordering the words.
+    _, alt = _alternates(normalize, "5 מה km")
+    assert alt is None or all("km" not in span["replace"] for span in _spans(alt))
+
+
+MIXED = [
+    "הגענו ב-14:30 למלון ... אחרי 14 ימים ו-3 שנים ,כן",
+    "He said “hello” and You’ve been signed out of the AWS console — I use AI.",
+    'א " ב [הערה] ג 😀 ד ה-API וגם well-known x-ray',
+    'ד"ר כהן אמר: "שלום" ל-2 אנשים (בשקט) וכו\' 50%. . ג׳ירפה',
+    "וואו!!! ממש... שלום ; עולם , כן",
+    "pre–war \u200fשלום 1/2 3-4 days בע\"מ כץ עות'מאני",
+]
+
+
+@pytest.mark.parametrize("text", MIXED)
+def test_swapping_every_span_restores_the_written_text(normalize, text: str) -> None:
+    # The property the loader relies on: with all of a row's alternates swapped in, the words
+    # are the corpus's own, one for one.
     words, alt = _alternates(normalize, text)
-    swapped = manifest.swap_alternates(words, alt["digits"])
-    assert swapped == [
-        "אנחנו", "סופרים", "למעלה", "מ-65", "פצועים", "רק", "בשנת", "2025", "לעומת", "21",
-        "פצועים.", "ב-14:30", "הגענו",
-    ]  # fmt: skip
+    spans = _spans(alt)
+    manifest.validate_alt_words(alt, len(words))
+    assert manifest.swap_alternates(words, spans) == clean_split(text)
+
+
+def clean_split(text: str) -> list[str]:
+    return [token for word in text.split() for token in manifest.clean(word).split()]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("14", "n"),
+        ("ב-14:30", "n"),
+        ("1/2", "n"),
+        ("COVID-19", "n"),
+        ("I", "l"),
+        ("AI", "l"),
+        ("ה-API", "l"),
+        ("x-ray", "l"),
+        ('ד"ר', "a"),
+        ('ת"א', "a"),
+        ("כץ", "a"),
+        ('בע"מ', "a"),
+        ("עות'מאני", "a"),
+        ("well-known", "h"),
+        ("pre–war", "h"),
+        ("תל-אביב", "h"),
+        ("“hello”", "q"),
+        ('"שלום"', "q"),
+        ("(בשקט)", "q"),
+        ("ממש...", "p"),
+        ("אמר:", "p"),
+        ("שלום;", "p"),
+        ("וואו!!!", "p"),
+        ("You’ve", "c"),
+        ("ג׳ירפה", "c"),
+        ("—", "c"),
+        ("\u200fשלום", "c"),
+    ],
+)
+def test_each_group_of_rules_has_its_tag(normalize, text: str, expected: str) -> None:
+    # One word, so the span is the whole story; context words are plain.
+    _, alt = _alternates(normalize, f"שלום {text} עולם")
+    tags = [span["k"] for span in _spans(alt) if text.split()[0] in span["replace"][0]]
+    assert tags == [expected]
+    assert expected in manifest.NORM_KINDS
+
+
+def test_tags_are_single_letters_and_all_documented() -> None:
+    assert all(len(tag) == 1 for tag in manifest.NORM_KINDS)
 
 
 def test_a_cut_inside_a_span_leaves_it_spoken(normalize) -> None:
     words, alt = _alternates(normalize, "הגענו ב-14:30 למלון")
-    spans = alt["digits"]
+    spans = _spans(alt)
     assert manifest.swap_alternates(words, spans, first_word=0) == ["הגענו", "ב-14:30", "למלון"]
     # Cut after "בשתיים": the first words of the span are gone, so keep "וחצי" as spoken.
     assert manifest.swap_alternates(words, spans, first_word=2) == ["וחצי", "למלון"]
@@ -346,36 +439,31 @@ def test_a_cut_inside_a_span_leaves_it_spoken(normalize) -> None:
 
 def test_validate_alt_words_rejects_broken_spans() -> None:
     good = {
-        "digits": [{"from": 1, "to": 2, "replace": ["14"]}, {"from": 4, "to": 4, "replace": ["3"]}]
+        "norms": [
+            {"from": 1, "to": 2, "replace": ["14"], "k": "n"},
+            {"from": 4, "to": 4, "replace": ["3"]},
+        ]
     }
     manifest.validate_alt_words(good, 5)
     for bad in (
-        {"digits": [{"from": 1, "to": 5, "replace": ["14"]}]},  # out of range
-        {"digits": [{"from": 3, "to": 2, "replace": ["14"]}]},  # inverted
-        {
-            "digits": [
-                {"from": 1, "to": 3, "replace": ["1"]},
-                {"from": 3, "to": 4, "replace": ["2"]},
-            ]
-        },
-        {
-            "digits": [
-                {"from": 2, "to": 2, "replace": ["1"]},
-                {"from": 0, "to": 0, "replace": ["2"]},
-            ]
-        },
-        {"digits": [{"from": 1, "to": 1, "replace": []}]},
-        {"digits": [{"from": 1, "to": 1, "replace": ["a b"]}]},
+        {"norms": [{"from": 1, "to": 5, "replace": ["14"]}]},  # out of range
+        {"norms": [{"from": 3, "to": 2, "replace": ["14"]}]},  # inverted
+        {"norms": [{"from": 1, "to": 3, "replace": ["1"]}, {"from": 3, "to": 4, "replace": ["2"]}]},
+        {"norms": [{"from": 2, "to": 2, "replace": ["1"]}, {"from": 0, "to": 0, "replace": ["2"]}]},
+        {"norms": [{"from": 1, "to": 1, "replace": []}]},
+        {"norms": [{"from": 1, "to": 1, "replace": ["a b"]}]},
+        {"norms": [{"from": 1, "to": 1, "replace": ["a"], "k": "nn"}]},  # tag is one character
+        {"norms": [{"from": 1, "to": 1, "replace": ["a"], "k": 3}]},
     ):
         with pytest.raises(ValueError):
             manifest.validate_alt_words(bad, 5)
 
 
-def test_rows_carry_alt_words_only_when_a_number_was_spoken(normalize, tmp_path: Path) -> None:
+def test_rows_carry_alt_words_only_when_a_word_changed(normalize, tmp_path: Path) -> None:
     recording = _recording_with_split_number(tmp_path, gap=0.1)
     rows, _ = manifest.segment_rows(recording, _segment_args(tmp_path), normalize, random.Random(0))
 
-    assert rows[0]["alt_words"] == {"digits": [{"from": 1, "to": 2, "replace": ["14"]}]}
+    assert rows[0]["alt_words"] == {"norms": [{"from": 1, "to": 2, "replace": ["14"], "k": "n"}]}
     assert "alt_words" not in rows[1]
     # The alternates index the row's own words.
     assert [word["word"] for word in rows[0]["words"]][1:3] == ["ארבעה", "עשר"]

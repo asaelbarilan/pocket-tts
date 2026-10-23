@@ -29,7 +29,7 @@ SPANS = [
     {"from": 4, "to": 4, "replace": ["2"]},
     {"from": 6, "to": 7, "replace": ["3"]},
 ]
-ALT = {"digits": SPANS}
+ALT = {"norms": SPANS}
 
 OFF = TextAugment(0.0, 0.0, 0.0)
 
@@ -85,7 +85,7 @@ def test_swap_alternates_matches_the_builders_reference():
                 {"from": first, "to": last, "replace": [f"d{first}", "x"][: rng.randint(1, 2)]}
             )
             position = last + 2
-        builder.validate_alt_words({"digits": spans}, len(words))
+        builder.validate_alt_words({"norms": spans}, len(words))
         first_word = rng.randint(0, 12)
         use = [rng.random() < 0.5 for _ in spans]
         assert swap_alternates(words, spans, first_word, use) == builder.swap_alternates(
@@ -183,10 +183,10 @@ def test_unknown_alt_labels_are_ignored():
 
 
 def test_broken_spans_are_an_error_not_a_misaligned_text():
-    bad = {"digits": [{"from": 6, "to": 9, "replace": ["3"]}]}
+    bad = {"norms": [{"from": 6, "to": 9, "replace": ["3"]}]}
     with pytest.raises(ValueError, match="alt_words span"):
         render(nikud=None, alt=bad, alt_words_sample_prob=1)
-    unordered = {"digits": [SPANS[1], SPANS[0]]}
+    unordered = {"norms": [SPANS[1], SPANS[0]]}
     with pytest.raises(ValueError, match="alt_words span"):
         render(nikud=None, alt=unordered, alt_words_sample_prob=1)
 
@@ -338,7 +338,7 @@ def test_real_row_nikud_only(digit_row):
 
 def test_real_row_digits_only(digit_row):
     words = [w["word"] for w in digit_row["words"]]
-    spans = digit_row["alt_words"]["digits"]
+    spans = digit_row["alt_words"]["norms"]
     out = render_text(words, digit_row["nikud"], digit_row["alt_words"], 0, 1, TextAugment(1, 1, 0))
     assert out == " ".join(builder.swap_alternates(words, spans))
     assert "2025" in out.split() and "ב-14:30" in out.split()
@@ -347,7 +347,7 @@ def test_real_row_digits_only(digit_row):
 def test_real_row_both_features_compose(digit_row):
     words = [w["word"] for w in digit_row["words"]]
     nikud = digit_row["nikud"]
-    spans = digit_row["alt_words"]["digits"]
+    spans = digit_row["alt_words"]["norms"]
     cut = 8  # inside the second span's neighbourhood: spans 0 (5..6) is before the cut
     out = render_text(words, nikud, digit_row["alt_words"], cut, 9, TextAugment(1, 1, 1)).split()
     expected = builder.swap_alternates(nikud, spans, cut)
@@ -358,7 +358,7 @@ def test_real_row_both_features_compose(digit_row):
 def test_real_row_every_default_draw_is_a_valid_variant(digit_row):
     words = [w["word"] for w in digit_row["words"]]
     nikud = digit_row["nikud"]
-    spans = digit_row["alt_words"]["digits"]
+    spans = digit_row["alt_words"]["norms"]
     replacements = {tuple(s["replace"]) for s in spans}
     for seed in range(200):
         cut = seed % 12

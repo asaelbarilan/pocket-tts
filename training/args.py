@@ -31,7 +31,7 @@ class DataArgs:
     # training/text_augment.py). Rows without those keys, and so every English manifest, are
     # not affected. All three are probabilities in [0, 1]; the defaults apply when a config
     # does not mention them. Validation uses the same values, with draws fixed per row.
-    # P(a sample with `alt_words` gets spelled-out numbers swapped for digits at all); 0 = off.
+    # P(a sample with `alt_words` gets any span swapped back to the corpus's spelling); 0 = off.
     alt_words_sample_prob: float = DEFAULT_ALT_WORDS_SAMPLE_PROB
     # P(each span is swapped | the sample was chosen); if none was, one random span is, so a
     # chosen sample always has at least one swap. Only spans after the cut are candidates.

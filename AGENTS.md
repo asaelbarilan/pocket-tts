@@ -162,6 +162,13 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
 - Keep artifacts, datasets, logs, exports, evaluation manifests, and checkpoints out of Git.
 - Do not infer generalization from MSE alone; use fixed held-out audio, Hebrew CER/WER,
   speaker-similarity measurements, and listening tests.
+- `alt_words` (label `norms`) holds the corpus's own form of every word the normalizer rewrote,
+  not just numbers; `hebrew_training/migrate_alt_words.py` brings an already built, diacritized
+  and aligned manifest up to date without redoing those passes (NIQQUD.md).
+- Character folds (curly quotes, Unicode dashes, geresh, invisible marks) live once in
+  `pocket_tts/utils/text_fold.py`: the tokenizer filter imports them and inference applies them
+  (`fold_text: true` in `pocket_tts/config/hebrew.yaml`; the deploy servers always fold).
+  `tests/test_text_fold.py` pins the map to the normalizer's own.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation

@@ -135,7 +135,7 @@ def test_a_long_row_is_vocalized_in_pieces_and_put_back_together():
 
 def test_untouched_rows_are_copied_byte_for_byte_and_picked_rows_only_gain_nikud(tmp_path):
     rows = [make_row(i) for i in range(60)]
-    rows[5]["alt_words"] = {"digits": [{"from": 1, "to": 1, "replace": ["14"]}]}
+    rows[5]["alt_words"] = {"norms": [{"from": 1, "to": 1, "replace": ["14"]}]}
     source = write_manifest(tmp_path, "train.jsonl", rows)
     write_manifest(tmp_path, "valid.jsonl", rows[:5])
     run(tmp_path, "--rate", "0.3")
@@ -282,7 +282,7 @@ def test_aligning_keeps_nikud_and_alt_words_and_refuses_to_change_the_word_count
     row = make_row(
         0,
         nikud=fake_diacritizer(SENTENCES[0].split()),
-        alt_words={"digits": [{"from": 1, "to": 2, "replace": ["14"]}]},
+        alt_words={"norms": [{"from": 1, "to": 2, "replace": ["14"]}]},
     )
     out = aligned_like(row)
     for key in ("nikud", "alt_words", "speaker", "path"):
@@ -299,7 +299,7 @@ def test_aligning_keeps_nikud_and_alt_words_and_refuses_to_change_the_word_count
 
 def test_diacritizing_then_aligning_equals_aligning_then_diacritizing(tmp_path):
     rows = [
-        make_row(i, alt_words={"digits": [{"from": 0, "to": 0, "replace": ["7"]}]})
+        make_row(i, alt_words={"norms": [{"from": 0, "to": 0, "replace": ["7"]}]})
         for i in range(25)
     ]
     write_manifest(tmp_path / "dna", "train.jsonl", rows)

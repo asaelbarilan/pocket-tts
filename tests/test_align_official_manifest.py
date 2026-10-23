@@ -182,10 +182,10 @@ def test_the_first_rows_must_look_like_a_manifest_that_has_not_been_aligned(tmp_
 
 
 def test_a_row_the_aligner_cannot_place_keeps_its_nikud(monkeypatch):
-    row = {**sample("שלום"), "nikud": ["שָׁלוֹם"], "alt_words": {"digits": []}}
+    row = {**sample("שלום"), "nikud": ["שָׁלוֹם"], "alt_words": {"norms": []}}
     monkeypatch.setattr(aligner, "_VITER_WORDS", set())  # nothing is in the dictionary
     fallback = Mock()
     fallback.align.return_value = [{"error": "no CTC path"}]
     (outcome,) = aligner.align_viter_batch([(1, row)], options(), fallback)
     assert outcome["row"]["nikud"] == ["שָׁלוֹם"]
-    assert outcome["row"]["alt_words"] == {"digits": []}
+    assert outcome["row"]["alt_words"] == {"norms": []}

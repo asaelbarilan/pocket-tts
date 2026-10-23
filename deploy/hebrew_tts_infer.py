@@ -31,6 +31,7 @@ from pocket_tts import TTSModel
 from pocket_tts.data.audio import audio_read
 from pocket_tts.data.audio_utils import convert_audio
 from pocket_tts.modules.stateful_module import init_states
+from pocket_tts.utils.text_fold import fold_characters
 from training.args import TrainArgs
 from training.modules.model import TrainableTTS
 from training.modules.samplers import LSD
@@ -77,7 +78,9 @@ class HebrewTTS:
         # The LSD sampler has no weights of its own at decode time; the wrapper only provides
         # `generate` (classifier-free guidance, EOS countdown).
         self.model = TrainableTTS(flow_lm, LSD(normalize=False), TrainArgs()).eval()
-        self.tokenize = flow_lm.conditioner.tokenizer.sp.encode
+        sp_encode = flow_lm.conditioner.tokenizer.sp.encode
+        # Curly quotes, Unicode dashes and the like never reached the model in training.
+        self.tokenize = lambda text: sp_encode(fold_characters(text))
         logger.info("loaded model on %s in %.1fs", self.device, time.perf_counter() - started)
 
     def encode_voice(
@@ -108,7 +111,8 @@ class HebrewTTS:
     ) -> torch.Tensor | None:
         """float32 waveform [samples] on the CPU at `sample_rate`, or None when the model ended
         speech at once (try another voice prompt or a higher `eos_threshold`). The text goes to
-        the tokenizer as is: no normalization, no chunking, one pass of at most `max_seconds`."""
+        the tokenizer with only its characters folded (curly quotes, Unicode dashes, invisible
+        marks): no other normalization, no chunking, one pass of at most `max_seconds`."""
         tokens = torch.tensor(self.tokenize(text), dtype=torch.long)
         max_frames = int(max_seconds * self.mimi.frame_rate)
         if seed is not None:

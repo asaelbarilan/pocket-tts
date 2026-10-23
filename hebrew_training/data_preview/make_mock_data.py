@@ -12,7 +12,7 @@ Writes `hebrew_training/data_preview/mock/` (git-ignored):
 Paths inside the manifests and configs are relative to the repo root, like the real configs:
 run the server from the repo root (it changes to it anyway). The alignments are fake (words
 spread evenly over the clip) but they exercise the word-boundary cuts, and some rows carry
-`alt_words` (digits) and `nikud` so the text augmentations are visible.
+`alt_words` (norms) and `nikud` so the text augmentations are visible.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def _row(path: str, sentence: str, duration: float, *, hebrew: bool, kind: str, 
         out.extend(w["word"] for w in written[position:])
         row["transcript"] = " ".join(out)
         row["alt_words"] = {
-            "digits": [{"from": f, "to": last, "replace": [d]} for f, last, d in spans]
+            "norms": [{"from": f, "to": last, "replace": [d], "k": "n"} for f, last, d in spans]
         }
     else:
         row["words"] = _words(spoken, duration)

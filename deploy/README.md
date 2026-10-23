@@ -100,7 +100,9 @@ and `deploy/hebrew_tts_infer.py` together with the server's sampling code.
 Notes:
 - One request generates at a time (a lock); others wait. Validation generation takes the lock per
   sentence, so `/tts` requests interleave with it.
-- Text goes to the tokenizer as is: no chunking, no normalization. Keep it to what fits in
+- Text goes to the tokenizer as is, except that curly quotes, Unicode dashes and invisible marks
+  are folded to the plain characters training used (`pocket_tts/utils/text_fold.py`): no
+  chunking, no other normalization. Keep it to what fits in
   `max_seconds`. Use the same text style as the training data (niqqud or not).
 - Use a clean Hebrew prompt of ~3-5 s; a noisy prompt makes every output noisy.
 - Voice latents are cached per voice/prompt length, so repeat requests skip the encoding.

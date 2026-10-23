@@ -71,8 +71,8 @@
             manifest size for this selection: <span x-text="fmtBytes(manifestBytes)"></span>
           </div>
           <div class="row" style="margin-top:10px">
-            <label>digits: sample prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_words_sample_prob"></label>
-            <label>digits: swap prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_word_swap_prob"></label>
+            <label>alternates: sample prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_words_sample_prob"></label>
+            <label>alternates: swap prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.alt_word_swap_prob"></label>
             <label>niqqud: word prob <input type="number" min="0" max="1" step="0.05" x-model.number="p.nikud_word_prob"></label>
             <label class="inline"><input type="checkbox" x-model="p.shuffle"> shuffle</label>
             <label class="inline" title="Validation mode: every random choice for a row depends only on (seed, path, start)"><input type="checkbox" x-model="p.fixed_draws"> fixed draws</label>
@@ -116,9 +116,9 @@
             #<span x-text="s.index + 1"></span>
             <span class="chip" x-text="batch.dataset"></span>
             <span class="chip" x-text="s.token_ids.length + ' tokens'"></span>
-            <span class="chip aug" x-show="s.augmented">digits/niqqud draw</span>
+            <span class="chip aug" x-show="s.augmented">alternates/niqqud draw</span>
             <span class="chip" x-show="!s.has_words">no alignment</span>
-            <span class="chip" x-show="s.has_alt_words">has digits</span>
+            <span class="chip" x-show="s.has_alt_words">has alternates</span>
             <span class="chip" x-show="s.has_nikud">has niqqud</span>
           </h3>
           <div class="text" dir="rtl" x-text="s.text"></div>

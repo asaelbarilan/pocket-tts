@@ -120,6 +120,9 @@ class Config(StrictModel):
     weights_path_without_voice_cloning: str | None = None
     pad_with_spaces_for_short_inputs: bool = False
     remove_semicolons: bool = False
+    # Map curly quotes, Unicode dashes and invisible marks to the plain forms the training text
+    # was normalized to (pocket_tts/utils/text_fold.py). On for models trained on such text.
+    fold_text: bool = False
     model_recommended_frames_after_eos: int | None = None
     default_temperature: float = 0.7
 

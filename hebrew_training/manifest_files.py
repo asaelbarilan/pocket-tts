@@ -6,6 +6,9 @@ One folder, one name per stage, so a file's name says which stages produced it:
     train_diac.jsonl / valid_diac.jsonl        diacritize_official_manifest   (optional)
     train_aligned.jsonl / valid_aligned.jsonl  align_official_manifest        (optional)
 
+`migrate_alt_words` is not a stage: it rewrites only the `alt_words` of a file from any stage in
+place of re-running the stages (see NIQQUD.md, "Migrating `alt_words`").
+
 Every stage after the first reads the row a previous stage wrote and returns it with its own
 keys added -- it never rewrites what another stage owns. That is what makes the two optional
 stages independent: `words[i]` keeps its text and its position (the aligner changes only the
