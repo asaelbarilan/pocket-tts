@@ -68,6 +68,8 @@ class Batch:
     text_tokens: list[torch.Tensor]  # ragged, one [L_b] long tensor per sample
     voice_audio: torch.Tensor  # [B, 1, prompt_samples]
     num_voice_prompt_frames: torch.Tensor  # [B] valid codec frames of each voice prompt
+    # The string each row's tokens were encoded from (read by semantic conditioning only).
+    texts: list[str] | None = None
 
 
 def load_entries(path: str, rank: int, world_size: int) -> list[str]:
@@ -197,7 +199,7 @@ class DataLoader:
             self.text_aug,
         )
 
-    def _sample(self, entry: Entry) -> tuple[np.ndarray, torch.Tensor, np.ndarray, int]:
+    def _sample(self, entry: Entry) -> tuple[np.ndarray, torch.Tensor, np.ndarray, int, str]:
         # Training draws the cut from the shared `self.rng`. That runs on the pool threads in
         # whatever order they are scheduled, which is fine for training but would hand a
         # validation row a different cut from one evaluation to the next. A `fixed_draws`
@@ -255,7 +257,7 @@ class DataLoader:
                 prompt, length = self._cap_prompt(
                     _load_window(entry.path, entry.start, cut, self.sample_rate)
                 )
-                return wav, tokens, prompt, length
+                return wav, tokens, prompt, length, text
         last = self._last_word_end(entry)
         end = min(entry.duration, last + self.TRAIL_SEC) if last is not None else entry.duration
         duration = min(end, self.max_duration_sec)
@@ -271,7 +273,7 @@ class DataLoader:
         prompt, length = self._cap_prompt(
             _load_window(entry.path, entry.start + prompt_start, fallback_sec, self.sample_rate)
         )
-        return wav, tokens, prompt, length
+        return wav, tokens, prompt, length, text
 
     def get_entry(self, index: int) -> Entry:
         d = json.loads(self.entries[index])
@@ -349,7 +351,7 @@ class DataLoader:
                     continue
                 batch, samples = samples[: self.batch_size], samples[self.batch_size :]
                 yielded += 1
-                wavs, tokens, prompts, prompt_lens = zip(*batch, strict=True)
+                wavs, tokens, prompts, prompt_lens, texts = zip(*batch, strict=True)
                 max_len = max(len(w) for w in wavs)
                 audio = torch.zeros(len(wavs), 1, max_len)
                 frames = torch.zeros(len(wavs), dtype=torch.long)
@@ -364,7 +366,9 @@ class DataLoader:
                     [max(1, int(n * self.frame_rate / self.sample_rate)) for n in prompt_lens],
                     dtype=torch.long,
                 )
-                yield Batch(audio, frames, list(tokens), voice, num_voice_prompt_frames)
+                yield Batch(
+                    audio, frames, list(tokens), voice, num_voice_prompt_frames, list(texts)
+                )
             if not yielded:
                 raise ValueError(
                     f"no readable samples in {self.jsonl}: every entry failed to load "

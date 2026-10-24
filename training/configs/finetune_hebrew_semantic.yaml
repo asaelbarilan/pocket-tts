@@ -1,0 +1,78 @@
+# EXPERIMENTAL: the Hebrew 24-layer finetune continued with DictaBERT semantic conditioning
+# (SEMANTIC_CONDITIONING.md). A local extension, not part of Kyutai's recipe.
+#
+# It warm-starts from the current Hebrew model (artifacts/hebrew_24l.yaml, whose weights_path
+# is artifacts/model.safetensors, exported by finetune_hebrew.yaml). The fusion starts at zero,
+# so step 0 is exactly that model. Point model_config at another Hebrew export to start
+# elsewhere; the tokenizer must be the one those weights were trained with.
+#
+# Run:  uv run torchrun --nproc-per-node 8 training/train.py \
+#           training/configs/finetune_hebrew_semantic.yaml
+# Needs `transformers` (in the dev group, or the `semantic` extra) and downloads the pinned
+# DictaBERT revision on first use. Smoke test first (SEMANTIC_CONDITIONING.md).
+model_config: artifacts/hebrew_24l.yaml
+start_from_pretrained: true
+reset_text_embedding: false
+
+# Every key at its default, written out. `semantic_conditioner: {}` would mean the same.
+semantic_conditioner:
+  model_name: dicta-il/dictabert-large
+  revision: a972ffb612c03bcfb128f10f5ef4462f7adb9844
+  hidden_size: 1024
+  first_layer: 8
+  last_layer: 20
+  gate: scalar
+  gate_hidden: 256
+  max_tokens: 512
+semantic_lr_scale: 3.0
+
+data:
+  train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+  valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 5.0
+  # Unchanged from finetune_hebrew.yaml: the augmentation is not part of this experiment.
+  alt_words_sample_prob: 0.30
+  alt_word_swap_prob: 0.60
+  nikud_word_prob: 0.10
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: constant
+  warmup_steps: 1000
+
+compile: true
+
+run_dir: runs/finetune_hebrew_semantic
+# Per-rank batch, as finetune_hebrew.yaml (8 GPUs x 8). DictaBERT runs once per row.
+batch_size: 8
+grad_accum_steps: 1
+max_steps: 20000  # a proof of concept: judged by listening, not run to the plateau
+stats_ema_steps: 0  # the latent statistics come with the warm-start weights
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+ckpt_freq: 2500
+num_ckpt_keep: 8
+sample_freq: 1000
+sample_cfg_coef: 2.0
+
+# Listening set: the homograph pairs are what this experiment is about; the English and
+# vocalized lines check that the gate leaves those cases alone.
+sample_sentences:
+  - "הילדה רצה הביתה כי התחיל לרדת גשם."
+  - "הוא רצה ללכת הביתה אבל נשאר עד הסוף."
+  - "הספר מונח על השולחן בספרייה."
+  - "הספר של השכונה פתח מספרה חדשה."
+  - "אדוני היושב ראש, אני מבקש להעלות את הנושא לסדר היום."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."

@@ -203,6 +203,7 @@ def evaluate_checkpoint(
                 n_steps=args.n_steps,
                 cfg_coef=args.cfg,
                 eos_threshold=args.eos_threshold,
+                texts=[sentence for _, _, sentence in chunk],  # semantic conditioning only
             )
 
         for (voice_index, text_index, sentence), latents in zip(chunk, outputs, strict=True):

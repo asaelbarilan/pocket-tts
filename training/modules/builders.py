@@ -12,6 +12,7 @@ import torch
 import yaml
 from torch import nn
 
+from pocket_tts.conditioners.semantic import load_state_dict_allowing_semantic
 from pocket_tts.models.mimi import MimiModel, build_mimi
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.modules.mlp import SimpleMLPAdaLN
@@ -43,7 +44,9 @@ def _local_tokenizer_vocab_size(tokenizer_path: str) -> int | None:
     return sentencepiece.SentencePieceProcessor(model_file=str(tokenizer_file)).vocab_size()
 
 
-def load_model_config(path: str, overrides: dict[str, tp.Any]):
+def load_model_config(
+    path: str, overrides: dict[str, tp.Any], semantic: dict[str, tp.Any] | None = None
+):
     """A pocket-tts model config with dotted-path fields replaced.
 
     Lets one released config serve as the architecture for any variant of it
@@ -55,6 +58,9 @@ def load_model_config(path: str, overrides: dict[str, tp.Any]):
     tokenizer is the source of truth and a vocabulary size is chosen once, when
     the tokenizer is trained. Released tokenizers (hf:// paths) keep the
     config's value.
+
+    `semantic` (TrainArgs.semantic_conditioner) is merged into
+    flow_lm.semantic_conditioner, creating the section when the config has none.
     """
     config_file = download_if_necessary(str(path))
     if not config_file.exists():
@@ -70,6 +76,11 @@ def load_model_config(path: str, overrides: dict[str, tp.Any]):
         if leaf not in node:
             raise KeyError(f"{path} has no field {dotted!r} to override")
         node[leaf] = value
+    if semantic is not None:
+        raw["flow_lm"]["semantic_conditioner"] = {
+            **(raw["flow_lm"].get("semantic_conditioner") or {}),
+            **semantic,
+        }
     lookup_table = raw["flow_lm"]["lookup_table"]
     vocab_size = _local_tokenizer_vocab_size(str(lookup_table["tokenizer_path"]))
     if vocab_size is not None:
@@ -120,7 +131,7 @@ def attach_distillation(model: TrainableTTS, flow_lm: nn.Module, args: TrainArgs
         state = {
             k.removeprefix("flow_lm."): v for k, v in state.items() if k.startswith("flow_lm.")
         }
-        teacher.load_state_dict(state, strict=True)
+        load_state_dict_allowing_semantic(teacher, state, strict=True)
         teacher = teacher.eval()
         # Seed the student from the teacher: non-backbone tensors verbatim,
         # backbone from the teacher's bottom+top layers — far faster to
@@ -160,7 +171,7 @@ def attach_distillation(model: TrainableTTS, flow_lm: nn.Module, args: TrainArgs
 
 def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
     """Build (trainable model, frozen mimi, pocket config) from a pocket-tts config."""
-    config = load_model_config(args.model_config, args.model_overrides)
+    config = load_model_config(args.model_config, args.model_overrides, args.semantic_conditioner)
     tts_model = TTSModel._from_pydantic_config(
         config, temp=0.7, sampler_decode_steps=1, noise_clamp=None, eos_threshold=0.0, origin=None
     )
@@ -207,7 +218,9 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
             flow_state = {k: v for k, v in flow_state.items() if k not in dropped}
         if flow.num_time_conds != 2:
             flow_state = {k: v for k, v in flow_state.items() if not k.startswith("flow_net.")}
-            missing, unexpected = flow_lm.load_state_dict(flow_state, strict=False)
+            missing, unexpected = load_state_dict_allowing_semantic(
+                flow_lm, flow_state, strict=False
+            )
             assert not unexpected, unexpected
             assert all(k.startswith("flow_net.") for k in missing), missing
             logger.info(
@@ -215,7 +228,10 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
             )
             dit_init(flow_lm.flow_net)
         else:
-            missing, unexpected = flow_lm.load_state_dict(flow_state, strict=not dropped)
+            # A plain (pre-semantic) checkpoint leaves the fusion at its zero init.
+            missing, unexpected = load_state_dict_allowing_semantic(
+                flow_lm, flow_state, strict=not dropped
+            )
             assert not unexpected, unexpected
             assert set(missing) <= set(dropped), missing
     else:
@@ -228,6 +244,17 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
     mimi.eval()
     stamp_state_names(mimi)
     disable_grad(mimi)
+    if flow_lm.semantic_fusion is not None:
+        # Fail before training starts; the encoder stays frozen and outside the module tree.
+        flow_lm.semantic_fusion.load_encoder()
+        logger.info(
+            "semantic conditioning on: %s@%s layers %d-%d, %s gate",
+            config.flow_lm.semantic_conditioner.model_name,
+            config.flow_lm.semantic_conditioner.revision,
+            config.flow_lm.semantic_conditioner.first_layer,
+            config.flow_lm.semantic_conditioner.last_layer,
+            config.flow_lm.semantic_conditioner.gate,
+        )
 
     model = TrainableTTS(flow_lm, flow, args)
     if args.distill_cfg_coef > 0:

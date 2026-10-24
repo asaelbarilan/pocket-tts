@@ -120,6 +120,7 @@ class HebrewTTS:
         latents = self.model.generate(
             [tokens],
             [voice],
+            texts=[fold_characters(text)],  # what was tokenized; semantic conditioning only
             max_frames=max_frames,
             temp=temp,
             n_steps=n_steps,

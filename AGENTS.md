@@ -169,6 +169,10 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
   `pocket_tts/utils/text_fold.py`: the tokenizer filter imports them and inference applies them
   (`fold_text: true` in `pocket_tts/config/hebrew.yaml`; the deploy servers always fold).
   `tests/test_text_fold.py` pins the map to the normalizer's own.
+- Optional DictaBERT semantic conditioning (SEMANTIC_CONDITIONING.md) lives in
+  `pocket_tts/conditioners/semantic.py`. It is off unless `flow_lm.semantic_conditioner` (model
+  config) or `semantic_conditioner` (training/ config) is set; keep the default path identical.
+  Its tensors are `flow_lm.semantic_fusion.*`; DictaBERT itself is never saved or trained.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation

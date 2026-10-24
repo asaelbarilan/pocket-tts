@@ -291,7 +291,7 @@ def test_prefix_prompt():
     try:
         for _ in range(50):
             calls.clear()
-            wav, tokens, prompt, plen = dl._sample(entry)
+            wav, tokens, prompt, plen, _text = dl._sample(entry)
             (t_start, t_dur), (p_start, p_dur) = calls[0], calls[1]
             assert p_start == 0.0, "prefix prompt must start at the utterance start"
             assert t_start <= 5.5, f"cut must sit inside the window, got {t_start}"

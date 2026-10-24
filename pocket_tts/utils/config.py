@@ -1,9 +1,10 @@
 """Configuration models for loading YAML config files."""
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from pocket_tts.utils.utils import download_if_necessary
 
@@ -39,6 +40,43 @@ class LookupTable(StrictModel):
     tokenizer_path: str
 
 
+DICTABERT_LARGE = "dicta-il/dictabert-large"
+DICTABERT_LARGE_REVISION = "a972ffb612c03bcfb128f10f5ef4462f7adb9844"
+
+
+class SemanticConditionerConfig(StrictModel):
+    """Optional DictaBERT features fused into the text prefix (pocket_tts/conditioners/semantic.py).
+
+    Every field has a default, so `semantic_conditioner: {}` turns the feature on as designed.
+    """
+
+    model_name: str = DICTABERT_LARGE
+    revision: str = DICTABERT_LARGE_REVISION
+    # Width of the encoder's hidden states; checked against the encoder when it loads.
+    hidden_size: int = 1024
+    # Encoder layers mixed by learned softmax weights, 1-based and inclusive (0 would be the
+    # embedding output, which is never used).
+    first_layer: int = 8
+    last_layer: int = 20
+    # "scalar": one gate value per token. "vector": one per model channel.
+    gate: Literal["scalar", "vector"] = "scalar"
+    gate_hidden: int = 256
+    # The encoder's position limit, [CLS] and [SEP] included. Longer texts are encoded in
+    # independent windows of max_tokens - 2 tokens.
+    max_tokens: int = 512
+
+    @model_validator(mode="after")
+    def _check_band(self) -> "SemanticConditionerConfig":
+        if not 1 <= self.first_layer <= self.last_layer:
+            raise ValueError(
+                f"semantic_conditioner layers must satisfy 1 <= first_layer <= last_layer, "
+                f"got {self.first_layer}..{self.last_layer}"
+            )
+        if self.max_tokens < 3:
+            raise ValueError("semantic_conditioner.max_tokens must leave room for [CLS] and [SEP]")
+        return self
+
+
 # Root configuration
 class FlowLMConfig(StrictModel):
     """Root configuration model for YAML config files."""
@@ -53,6 +91,8 @@ class FlowLMConfig(StrictModel):
     lookup_table: LookupTable
     weights_path: str | None = None
     insert_bos_before_voice: bool = False
+    # Off unless present. See SemanticConditionerConfig.
+    semantic_conditioner: SemanticConditionerConfig | None = None
 
 
 # SEANet configuration

@@ -59,6 +59,7 @@ from training.train_utils import (
     add_file_logging,
     git_commit,
     lr_at,
+    optimizer_param_groups,
     setup_logging,
     write_samples,
 )
@@ -167,7 +168,7 @@ def setup(config_path: str) -> Run:
         logger.info(f"flow_lm + objective: {n_params / 1e6:.1f}M trainable params")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        optimizer_param_groups(model, args),
         lr=args.optim.lr,
         betas=args.optim.betas,
         eps=args.optim.eps,
@@ -237,6 +238,8 @@ def main(config_path: str) -> None:
     progress, start_step = run.progress, run.start_step
 
     tokenize = model.flow_lm.conditioner.tokenizer.sp.encode
+    # Semantic conditioning reads each row's text; otherwise the forward call is unchanged.
+    semantic = getattr(model.flow_lm, "semantic_fusion", None) is not None
     curriculum = args.data.resolve_curriculum()
     mixed: CurriculumLoader | None = None
     valid_plan: dict[str, int] = {}
@@ -316,7 +319,7 @@ def main(config_path: str) -> None:
         step_start = time.time()
         lr = lr_at(step, args)
         for group in optimizer.param_groups:
-            group["lr"] = lr
+            group["lr"] = lr * group.get("lr_scale", 1.0)
         if curriculum is not None and curriculum.phase_index(step) != current_phase:
             current_phase = curriculum.phase_index(step)
             mix = curriculum.phases[current_phase].mix
@@ -345,6 +348,7 @@ def main(config_path: str) -> None:
                     voice_prompt_latents,
                     update_stats=step < args.stats_ema_steps,
                     num_voice_prompt_frames=num_voice_prompt_frames,
+                    **({"texts": batch.texts} if semantic else {}),
                 )
             # Under DDP, allreduce only on the last micro-batch.
             last_micro = micro == args.grad_accum_steps - 1
@@ -535,6 +539,7 @@ def _valid_pass(
             latents, mask, voice_prompt_latents, num_voice_prompt_frames = encode_batch(
                 mimi, batch, device
             )
+            semantic = getattr(model.flow_lm, "semantic_fusion", None) is not None
             with autocast:
                 _, metrics = model(
                     latents,
@@ -542,6 +547,7 @@ def _valid_pass(
                     batch.text_tokens,
                     voice_prompt_latents,
                     num_voice_prompt_frames=num_voice_prompt_frames,
+                    **({"texts": batch.texts} if semantic else {}),
                 )
             for k, v in metrics.items():
                 if v.numel() == 1:

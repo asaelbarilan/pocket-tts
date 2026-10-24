@@ -18,6 +18,7 @@ from torch.nn import functional as F
 from typing_extensions import Self
 
 from pocket_tts.conditioners.base import TokenizedText
+from pocket_tts.conditioners.semantic import load_state_dict_allowing_semantic
 from pocket_tts.data.audio import audio_read
 from pocket_tts.data.audio_utils import convert_audio
 from pocket_tts.default_parameters import (
@@ -156,7 +157,7 @@ class TTSModel(nn.Module):
                 dtype=torch.float32,
             )
         )
-        self.flow_lm.load_state_dict(flow_lm_state, strict=True)
+        load_state_dict_allowing_semantic(self.flow_lm, flow_lm_state, strict=True)
         self.mimi = build_mimi(config.mimi).to(device="cpu")
         # Training freezes Mimi and does not checkpoint it, so its weights come
         # from the config -- either its own safetensors or the packaged bundle.
@@ -213,7 +214,7 @@ class TTSModel(nn.Module):
             state_dict_flowlm = get_flow_lm_state_dict(
                 download_if_necessary(config.flow_lm.weights_path)
             )
-            tts_model.flow_lm.load_state_dict(state_dict_flowlm, strict=True)
+            load_state_dict_allowing_semantic(tts_model.flow_lm, state_dict_flowlm, strict=True)
 
         tts_model.mimi = build_mimi(config.mimi).to(device="cpu")
 
@@ -239,7 +240,9 @@ class TTSModel(nn.Module):
                 weights_file = download_if_necessary(config.weights_path_without_voice_cloning)
 
             state_dict = safetensors.torch.load_file(weights_file)
-            tts_model.load_state_dict(state_dict, strict=True)
+            load_state_dict_allowing_semantic(
+                tts_model, state_dict, strict=True, prefix="flow_lm.semantic_fusion."
+            )
 
         if config.flow_lm.weights_path is None and config.weights_path is None:
             logger.warning(
@@ -362,6 +365,9 @@ class TTSModel(nn.Module):
 
         if quantize:
             apply_dynamic_int8(tts_model.flow_lm, RECOMMENDED_CONFIG)
+        if tts_model.flow_lm.semantic_fusion is not None:
+            # Fail at load time, not on the first sentence.
+            tts_model.flow_lm.semantic_fusion.load_encoder()
 
         return tts_model
 
@@ -371,8 +377,12 @@ class TTSModel(nn.Module):
         text_tokens: torch.Tensor | None = None,
         backbone_input_latents: torch.Tensor | None = None,
         audio_conditioning: torch.Tensor | None = None,
+        text: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """First one is the backbone output, second one is the audio decoding output."""
+        """First one is the backbone output, second one is the audio decoding output.
+
+        `text` is the exact string `text_tokens` was tokenized from; only semantic
+        conditioning reads it."""
         if text_tokens is None:
             text_tokens = torch.zeros((1, 0), dtype=torch.int64, device=self.flow_lm.device)
         if backbone_input_latents is None:
@@ -389,6 +399,7 @@ class TTSModel(nn.Module):
             backbone_input_latents=backbone_input_latents,
             model_state=model_state,
             audio_conditioning=audio_conditioning,
+            text=text,
         )
         increment_by = (
             text_tokens.shape[1] + backbone_input_latents.shape[1] + audio_conditioning.shape[1]
@@ -402,8 +413,16 @@ class TTSModel(nn.Module):
         text_tokens: torch.Tensor,
         backbone_input_latents: torch.Tensor,
         audio_conditioning: torch.Tensor,
+        text: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         text_embeddings = self.flow_lm.conditioner(TokenizedText(text_tokens))
+        fusion = self.flow_lm.semantic_fusion
+        if fusion is not None and text_tokens.shape[1] > 0:
+            if text is None:
+                raise ValueError("semantic conditioning needs the text of the tokens")
+            text_embeddings = fusion(
+                text, text_tokens, text_embeddings, self.flow_lm.conditioner.tokenizer.sp
+            )
         text_embeddings = torch.cat([text_embeddings, audio_conditioning], dim=1)
 
         output_embeddings, is_eos = self.flow_lm._sample_next_latent(
@@ -704,6 +723,9 @@ class TTSModel(nn.Module):
         decoder_thread.start()
 
         # Generate latents and add them to queue (decoder processes them in parallel)
+        # Semantic conditioning re-reads the exact string the tokenizer was given (one chunk:
+        # no context crosses chunk boundaries).
+        semantic_text = text_to_generate if self.flow_lm.semantic_fusion is not None else None
         self._generate(
             model_state=model_state,
             prepared=prepared,
@@ -711,6 +733,7 @@ class TTSModel(nn.Module):
             frames_after_eos=frames_after_eos,
             latents_queue=latents_queue,
             result_queue=result_queue,
+            text=semantic_text,
         )
 
         # Stream audio chunks as they become available
@@ -759,6 +782,7 @@ class TTSModel(nn.Module):
         frames_after_eos: int,
         latents_queue: queue.Queue,
         result_queue: queue.Queue,
+        text: str | None = None,
     ):
         token_count = prepared.tokens.shape[1]
         current_end = self._flow_lm_current_end(model_state)
@@ -766,8 +790,10 @@ class TTSModel(nn.Module):
         self._expand_kv_cache(model_state, sequence_length=required_len)
 
         with display_execution_time("Prompting text"):
+            # Without semantic conditioning the call is exactly what it always was.
+            semantic_kwargs = {} if text is None else {"text": text}
             self._run_flow_lm_and_increment_step(
-                model_state=model_state, text_tokens=prepared.tokens
+                model_state=model_state, text_tokens=prepared.tokens, **semantic_kwargs
             )
 
         def run_generation():
