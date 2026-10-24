@@ -61,7 +61,7 @@ cp "$ROOT/deploy/Dockerfile" "$STAGE/Dockerfile"
 cp "$ROOT/artifacts/hebrew_24l.yaml" "$ROOT/artifacts/model.safetensors" "$STAGE/artifacts/"
 cp "$ROOT/tokenizers/tokenizer.model" "$STAGE/tokenizers/"
 for dir in pocket_tts training deploy; do
-  rsync -a --exclude __pycache__ --exclude '*.pyc' --exclude .DS_Store --exclude validation_cache "$ROOT/$dir" "$STAGE/"
+  rsync -a --exclude __pycache__ --exclude '*.pyc' --exclude .DS_Store --exclude validation_cache --exclude milim_bench_data "$ROOT/$dir" "$STAGE/"
 done
 
 cat > "$STAGE/cloudbuild.yaml" <<EOF

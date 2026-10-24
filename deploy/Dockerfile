@@ -15,6 +15,13 @@ RUN pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/${TOR
 COPY deploy/requirements.txt deploy/requirements.txt
 RUN pip install -r deploy/requirements.txt
 
+# MILIM-Bench (renikud/MILIM-Bench), the whole dataset repo, downloaded at build time and pinned
+# to a revision; the server reads data/gold.tsv from it for the test page's sample picker.
+ARG MILIM_REVISION=0cdf63745681f65dc33b5006f781f652c597f4b2
+ENV MILIM_DIR=/app/milim-bench
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('renikud/MILIM-Bench', repo_type='dataset', revision='${MILIM_REVISION}', local_dir='${MILIM_DIR}')" \
+    && test -s "${MILIM_DIR}/data/gold.tsv"
+
 # Weights and tokenizer first: they are large and change rarely, so this layer stays cached.
 COPY artifacts/hebrew_24l.yaml artifacts/hebrew_24l.yaml
 COPY artifacts/model.safetensors artifacts/model.safetensors

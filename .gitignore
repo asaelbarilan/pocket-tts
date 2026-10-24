@@ -115,3 +115,4 @@ runs/
 tokenizers/
 
 /deploy/validation_cache/
+/deploy/milim_bench_data/

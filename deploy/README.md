@@ -86,6 +86,26 @@ and shows them with players. The page polls `GET /validation` every 5 s while it
   `/cache`; `deploy.sh` creates it and grants the service account access. Cloud Run cannot attach
   disks.
 
+## MILIM-Bench sample picker
+
+The page has a **בחר דוגמה מ MILIM** button (hidden when the dataset is not installed). It opens a
+dialog over the 1,653 sentences of [renikud/MILIM-Bench](https://huggingface.co/datasets/renikud/MILIM-Bench):
+pick a category or all of them, tick up to 5 samples, and **צור** generates them in one request
+with the page's current voice and sampling settings. Each sample's labelled word is highlighted;
+hover it to see the expected IPA. Results appear below the player as text + audio.
+
+- The dataset repo is downloaded into the image at build time (`MILIM_REVISION` build arg, pinned
+  to a commit; the server reads `$MILIM_DIR/data/gold.tsv`). The server never contacts Hugging Face.
+- Locally, fetch it once: `uv run python -m deploy.milim_bench` (into the gitignored
+  `deploy/milim_bench_data/`; override with `--milim-dir` / `MILIM_DIR`).
+- `GET /milim` returns `{categories, samples: [{id, category, text, targets: [{index, ipa}]}]}`;
+  `index` is the whitespace-split word position. Labels that point past the end of their text
+  (two rows in v5) are dropped.
+- `POST /milim/generate` takes the `/tts` voice and sampling fields plus repeated `ids` (1-5) and
+  streams NDJSON, one line per sample as it finishes: `{id, text, status: ok|eos|error,
+  audio_seconds, generation_seconds, hit_max_length, wav (base64)}`. Samples run one after another,
+  each under the generation lock like the validation set.
+
 ## Local inference downloads
 
 The top of the page links the files needed to run the model locally: `model.safetensors`,

@@ -19,8 +19,10 @@ generated in a single pass of at most `max_seconds`.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
+import json
 import logging
 import os
 import tempfile
@@ -34,9 +36,11 @@ import torch
 import uvicorn
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from deploy.downloads import CODE_ZIP, GUIDE, Downloads
+from deploy.milim_bench import DEFAULT_DIR as DEFAULT_MILIM_DIR
+from deploy.milim_bench import MAX_BATCH, MilimBench
 from deploy.validation_set import ValidationSet
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import audio_read
@@ -280,8 +284,110 @@ def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) 
     )
 
 
-def create_app(loader: EngineLoader, validation: ValidationSet, downloads: Downloads) -> FastAPI:
+def require_engine(loader: EngineLoader) -> Engine:
+    engine = loader.engine
+    if engine is None:
+        if loader.error:
+            raise HTTPException(status_code=500, detail=f"model failed to load: {loader.error}")
+        raise HTTPException(status_code=503, detail="warming up...", headers={"Retry-After": "10"})
+    return engine
+
+
+def resolve_voice(
+    engine: Engine, voice: str | None, voice_wav: UploadFile | None
+) -> tuple[tuple, Path, str | None]:
+    """(cache key, audio path, temp file to delete when done or None) for a request's voice."""
+    if voice_wav is not None and voice_wav.filename:
+        data = voice_wav.file.read()
+        suffix = Path(voice_wav.filename).suffix.lower() or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+            handle.write(data)
+        return ("upload", hashlib.sha256(data).hexdigest()), Path(handle.name), handle.name
+    if voice:
+        known = engine.list_voices()
+        if voice not in known:
+            raise HTTPException(status_code=400, detail=f"unknown voice {voice!r}; see GET /voices")
+        path = known[voice]
+        return ("file", voice, path.stat().st_mtime_ns), path, None
+    raise HTTPException(status_code=400, detail="give `voice` or upload `voice_wav`")
+
+
+def create_app(
+    loader: EngineLoader, validation: ValidationSet, downloads: Downloads, milim: MilimBench
+) -> FastAPI:
     app = FastAPI(title="Hebrew Pocket TTS (test API)")
+
+    @app.get("/milim")
+    def milim_samples():
+        if not milim.available:
+            raise HTTPException(status_code=404, detail="MILIM-Bench is not installed")
+        return milim.payload()
+
+    @app.post("/milim/generate")
+    def milim_generate(
+        ids: list[int] = Form(..., description="MILIM sample ids from GET /milim"),  # noqa: B008
+        voice: str | None = Form(None, description="name of a file from GET /voices"),
+        voice_wav: UploadFile | None = File(None, description="or upload a prompt (wins)"),  # noqa: B008
+        temp: float = Form(DEFAULTS["temp"], ge=0.0, le=2.0),
+        cfg: float = Form(DEFAULTS["cfg"], ge=0.0, le=6.0),
+        n_steps: int = Form(DEFAULTS["n_steps"], ge=1, le=8),
+        eos_threshold: float = Form(DEFAULTS["eos_threshold"], ge=-12.0, le=12.0),
+        max_seconds: float = Form(DEFAULTS["max_seconds"], gt=0.0, le=60.0),
+        prompt_seconds: float = Form(DEFAULTS["prompt_seconds"], ge=0.0, le=30.0),
+        seed: int | None = Form(None),
+    ):
+        """Generates up to 5 MILIM samples one after another and streams one JSON line per
+        sample (NDJSON) as each finishes, with the WAV base64-encoded in `wav`."""
+        if not milim.available:
+            raise HTTPException(status_code=404, detail="MILIM-Bench is not installed")
+        if not 1 <= len(ids) <= MAX_BATCH:
+            raise HTTPException(status_code=400, detail=f"give 1 to {MAX_BATCH} sample ids")
+        samples = [milim.get(i) for i in ids]
+        if any(s is None for s in samples):
+            raise HTTPException(status_code=400, detail="unknown MILIM sample id")
+        engine = require_engine(loader)
+
+        key, path, temp_path = resolve_voice(engine, voice, voice_wav)
+        try:
+            with engine.lock:
+                latents = engine.voice_latents(key, path, prompt_seconds)
+        finally:
+            if temp_path is not None:
+                os.unlink(temp_path)
+
+        def stream():
+            for sample in samples:
+                line = {"id": sample["id"], "text": sample["text"]}
+                started = time.perf_counter()
+                try:
+                    with engine.lock:
+                        waveform, hit_max = engine.synthesize(
+                            sample["text"],
+                            latents,
+                            temp=temp,
+                            cfg=cfg,
+                            n_steps=n_steps,
+                            eos_threshold=eos_threshold,
+                            max_seconds=max_seconds,
+                            seed=seed,
+                        )
+                    elapsed = time.perf_counter() - started
+                    if waveform is None:
+                        line.update(status="eos", generation_seconds=round(elapsed, 2))
+                    else:
+                        line.update(
+                            status="ok",
+                            audio_seconds=round(waveform.shape[0] / engine.sample_rate, 2),
+                            generation_seconds=round(elapsed, 2),
+                            hit_max_length=hit_max,
+                            wav=base64.b64encode(wav_bytes(waveform, engine.sample_rate)).decode(),
+                        )
+                except Exception as exc:
+                    logger.exception("MILIM sample %s failed", sample["id"])
+                    line.update(status="error", error=f"{type(exc).__name__}: {exc}")
+                yield json.dumps(line, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
 
     @app.get("/download/{name}")
     def download(name: str):
@@ -372,13 +478,7 @@ def create_app(loader: EngineLoader, validation: ValidationSet, downloads: Downl
         prompt_seconds: float = Form(DEFAULTS["prompt_seconds"], ge=0.0, le=30.0),
         seed: int | None = Form(None),
     ):
-        engine = loader.engine
-        if engine is None:
-            if loader.error:
-                raise HTTPException(status_code=500, detail=f"model failed to load: {loader.error}")
-            raise HTTPException(
-                status_code=503, detail="warming up...", headers={"Retry-After": "10"}
-            )
+        engine = require_engine(loader)
         text = text.strip()
         if not text:
             raise HTTPException(status_code=400, detail="text is empty")
@@ -388,24 +488,7 @@ def create_app(loader: EngineLoader, validation: ValidationSet, downloads: Downl
         started = time.perf_counter()
         temp_path: str | None = None
         try:
-            if voice_wav is not None and voice_wav.filename:
-                data = voice_wav.file.read()
-                suffix = Path(voice_wav.filename).suffix.lower() or ".wav"
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
-                    handle.write(data)
-                    temp_path = handle.name
-                key, path = ("upload", hashlib.sha256(data).hexdigest()), Path(temp_path)
-            elif voice:
-                known = engine.list_voices()
-                if voice not in known:
-                    raise HTTPException(
-                        status_code=400, detail=f"unknown voice {voice!r}; see GET /voices"
-                    )
-                path = known[voice]
-                key = ("file", voice, path.stat().st_mtime_ns)
-            else:
-                raise HTTPException(status_code=400, detail="give `voice` or upload `voice_wav`")
-
+            key, path, temp_path = resolve_voice(engine, voice, voice_wav)
             with engine.lock:
                 latents = engine.voice_latents(key, path, prompt_seconds)
                 waveform, hit_max = engine.synthesize(
@@ -474,6 +557,23 @@ INDEX_HTML = """<!doctype html>
  .vrow{border:1px solid #ddd;border-radius:6px;padding:.5rem .7rem;margin:.4rem 0}
  .vtext{direction:rtl;font-size:1.2rem;margin-bottom:.3rem}
  .vmeta{color:#777;font-size:.85rem} .vrow.bad{border-color:#b00020}
+ .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+ #milimDlg{width:min(720px,94vw);max-height:88vh;border:1px solid #bbb;border-radius:8px;padding:0;color:#222;background:#fff}
+ #milimDlg::backdrop{background:rgba(0,0,0,.4)}
+ #milimDlg form{display:flex;flex-direction:column;max-height:88vh;margin:0}
+ .dhead,.dfoot{padding:.8rem 1rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+ .dhead{border-bottom:1px solid #ddd} .dfoot{border-top:1px solid #ddd}
+ .dhead select{font-size:1rem;padding:.3rem} .dhead .grow,.dfoot .grow{flex:1}
+ #mlist{overflow-y:auto;padding:.4rem 1rem;min-height:12rem;flex:1}
+ .mrow{display:flex;gap:.7rem;align-items:flex-start;border:1px solid #ddd;border-radius:6px;padding:.45rem .7rem;margin:.35rem 0;cursor:pointer}
+ .mrow.sel{border-color:#1a73e8;background:#eef4ff} .mrow.off{opacity:.45;cursor:not-allowed}
+ .mtext{font-size:1.2rem;line-height:1.9} .mcat{color:#777;font-size:.8rem}
+ mark.w{background:#ffe08a;color:inherit;border-radius:3px;padding:0 .15em;position:relative}
+ mark.w::after{content:attr(data-ipa);position:absolute;top:100%;left:50%;transform:translateX(-50%);
+   direction:ltr;white-space:nowrap;background:#222;color:#fff;font:.9rem system-ui,sans-serif;
+   padding:.15rem .5rem;border-radius:4px;z-index:5;display:none;pointer-events:none}
+ mark.w:hover::after{display:block}
+ #mres .vmeta{direction:ltr;text-align:right}
 </style></head><body>
 <h2>Hebrew TTS test</h2>
 <div class="dl"><b>Download for local inference</b>__DOWNLOADS__</div>
@@ -484,9 +584,28 @@ INDEX_HTML = """<!doctype html>
 <label for="file">…or upload one (wins over the list; first <span id="ps"></span>s are used)</label>
 <input type="file" id="file" accept="audio/*">
 <details><summary style="margin-top:1rem;cursor:pointer">Sampling settings</summary><div class="grid" id="params"></div></details>
+<div class="row">
 <button id="go">Generate</button>
+<button id="milimBtn" dir="rtl" hidden>בחר דוגמה מ MILIM</button>
+</div>
 <div id="status"></div>
 <audio id="player" controls></audio>
+<div id="mres" dir="rtl"></div>
+<dialog id="milimDlg" dir="rtl"><form method="dialog">
+ <div class="dhead">
+  <b>MILIM-Bench</b>
+  <select id="mcat"></select>
+  <span class="grow"></span>
+  <span id="mcount"></span>
+ </div>
+ <div id="mlist"></div>
+ <div class="dfoot">
+  <button type="button" id="mclear" style="margin:0">נקה בחירה</button>
+  <span class="grow"></span>
+  <button value="cancel" style="margin:0">סגור</button>
+  <button type="button" id="mgo" style="margin:0" disabled>צור</button>
+ </div>
+</form></dialog>
 <hr style="margin:1.5rem 0">
 <button id="val" dir="rtl" disabled>הצג סט ולידציה</button>
 <div id="vstatus"></div>
@@ -580,27 +699,32 @@ valBtn.onclick = async () => {
   if (!r.ok) { vstatus.className = "err"; vstatus.textContent = r.status + ": " + await r.text(); valBtn.disabled = false; return; }
   pollValidation();
 };
+let ready = false;
 const waitReady = async () => {
   status.className = ""; status.textContent = "warming up… (loading the model)";
   for (;;) {
     try {
       const h = await (await fetch("/health")).json();
-      if (h.ready) { status.textContent = "ready"; go.disabled = false; valBtn.disabled = false; return; }
+      if (h.ready) { ready = true; status.textContent = "ready"; go.disabled = false; valBtn.disabled = false; syncMilim(); return; }
       if (h.error) { status.className = "err"; status.textContent = "model failed to load: " + h.error; return; }
     } catch (e) {}
     await new Promise(res => setTimeout(res, 3000));
   }
 };
 waitReady();
-go.onclick = async () => {
-  const f = new FormData();
-  f.append("text", document.getElementById("text").value);
+const voiceAndParams = f => {
   const file = document.getElementById("file").files[0];
   if (file) f.append("voice_wav", file); else f.append("voice", document.getElementById("voice").value);
   for (const k of [...Object.keys(D), "seed"]) {
     const v = document.getElementById("p_" + k).value;
     if (v !== "") f.append(k, v);
   }
+  return f;
+};
+go.onclick = async () => {
+  const f = new FormData();
+  f.append("text", document.getElementById("text").value);
+  voiceAndParams(f);
   status.className = ""; status.textContent = "generating…";
   const t0 = performance.now();
   const r = await fetch("/tts", {method: "POST", body: f});
@@ -615,6 +739,135 @@ go.onclick = async () => {
     `(${r.headers.get("X-Realtime-Factor")}x realtime) on ${r.headers.get("X-Device")}` +
     (r.headers.get("X-Hit-Max-Length") === "true" ? "\\nhit max length: EOS never fired" : "");
 };
+
+// MILIM-Bench sample picker: choose up to max_batch sentences, generate them in one request.
+const milimBtn = document.getElementById("milimBtn");
+const dlg = document.getElementById("milimDlg");
+const mcat = document.getElementById("mcat");
+const mlist = document.getElementById("mlist");
+const mcount = document.getElementById("mcount");
+const mgo = document.getElementById("mgo");
+const mres = document.getElementById("mres");
+let M = null, busy = false;
+const picked = new Map();  // sample id -> sample, in the order chosen
+const syncMilim = () => {
+  const n = picked.size;
+  mcount.textContent = "נבחרו " + n + "/" + (M ? M.max_batch : 5);
+  mgo.textContent = n ? "צור (" + n + ")" : "צור";
+  mgo.disabled = !n || !ready || busy;
+  mgo.title = ready ? "" : "המודל נטען…";
+  milimBtn.disabled = busy;
+  const full = M && n >= M.max_batch;
+  for (const row of mlist.children) {
+    const id = Number(row.dataset.id), on = picked.has(id);
+    row.classList.toggle("sel", on);
+    row.classList.toggle("off", full && !on);
+    row.querySelector("input").disabled = full && !on;
+  }
+};
+const sentenceEl = s => {
+  const box = el("div", "mtext");
+  const ipa = new Map(s.targets.map(t => [t.index, t.ipa]));
+  s.text.split(/\\s+/).forEach((w, i) => {
+    if (i) box.append(" ");
+    if (ipa.has(i)) { const m = el("mark", "w", w); m.dataset.ipa = ipa.get(i); box.append(m); }
+    else box.append(w);
+  });
+  return box;
+};
+const renderMilimList = () => {
+  mlist.replaceChildren();
+  mlist.scrollTop = 0;
+  for (const s of M.samples) {
+    if (mcat.value !== "" && s.category !== mcat.value) continue;
+    const row = el("label", "mrow");
+    row.dataset.id = s.id;
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = picked.has(s.id);
+    cb.onchange = () => {
+      if (cb.checked) picked.set(s.id, s); else picked.delete(s.id);
+      syncMilim();
+    };
+    const body = el("div");
+    body.append(sentenceEl(s));
+    if (mcat.value === "") body.append(el("div", "mcat", s.category));
+    row.append(cb, body);
+    mlist.append(row);
+  }
+  syncMilim();
+};
+fetch("/milim").then(r => r.ok ? r.json() : null).then(j => {
+  if (!j) return;
+  M = j;
+  mcat.add(new Option("כל הקטגוריות (" + M.samples.length + ")", ""));
+  M.categories.forEach(c => mcat.add(new Option(c.name + " (" + c.count + ")", c.name)));
+  milimBtn.hidden = false;
+  renderMilimList();
+}).catch(() => {});
+mcat.onchange = renderMilimList;
+milimBtn.onclick = () => dlg.showModal();
+document.getElementById("mclear").onclick = () => { picked.clear(); renderMilimList(); };
+mgo.onclick = () => { dlg.close(); runMilim(); };
+const runMilim = async () => {
+  const items = [...picked.values()];
+  busy = true; syncMilim();
+  const rows = new Map(), pending = [];
+  mres.replaceChildren(el("div", "vcat", "תוצאות MILIM"));
+  for (const s of items) {
+    const row = el("div", "vrow");
+    row.append(el("div", "vtext", s.text), el("div", "vmeta", s.category + " - ממתין…"));
+    mres.append(row); rows.set(s.id, row); pending.push(s);
+  }
+  const markNext = () => {
+    if (pending.length) rows.get(pending[0].id).lastChild.textContent = pending[0].category + " - generating…";
+  };
+  const finish = (s, r) => {
+    pending.splice(pending.indexOf(s), 1);
+    const row = rows.get(s.id);
+    row.replaceChildren(el("div", "vtext", s.text));
+    row.classList.toggle("bad", r.status !== "ok");
+    if (r.status === "ok") {
+      const a = el("audio"); a.controls = true; a.src = "data:audio/wav;base64," + r.wav;
+      row.append(a, el("div", "vmeta", s.category + " - " + r.audio_seconds + "s audio in " +
+        r.generation_seconds + "s" + (r.hit_max_length ? " - hit max length" : "")));
+    } else {
+      row.append(el("div", "vmeta", s.category + " - " +
+        (r.status === "eos" ? "the model ended speech immediately" : r.error)));
+    }
+  };
+  const fail = msg => { for (const s of [...pending]) finish(s, {status: "error", error: msg}); };
+  try {
+    const f = new FormData();
+    items.forEach(s => f.append("ids", s.id));
+    voiceAndParams(f);
+    markNext();
+    const r = await fetch("/milim/generate", {method: "POST", body: f});
+    if (!r.ok) {
+      let d = await r.text(); try { d = JSON.stringify(JSON.parse(d).detail); } catch (e) {}
+      fail(r.status + ": " + d); return;
+    }
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf("\\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        const res = JSON.parse(line);
+        const s = pending.find(p => p.id === res.id);
+        if (s) { finish(s, res); markNext(); }
+      }
+    }
+    fail("no response");
+  } catch (e) {
+    fail(String(e));
+  } finally {
+    busy = false; syncMilim();
+  }
+};
+syncMilim();
 </script></body></html>
 """
 
@@ -635,6 +888,13 @@ def main() -> None:
         default=Path(os.environ.get("VALIDATION_CACHE_DIR") or DEFAULT_CACHE_DIR),
         help="where the validation set audio is cached (persistent storage on Cloud Run)",
     )
+    parser.add_argument(
+        "--milim-dir",
+        type=Path,
+        default=Path(os.environ.get("MILIM_DIR") or DEFAULT_MILIM_DIR),
+        help="MILIM-Bench snapshot (downloaded at image build time; locally: "
+        "python -m deploy.milim_bench)",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8002)
     parser.add_argument(
@@ -652,6 +912,7 @@ def main() -> None:
     voices_dir = args.voices_dir.resolve()
     sentences = args.sentences.resolve()
     cache_dir = args.cache_dir.resolve()
+    milim_dir = args.milim_dir.resolve()
     if not sentences.exists():
         raise SystemExit(f"sentences file not found: {sentences}")
     # The config's weights/tokenizer paths are relative to the repo root.
@@ -666,8 +927,12 @@ def main() -> None:
     validation = make_validation_set(loader, sentences, cache_dir)
     downloads = Downloads(REPO_ROOT, config, sentences, DEFAULTS, lambda: loader.model_sha256)
     logger.info("validation cache: %s", cache_dir)
+    milim = MilimBench(milim_dir)
     uvicorn.run(
-        create_app(loader, validation, downloads), host=args.host, port=args.port, log_level="info"
+        create_app(loader, validation, downloads, milim),
+        host=args.host,
+        port=args.port,
+        log_level="info",
     )
 
 
