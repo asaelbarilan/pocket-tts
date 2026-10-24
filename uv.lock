@@ -2473,6 +2473,7 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
     { name = "uvicorn" },
+    { name = "wandb" },
 ]
 
 [package.optional-dependencies]
@@ -2538,6 +2539,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.10.0" },
     { name = "typing-extensions", specifier = ">=4.0.0" },
     { name = "uvicorn", specifier = ">=0.13.0" },
+    { name = "wandb", specifier = ">=0.30.0" },
     { name = "wandb", marker = "extra == 'training'", specifier = ">=0.30.0" },
 ]
 provides-extras = ["audio", "quantize", "training"]
