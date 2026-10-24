@@ -9,7 +9,9 @@ Why this exists instead of `pocket-tts serve`: the model was trained with CFG dr
 evaluated with cfg=2.0, and `pocket_tts` has no CFG. This server samples with the training
 code (`TrainableTTS.generate`), so it matches the training evals: same CFG, EOS threshold,
 temperature and decoding. The weights are the exported artifacts/model.safetensors, loaded
-through the config in artifacts/hebrew_24l.yaml.
+through the config in artifacts/hebrew_24l.yaml. Or, with env MODEL_STORE (a directory of
+published models, see deploy/model_store.py) and MODEL_SHA256 (which one), the model is copied
+from the store and verified at startup.
 
 The text goes to the tokenizer with only its characters folded (curly quotes, Unicode dashes,
 invisible marks -- what training saw), with no chunking and no other normalization, and is
@@ -41,6 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from deploy.downloads import CODE_ZIP, GUIDE, Downloads
 from deploy.milim_bench import DEFAULT_DIR as DEFAULT_MILIM_DIR
 from deploy.milim_bench import MAX_BATCH, MilimBench
+from deploy.model_store import ModelStore
 from deploy.validation_set import ValidationSet
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import audio_read
@@ -226,16 +229,25 @@ class EngineLoader:
     """Loads the Engine in a background thread so the HTTP port can open immediately.
 
     Until `engine` is set, `/tts` answers 503 "warming up..." and `/health` reports it.
-    `model_sha256` is the weights hash: the MODEL_SHA256 env var baked into the image (checked
-    against the file at build time), or computed from the weights file when unset.
+    `model_sha256` is the weights hash. With a model store the weights are copied from it
+    (verified against the manifest, and the store is pinned to this hash); without one the
+    weights file the config points at is hashed.
     """
 
-    def __init__(self, config: Path, voices_dir: Path, device: torch.device):
+    def __init__(
+        self,
+        config: Path,
+        voices_dir: Path,
+        device: torch.device,
+        store: ModelStore | None = None,
+    ):
         self.config = config
         self.voices_dir = voices_dir
         self.device = device
+        self.store = store
         self.engine: Engine | None = None
-        self.model_sha256: str | None = None
+        self.model_sha256: str | None = None  # set once the model is loaded
+        self.stage = "starting"
         self.error: str | None = None
 
     def start(self) -> None:
@@ -249,14 +261,25 @@ class EngineLoader:
 
     def _load(self) -> None:
         try:
-            sha = os.environ.get("MODEL_SHA256") or file_sha256(
-                Path(yaml.safe_load(self.config.read_text())["weights_path"])
-            )
+            started = time.perf_counter()
+            if self.store is not None:
+                self.stage = "copying and verifying the weights"
+                self.store.fetch_weights()
+                sha = self.store.sha256
+                logger.info(
+                    "weights %s copied and verified in %.1fs", sha, time.perf_counter() - started
+                )
+            else:
+                self.stage = "hashing the weights"
+                sha = file_sha256(Path(yaml.safe_load(self.config.read_text())["weights_path"]))
+            self.stage = "loading the model"
             engine = Engine(self.config, self.voices_dir, self.device)
             self.model_sha256 = sha.lower()
             self.engine = engine
+            self.stage = "ready"
             logger.info("model sha256 %s", self.model_sha256)
         except Exception as exc:
+            self.stage = "failed"
             logger.exception("model failed to load")
             self.error = f"{type(exc).__name__}: {exc}"
 
@@ -435,6 +458,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="no such validation audio")
         return FileResponse(path, media_type="audio/wav")
 
+    @app.get("/ready")
+    def ready():
+        """200 only once the model is loaded: the Cloud Run startup probe, so a revision whose
+        model cannot be loaded never takes traffic."""
+        if loader.engine is None:
+            return JSONResponse(
+                status_code=503, content={"ready": False, "stage": loader.stage, "error": loader.error}
+            )
+        return {"ready": True, "model_sha256": loader.model_sha256}
+
     @app.get("/health")
     def health():
         engine = loader.engine
@@ -444,10 +477,17 @@ def create_app(
                 return JSONResponse(
                     status_code=500, content={"status": "load failed", "error": loader.error}
                 )
-            return {"status": "warming up...", "ready": False, "voices": len(voices)}
+            return {
+                "status": "warming up...",
+                "ready": False,
+                "stage": loader.stage,
+                "voices": len(voices),
+            }
         return {
             "status": "ok",
             "ready": True,
+            "model_sha256": loader.model_sha256,
+            "model_store": str(loader.store.dir) if loader.store else None,
             "device": str(engine.device),
             "layers": engine.n_layers,
             "sample_rate": engine.sample_rate,
@@ -520,6 +560,7 @@ def create_app(
             "X-Realtime-Factor": f"{seconds / elapsed:.2f}",
             "X-Hit-Max-Length": str(hit_max).lower(),
             "X-Device": str(engine.device),
+            "X-Model-Sha256": loader.model_sha256 or "",
             "Content-Disposition": 'inline; filename="speech.wav"',
         }
         logger.info(
@@ -908,6 +949,22 @@ def main() -> None:
     )
     torch.set_num_threads(args.threads)  # pocket_tts pins this to 1 at import
     config = args.config if args.config.is_absolute() else Path.cwd() / args.config
+    store = None
+    store_dir = os.environ.get("MODEL_STORE")
+    if store_dir:
+        # The model comes from the store, pinned to one weights hash; config and tokenizer are
+        # copied now (the config is read below), the weights in the background.
+        pinned = os.environ.get("MODEL_SHA256")
+        if not pinned:
+            raise SystemExit("MODEL_STORE is set: also set MODEL_SHA256 to the model to serve")
+        if config != DEFAULT_CONFIG:
+            raise SystemExit("--config cannot be combined with MODEL_STORE (the store has it)")
+        try:
+            store = ModelStore(Path(store_dir), pinned, REPO_ROOT)
+            store.fetch_small()
+        except (OSError, ValueError, KeyError) as exc:
+            raise SystemExit(f"model store: {exc}") from exc
+        logger.info("model store %s, model %s", store_dir, store.sha256)
     if not config.exists():
         raise SystemExit(f"config not found: {config}")
     voices_dir = args.voices_dir.resolve()
@@ -923,7 +980,7 @@ def main() -> None:
     logger.info("device: %s", device)
     if not list_voice_files(voices_dir):
         logger.warning("no voice prompts in %s; upload one per request or add files", voices_dir)
-    loader = EngineLoader(config, voices_dir, device)
+    loader = EngineLoader(config, voices_dir, device, store)
     loader.start()
     validation = make_validation_set(loader, sentences, cache_dir)
     downloads = Downloads(REPO_ROOT, config, sentences, DEFAULTS, lambda: loader.model_sha256)

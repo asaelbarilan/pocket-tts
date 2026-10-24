@@ -45,14 +45,49 @@ Response headers: `X-Audio-Seconds`, `X-Generation-Seconds`, `X-Realtime-Factor`
 
 ## Cloud Run (CPU)
 
+The image holds code only. The model (weights, config, tokenizer) lives in a **model store**, a
+Cloud Storage bucket, and a revision is pinned to one model by its weights hash.
+
 ```bash
-deploy/deploy.sh                      # Cloud Build -> Artifact Registry -> Cloud Run
+deploy/publish_model.sh               # upload artifacts/model.safetensors (+ config, tokenizer); prints the sha256
+deploy/deploy.sh                      # first deploy / code change: Cloud Build -> Artifact Registry -> Cloud Run
+deploy/swap_model.sh [sha256]         # a new model only: no build, a new revision in about a minute
 gcloud run services proxy hebrew-tts --region europe-west1 --port 8080   # then open localhost:8080
 ```
 
-`deploy/Dockerfile` is a CPU-only image (4 torch threads). Defaults in `deploy.sh`: project
-`project-71583fab-5cd0-4bba-a6f`, region `europe-west1`, 4 vCPU / 16 GiB, min 0 / max 1
-instances, IAM-protected (no auth in the app itself).
+`GPU=1` on any of the three scripts targets the L4 service. `deploy/Dockerfile` is a CPU-only
+image (4 torch threads). Defaults in `deploy/_common.sh`: project `project-71583fab-5cd0-4bba-a6f`,
+region `europe-west1`, 4 vCPU / 16 GiB, min 0 / max 1 instances, IAM-protected (no auth in the
+app itself).
+
+### Model store
+
+- Layout: `gs://<project>-hebrew-tts-models/<weights sha256>/{manifest.json, model.safetensors,
+  hebrew_24l.yaml, tokenizer.model}`. The manifest holds each file's sha256 and size and is
+  uploaded last: a model without one is an interrupted upload and is never served. A published
+  directory is immutable (`publish_model.sh` is a no-op for the same weights and refuses the same
+  weights with a different config/tokenizer), so a hash always means the same model.
+- The service mounts the bucket read-only at `/models` and is pinned by env `MODEL_SHA256`
+  (`MODEL_STORE=/models` is set in the image). At startup the server copies config and tokenizer
+  (before the port opens) and the weights (in the background) to the paths the config expects,
+  hashing every byte on the way; anything that does not match the manifest, or a pin that is not
+  in the store, is an error. Copying to local disk, not reading through the FUSE mount, is
+  deliberate: the model is then loaded from a fast local file. (Cloud Run's disk is in-memory, so
+  the copy counts against the instance memory: 1.4 GB of 16 GiB.)
+- **Swapping the model** = `swap_model.sh <sha256>`, which only updates `MODEL_SHA256` and so makes
+  a new revision. **Rollback** = `swap_model.sh <old sha256>` (or shift traffic to the old revision;
+  `gcloud run revisions list` shows which hash each carries).
+- The revision has a startup probe on `GET /ready`, which answers 200 only once the model is
+  loaded and verified. A revision that cannot load its model (bad hash, corrupt copy, weights the
+  code cannot run) never passes it, the deploy fails, and the previous revision keeps serving.
+- A model needs a new image only when the *code* has to change (new architecture, new config keys,
+  sampler changes). `config`/weights that the image's code runs are swapped freely.
+- To tell which model answered: `GET /health` (`model_sha256`) and the `X-Model-Sha256` header of
+  `/tts`. The validation-set cache is keyed on the hash, so each model has its own.
+- Locally nothing changes: without `MODEL_STORE` the server uses `artifacts/` and hashes the
+  weights at startup. To try the store locally, `gcloud storage cp -r gs://<bucket>/<sha256> store/`
+  and `MODEL_STORE=$PWD/store MODEL_SHA256=<sha256> uv run python -m deploy.hebrew_tts_server`
+  (it writes the verified copies to `artifacts/` and `tokenizers/`).
 
 - The model loads in a background thread: the port opens at once, `/health` says
   `"warming up..."` and `/tts` answers `503 warming up...` until it is ready (~8 s on Cloud Run).
@@ -79,9 +114,8 @@ and shows them with players. The page polls `GET /validation` every 5 s while it
   default `deploy/validation_cache/`, gitignored), in a folder named `<weights sha256[:16]>-<device>`.
   A different model, device kind, sentence file or sampling default never reuses another's audio.
 - A finished cache is shown at once. A run cut short resumes with the same voice.
-- The weights hash is the `MODEL_SHA256` env var baked into the image (`deploy.sh` computes it,
-  and the Dockerfile verifies it against the weights at build time); without it the server hashes
-  the weights file at startup.
+- The weights hash is the model store's `MODEL_SHA256` pin (verified while the weights are
+  copied); without a store the server hashes the weights file at startup.
 - On Cloud Run the cache is a Cloud Storage bucket (`<project>-hebrew-tts-cache`) mounted at
   `/cache`; `deploy.sh` creates it and grants the service account access. Cloud Run cannot attach
   disks.
