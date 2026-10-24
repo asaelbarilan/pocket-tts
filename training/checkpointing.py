@@ -13,7 +13,12 @@ import safetensors.torch
 import torch
 from torch import nn
 
+from pocket_tts.conditioners.semantic import SEMANTIC_PREFIX, load_state_dict_allowing_semantic
+
 logger = logging.getLogger(__name__)
+
+# The fusion's tensors in the training wrapper's naming.
+_SEMANTIC_KEYS = "flow_lm." + SEMANTIC_PREFIX
 
 
 class EMA:
@@ -105,19 +110,36 @@ def latest_checkpoint(run_dir: Path) -> Path | None:
 
 def load_checkpoint(path: Path, model: nn.Module, optimizer=None, ema: EMA | None = None) -> int:
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    model.load_state_dict(payload["model"])
+    # Exactly model.load_state_dict(payload["model"]) unless semantic-conditioning tensors are
+    # on one side only (pocket_tts/conditioners/semantic.py).
+    load_state_dict_allowing_semantic(model, payload["model"], prefix=_SEMANTIC_KEYS)
+    semantic = any(k.startswith(_SEMANTIC_KEYS) for k in model.state_dict())
     if optimizer is not None:
         opt_state = payload.get("optimizer")
         if opt_state is None:
             opt_path = path.parent / path.name.replace("checkpoint_", "optim_")
             if opt_path.exists():
                 opt_state = torch.load(opt_path, map_location="cpu", weights_only=True)["optimizer"]
+        if (
+            opt_state is not None
+            and semantic
+            and len(opt_state["param_groups"]) != len(optimizer.param_groups)
+        ):
+            logger.warning(
+                f"{path} was saved without semantic conditioning; optimizer starts fresh"
+            )
+            opt_state = None
+        elif opt_state is None:
+            logger.warning(f"no optimizer state for {path}; optimizer starts fresh")
         if opt_state is not None:
             optimizer.load_state_dict(opt_state)
-        else:
-            logger.warning(f"no optimizer state for {path}; optimizer starts fresh")
     if ema is not None and payload.get("ema") is not None:
         ema.load_state_dict(payload["ema"])
+        if semantic:
+            # A shadow from a run without the fusion would otherwise stop tracking it.
+            for name, param in model.named_parameters():
+                if name.startswith(_SEMANTIC_KEYS) and param.requires_grad:
+                    ema.shadow.setdefault(name, param.detach().clone().float())
     logger.info(f"resumed from {path} (step {payload['step']})")
     return payload["step"]
 

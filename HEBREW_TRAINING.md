@@ -182,5 +182,9 @@ and held-out evaluation.
 
 See [TODO.md](TODO.md) for the next controlled experiments.
 
+Optional DictaBERT semantic conditioning for unvocalized homographs (off by default, opt-in
+via config, `training/` trainer and inference) is described in
+[SEMANTIC_CONDITIONING.md](SEMANTIC_CONDITIONING.md).
+
 For a Linux server handoff, including guarded 6-layer student and 24-layer teacher commands,
 see [HEBREW_SERVER_RUNBOOK.md](HEBREW_SERVER_RUNBOOK.md).

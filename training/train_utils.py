@@ -10,6 +10,7 @@ from pathlib import Path
 import soundfile
 import torch
 
+from pocket_tts.conditioners.semantic import SEMANTIC_PREFIX
 from pocket_tts.modules.stateful_module import init_states
 from training.args import TrainArgs
 
@@ -95,6 +96,22 @@ def _compile_models(model, mimi) -> None:
     mimi.encoder_transformer.compile(dynamic=True)
 
 
+def optimizer_param_groups(model: torch.nn.Module, args: TrainArgs):
+    """model.parameters() as before; with semantic conditioning, two groups, the fusion's at
+    `semantic_lr_scale` times the learning rate (read by the schedule as `lr_scale`)."""
+    if getattr(model.flow_lm, "semantic_fusion", None) is None:
+        return model.parameters()
+    prefix = "flow_lm." + SEMANTIC_PREFIX
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    return [
+        {"params": [p for n, p in named if not n.startswith(prefix)]},
+        {
+            "params": [p for n, p in named if n.startswith(prefix)],
+            "lr_scale": args.semantic_lr_scale,
+        },
+    ]
+
+
 def lr_at(step: int, args: TrainArgs) -> float:
     lr = args.optim.lr
     if step < args.optim.warmup_steps:
@@ -122,6 +139,7 @@ def write_samples(model, mimi, tokenize, args, run_dir, step, voice_latents, dev
             [voice_latents] * len(tokens),
             temp=args.sample_temp,
             cfg_coef=args.sample_cfg_coef,
+            texts=list(args.sample_sentences),  # read by semantic conditioning only
         )
         ratio = round(mimi.encoder_frame_rate / mimi.frame_rate)
         for i, latents in enumerate(outs):

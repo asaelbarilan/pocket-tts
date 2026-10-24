@@ -174,6 +174,14 @@ class TrainArgs:
     # Use the teacher checkpoint's EMA shadow as the regression target (falls
     # back to raw weights when the checkpoint carries no EMA).
     distill_teacher_use_ema: bool = True
+    # Optional DictaBERT semantic conditioning (SEMANTIC_CONDITIONING.md). None = off, the
+    # trainer unchanged. A mapping (`{}` for every default) is merged into the model config's
+    # flow_lm.semantic_conditioner section, which a model config may also carry itself.
+    semantic_conditioner: dict[str, tp.Any] | None = None
+    # Learning rate of the new fusion parameters relative to optim.lr. Modest on purpose:
+    # Adam moves every element by about lr per step whatever its size, so a zero-initialized
+    # layer needs no large boost to start learning.
+    semantic_lr_scale: float = 3.0
     # Which teacher layers seed the student backbone: "spaced" (evenly across
     # the depth) or "first" (the bottom N). No evidence either way -- "first"
     # keeps the early feature extractors contiguous.
@@ -198,6 +206,8 @@ class TrainArgs:
             )
         if self.distill_teacher_config and not self.distill_teacher_weights:
             raise ValueError("distill_teacher_config is set but distill_teacher_weights is not")
+        if self.semantic_lr_scale <= 0:
+            raise ValueError(f"semantic_lr_scale must be > 0, got {self.semantic_lr_scale}")
 
 
 def _from_dict(cls, data: dict[str, Any]):

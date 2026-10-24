@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from pocket_tts.conditioners.base import TokenizedText
+from pocket_tts.conditioners.semantic import fuse_rows
 
 from ..args import TrainArgs
 
@@ -23,10 +24,15 @@ def build_sequences_with_conditions(
     num_voice_prompt_frames: torch.Tensor | None = None,
     fl: nn.Module = None,
     force_null: bool = False,
+    texts: list[str] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Assemble per-sample [beginning_of_prefix, voice_conditioning,
     text_conditioning, beginning_of_sequence, target_audio] rows,
     right-padded to equal length.
+
+    `texts` (the strings `text_tokens` were tokenized from) are read only by the optional
+    semantic conditioning, which then runs on every row, CFG-dropped ones included, so its
+    parameters always get a gradient.
 
     Fully tensorized (no per-row python ints): scatter-placement from
     tensor offsets, so the whole forward stays traceable and returns
@@ -70,7 +76,12 @@ def build_sequences_with_conditions(
     text_pad_cpu = torch.full((B, Lmax), pad_id, dtype=torch.long)
     for b, t in enumerate(text_tokens):
         text_pad_cpu[b, : t.shape[0]] = t
-    text_emb = fl.conditioner(TokenizedText(text_pad_cpu.to(device))).to(dtype)
+    text_emb = fl.conditioner(TokenizedText(text_pad_cpu.to(device)))
+    if getattr(fl, "semantic_fusion", None) is not None:
+        text_emb = fuse_rows(
+            fl.semantic_fusion, texts, text_tokens, text_emb, fl.conditioner.tokenizer.sp
+        )
+    text_emb = text_emb.to(dtype)
     t_len_cpu = text_lens_cpu * keep_text_cpu
 
     prefix_lengths_cpu = 1 + v_len_cpu + t_len_cpu

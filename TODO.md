@@ -49,6 +49,13 @@
 - [ ] Consider Section 4.7 latent-CFG teacher-to-student distillation only after a
   teacher-sized Hebrew model performs better. This is separate from LSD.
 
+## Semantic conditioning (SEMANTIC_CONDITIONING.md)
+
+- [ ] Run `training/configs/finetune_hebrew_semantic.yaml` after a smoke test; judge homograph
+  pairs, English and vocalized samples by listening against the warm-start model.
+- [ ] Encode the whole input once at inference and slice per chunk (context is per chunk now).
+- [ ] Batch the DictaBERT forward across rows in training.
+
 ## Data quality
 
 - [ ] Audit low-value spoken wiki boilerplate while preserving text/audio alignment.

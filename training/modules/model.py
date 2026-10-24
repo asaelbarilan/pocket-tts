@@ -55,6 +55,7 @@ class TrainableTTS(nn.Module):
         update_stats: bool = False,
         num_voice_prompt_frames: torch.Tensor
         | None = None,  # [B] valid voice frames (rest is padding)
+        texts: list[str] | None = None,  # the text of each row; semantic conditioning only
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         fl = self.flow_lm
         _, T, C = latents.shape
@@ -72,6 +73,7 @@ class TrainableTTS(nn.Module):
                 num_voice_prompt_frames=num_voice_prompt_frames,
                 fl=module,
                 force_null=force_null,
+                texts=texts,
             )
             out = module.out_norm(module.transformer(x, model_state=None))
             idx = prefix_lengths[:, None] + torch.arange(T, device=out.device)[None, :]
@@ -118,6 +120,8 @@ class TrainableTTS(nn.Module):
         # outputs give the compiled backward immutable ZeroTensor grads.
         metrics = {k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
         metrics.update(flow_loss=flow_loss.detach(), eos_loss=eos_loss.detach(), loss=loss.detach())
+        if fl.semantic_fusion is not None:
+            metrics.update(fl.semantic_fusion.pop_stats())
         return loss, metrics
 
     @torch.no_grad()
@@ -131,8 +135,12 @@ class TrainableTTS(nn.Module):
         cfg_coef: float = 1.0,
         eos_threshold: float = -1.0,
         eos_countdown: int = 1,
+        texts: list[str] | None = None,
     ) -> list[torch.Tensor]:
         """Sample a batch of utterances with arbitrary prefix lengths.
+
+        `texts`: the exact string each row's tokens came from. Required by semantic
+        conditioning, ignored otherwise.
 
         Rows are right-aligned (padded on the left) so every row's first audio
         frame lands on the same step; the padding is masked out via the
@@ -144,9 +152,14 @@ class TrainableTTS(nn.Module):
         self.eval()
         B = len(text_tokens)
 
+        fusion = fl.semantic_fusion
+        if fusion is not None and (texts is None or len(texts) != B):
+            raise ValueError("semantic conditioning needs texts=, one string per row")
         rows = []
-        for tokens, voice in zip(text_tokens, voice_latents, strict=True):
+        for b, (tokens, voice) in enumerate(zip(text_tokens, voice_latents, strict=True)):
             t_emb = fl.conditioner(TokenizedText(tokens[None].to(device)))[0]
+            if fusion is not None:
+                t_emb = fusion(texts[b], tokens, t_emb, fl.conditioner.tokenizer.sp)
             v_emb = F.linear(
                 voice[None].to(device, fl.speaker_proj_weight.dtype), fl.speaker_proj_weight
             )[0]

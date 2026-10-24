@@ -121,7 +121,7 @@ class PreviewDataLoader(DataLoader):
 
     def _sample(self, entry):
         self._seen.text = None
-        wav, tokens, prompt, length = super()._sample(entry)
+        wav, tokens, prompt, length, text = super()._sample(entry)
         tokens.preview = {
             "text": self._seen.text,
             "transcript": entry.transcript,
@@ -135,7 +135,7 @@ class PreviewDataLoader(DataLoader):
             "prompt_samples": int(length),
             "target_samples": len(wav),
         }
-        return wav, tokens, prompt, length
+        return wav, tokens, prompt, length, text
 
 
 @dataclass
