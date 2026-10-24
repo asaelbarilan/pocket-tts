@@ -1,0 +1,99 @@
+# Five-dataset Hebrew finetune, based on finetune_hebrew_plenum.yaml.
+# Keeps its model, optimizer, augmentation, and sampling settings; the five
+# curriculum phases total 35000 optimizer steps. Validation weights stay fixed.
+#
+# Run: uv run torchrun --nproc-per-node 8 -m training.train training/configs/finetune_hebrew_multi_1.yaml
+#
+# Uses the same Hebrew + niqqud + English tokenizer as the base config.
+model_config: pocket_tts/config/english_2026-04_24l.yaml
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: artifacts/tokenizer-he-en-niqqud/selected/tokenizer.model
+start_from_pretrained: true
+reset_text_embedding: true  # the tokenizer is not the one these weights were trained with
+
+data:
+  datasets:
+    committee:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/committee/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/committee/valid_aligned.jsonl
+      valid_weight: 0.45
+    plenum:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
+      valid_weight: 0.25
+    recital:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/recital/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/recital/valid_aligned.jsonl
+      valid_weight: 0.15
+    hifitts2:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/valid.jsonl
+      valid_weight: 0.10
+    libritts_r:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/valid.jsonl
+      valid_weight: 0.05
+  # Mix weights are sample shares, not duration shares. Exhausted datasets restart
+  # and keep their place across phases. max_steps is inferred from the phase sum.
+  curriculum:
+    - steps: 5000
+      mix: {committee: 0.35, plenum: 0.30, recital: 0.10, hifitts2: 0.20, libritts_r: 0.05}
+    - steps: 20000
+      mix: {committee: 0.62, plenum: 0.35, recital: 0.0, hifitts2: 0.02, libritts_r: 0.01}
+    - steps: 5000
+      mix: {committee: 0.50, plenum: 0.30, recital: 0.10, hifitts2: 0.05, libritts_r: 0.05}
+    - steps: 5000
+      mix: {committee: 0.30, plenum: 0.20, recital: 0.20, hifitts2: 0.15, libritts_r: 0.15}
+    - steps: 10000
+      mix: {committee: 0.62, plenum: 0.35, recital: 0.0, hifitts2: 0.02, libritts_r: 0.01}
+    - steps: 10000
+      mix: {committee: 0.45, plenum: 0.35, recital: 0.1, hifitts2: 0.05, libritts_r: 0.05}
+  curriculum_checkpoint_at_phase_end: true
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 5.0
+  # Text augmentation for rows carrying alt_words / nikud, as in the base config.
+  alt_words_sample_prob: 1
+  alt_word_swap_prob: 0.7
+  nikud_word_prob: 0.3
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: cosine
+  warmup_steps: 1000
+  lr_min_ratio: 0.1
+
+# Per-layer compilation can take several minutes at startup on this 24-layer model.
+compile: true
+
+run_dir: runs/finetune_hebrew_multi_1
+# Per-rank batch: 8 GPUs x 8 samples keeps the upstream effective batch size of 64.
+batch_size: 8
+grad_accum_steps: 1
+# max_steps is not set: it is the total of the curriculum phases (35000).
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+ckpt_freq: 2500
+# Retain all checkpoints from this run, including intermediate quality candidates.
+num_ckpt_keep: 40
+sample_freq: 2500
+sample_cfg_coef: 2.0
+
+# Preserve the base config's listening samples.
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את 200 הנושאים לסדר היום."
+  - "חברי הכנסת הנכבדים, מדובר בהחלטה משמעותית עבור אזרחי המדינה."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
+  - "תודה רבה, אני מסיים כאן את דבריי."
+  - "למה בעצם אנחנו צריכים ללמוד היסטוריה אם בסוף אנחנו חוזרים על אותן טעויות שוב ושוב?"
