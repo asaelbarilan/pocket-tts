@@ -26,6 +26,7 @@ same on every rank without any communication, and easy to unit test.
 
 import logging
 import math
+import random
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -307,8 +308,10 @@ class MixSchedule:
     assigned by smooth weighted round-robin: every slot adds each dataset's weight to its
     credit, the dataset with the most credit takes the slot and pays 1. After n slots each
     dataset has been picked within 1 of n * weight, and the credit carries across steps, so
-    20% of 8 slots a step is 1.6 on average and exactly 20% over a phase. The sequence
-    depends only on the curriculum, so all ranks agree without talking to each other.
+    20% of 8 slots a step is 1.6 on average and exactly 20% over a phase. Each step's slots
+    are then shuffled (seeded by the step) so no rank is tied to a fixed position in the
+    cycle. The sequence depends only on the curriculum, so all ranks agree without talking
+    to each other.
 
     Steps must be asked for in order; `fast_forward` resumes at any step.
     """
@@ -351,6 +354,11 @@ class MixSchedule:
             self._credit[name] -= QUOTA_RESOLUTION
             picked.append(name)
         self._next_step += 1
+        # The round-robin is periodic, and rank r always reads slot r (grad_accum_steps 1), so
+        # without this a rare dataset lands on the same few ranks every cycle and the other
+        # ranks' shards of it are never read. Seeded by the step: same order on every rank,
+        # same after a resume, and the step's counts are unchanged.
+        random.Random(step).shuffle(picked)
         return picked
 
 

@@ -180,7 +180,21 @@ def test_a_phase_starts_fresh_whatever_the_previous_one_left_over():
         ]
     )
     first, second = run_schedule(c, 2)
-    assert first == second
+    assert Counter(first) == Counter(second)  # the order within a step is shuffled
+
+
+def test_every_rank_sees_every_dataset_over_a_phase():
+    # Rare datasets repeat with a short period (here 1 in 20); without the per-step shuffle
+    # rank r kept slot r and only a few ranks ever drew them.
+    c = curriculum(
+        phases=[{"steps": 2000, "mix": {"ds1": 0.05, "ds2": 0.35, "ds3": 0.6}}],
+    )
+    world = 8
+    per_step = run_schedule(c, world)
+    for rank in range(world):
+        counts = Counter(slots[rank] for slots in per_step)
+        assert counts["ds1"] / 2000 == pytest.approx(0.05, abs=0.02), (rank, counts)
+        assert counts["ds2"] / 2000 == pytest.approx(0.35, abs=0.04), (rank, counts)
 
 
 # --- apportioning ------------------------------------------------------------------------
