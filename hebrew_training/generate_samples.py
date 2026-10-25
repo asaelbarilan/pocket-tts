@@ -66,6 +66,11 @@ def load_texts(path: Path | None) -> list[dict]:
     hebrew_training/eval_sentences_he.jsonl is for, and it is why the wav files can be
     named after what they test rather than after their position in the file. A plain text
     file is still accepted and gets positional ids, so older calls keep working.
+
+    A row may also carry "text_nikud", a vocalized spelling of the same sentence. Both are
+    synthesized, as <id> and <id>_nikud, because the pair is the measurement: the sentences
+    that carry one are homographs, and the question is whether nikud is what it takes to
+    get the right reading.
     """
     if path is None:
         rows = [{"text": t} for t in DEFAULT_TEXTS]
@@ -79,10 +84,15 @@ def load_texts(path: Path | None) -> list[dict]:
         rows = [
             {"text": t.strip()} for t in path.read_text(encoding="utf-8").splitlines() if t.strip()
         ]
-    return [
-        {"id": r.get("id") or f"text{n}", "category": r.get("category", ""), "text": r["text"]}
-        for n, r in enumerate(rows, start=1)
-    ]
+    entries = []
+    for n, row in enumerate(rows, start=1):
+        base = {"id": row.get("id") or f"text{n}", "category": row.get("category", "")}
+        entries.append({**base, "text": row["text"]})
+        if row.get("text_nikud"):
+            entries.append(
+                {**base, "id": f"{base['id']}_nikud", "text": row["text_nikud"], "nikud": True}
+            )
+    return entries
 
 
 def pick_voices(manifest: Path, speaker_count: int) -> list[dict]:

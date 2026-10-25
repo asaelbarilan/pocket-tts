@@ -31,10 +31,10 @@
 {"id": "num_04", "category": "numbers", "text": "התקציב גדל מ-1,200,000 שקלים ל-3,450,000 שקלים בתוך שנתיים."}
 {"id": "num_05", "category": "numbers", "text": "הרכבת יוצאת ב-07:45 ומגיעה ב-09:20, נסיעה של שעה ו-35 דקות."}
 {"id": "num_06", "category": "numbers", "text": "72% מהמשתתפים ענו נכון על 18 מתוך 20 השאלות."}
-{"id": "homo_01", "category": "homograph", "text": "הספר סיפר לי שהוא קרא ספר על תספורות.", "note": "ha-sapar (barber) then sefer (book) -- same spelling, two words"}
-{"id": "homo_02", "category": "homograph", "text": "היא רוצה לנסוע מחר, והוא רוצה להישאר כאן.", "note": "rotza (f) then rotze (m)"}
-{"id": "homo_03", "category": "homograph", "text": "אני לא אוכל לאכול עכשיו, כי כבר אכלתי בבוקר.", "note": "uchal (I can), not ochel (eating)"}
-{"id": "homo_04", "category": "homograph", "text": "המורה החדשה אמרה למורה הוותיק שהשיעור כבר התחיל.", "note": "mora (f) then more (m)"}
-{"id": "homo_05", "category": "homograph", "text": "בוקר טוב, אמר הבוקר לפרות שלו ברפת.", "note": "boker (morning) then boker (cowboy)"}
-{"id": "homo_06", "category": "homograph", "text": "דובר הכנסת אמר שכבר דובר על כך בוועדה בשבוע שעבר.", "note": "dover (spokesman) then dubar (was discussed)"}
-{"id": "homo_07", "category": "homograph", "text": "המלך מלך ארבעים שנה על הממלכה כולה.", "note": "melech (king) then malach (reigned)"}
+{"id": "homo_01", "category": "homograph", "text": "הספר סיפר לי שהוא קרא ספר על תספורות.", "note": "ha-sapar (barber) then sefer (book) -- same spelling, two words", "text_nikud": "הַסַּפָּר סִפֵּר לִי שֶׁהוּא קָרָא סֵפֶר עַל תִּסְפֹּרוֹת."}
+{"id": "homo_02", "category": "homograph", "text": "היא רוצה לנסוע מחר, והוא רוצה להישאר כאן.", "note": "rotza (f) then rotze (m)", "text_nikud": "הִיא רוֹצָה לִנְסֹעַ מָחָר, וְהוּא רוֹצֶה לְהִשָּׁאֵר כָּאן."}
+{"id": "homo_03", "category": "homograph", "text": "אני לא אוכל לאכול עכשיו, כי כבר אכלתי בבוקר.", "note": "uchal (I can), not ochel (eating)", "text_nikud": "אֲנִי לֹא אוּכַל לֶאֱכֹל עַכְשָׁיו, כִּי כְּבָר אָכַלְתִּי בַּבֹּקֶר."}
+{"id": "homo_04", "category": "homograph", "text": "המורה החדשה אמרה למורה הוותיק שהשיעור כבר התחיל.", "note": "mora (f) then more (m)", "text_nikud": "הַמּוֹרָה הַחֲדָשָׁה אָמְרָה לַמּוֹרֶה הַוָּתִיק שֶׁהַשִּׁעוּר כְּבָר הִתְחִיל."}
+{"id": "homo_05", "category": "homograph", "text": "בוקר טוב, אמר הבוקר לפרות שלו ברפת.", "note": "boker (morning) then boker (cowboy)", "text_nikud": "בֹּקֶר טוֹב, אָמַר הַבּוֹקֵר לַפָּרוֹת שֶׁלּוֹ בָּרֶפֶת."}
+{"id": "homo_06", "category": "homograph", "text": "דובר הכנסת אמר שכבר דובר על כך בוועדה בשבוע שעבר.", "note": "dover (spokesman) then dubar (was discussed)", "text_nikud": "דּוֹבֵר הַכְּנֶסֶת אָמַר שֶׁכְּבָר דֻּבַּר עַל כָּךְ בַּוַּעֲדָה בַּשָּׁבוּעַ שֶׁעָבַר."}
+{"id": "homo_07", "category": "homograph", "text": "המלך מלך ארבעים שנה על הממלכה כולה.", "note": "melech (king) then malach (reigned)", "text_nikud": "הַמֶּלֶךְ מָלַךְ אַרְבָּעִים שָׁנָה עַל הַמַּמְלָכָה כֻּלָּהּ."}
