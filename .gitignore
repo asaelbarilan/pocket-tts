@@ -115,4 +115,5 @@ runs/
 tokenizers/
 
 /deploy/validation_cache/
+/semantic-encoders/
 /deploy/milim_bench_data/

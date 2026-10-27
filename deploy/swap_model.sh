@@ -7,8 +7,10 @@
 #   deploy/swap_model.sh <sha256>         # any published model (a rollback is the old hash)
 #   GPU=1 deploy/swap_model.sh ...        # the GPU service
 #
-# Publish first with deploy/publish_model.sh. Only for weights the image's code can run: a
-# new architecture or code change needs deploy/deploy.sh.
+# Publish first with deploy/publish_model.sh, and, if the model's config has a semantic_conditioner
+# section, its encoder with deploy/publish_encoder.sh (once per encoder revision; the server finds it
+# by the identity the config names, so the model's hash is all that changes here). Only for weights
+# the image's code can run: a new architecture or code change needs deploy/deploy.sh.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 

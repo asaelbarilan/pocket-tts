@@ -1,6 +1,7 @@
 # CPU image for deploy/hebrew_tts_server.py. COPY paths are relative to the repo root:
 #   docker build -f deploy/Dockerfile .          (or use deploy/deploy.sh for Cloud Run)
-# Code only: a new model never needs a new image (deploy/swap_model.sh).
+# Code only: a new model, or a model with another semantic encoder, never needs a new image
+# (deploy/swap_model.sh).
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -22,6 +23,15 @@ ARG MILIM_REVISION=0cdf63745681f65dc33b5006f781f652c597f4b2
 ENV MILIM_DIR=/app/milim-bench
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('renikud/MILIM-Bench', repo_type='dataset', revision='${MILIM_REVISION}', local_dir='${MILIM_DIR}')" \
     && test -s "${MILIM_DIR}/data/gold.tsv"
+
+# The frozen semantic encoders (DictaBERT, RenikudPlus) are not in the image either: like the
+# model they come from the store at startup, found by the identity the model's config names
+# (deploy/encoder_store.py, published with deploy/publish_encoder.sh), so this one image serves
+# models with either encoder or none. The Python dependencies of both (transformers, onnx,
+# onnxruntime) are in requirements.txt. HF_HUB_OFFLINE=1: the server never contacts Hugging Face
+# (MILIM-Bench above was fetched at build time); an encoder that is not in the store fails the
+# revision's startup instead of downloading 1.6 GB on a cold start.
+ENV HF_HUB_OFFLINE=1
 
 # No weights in the image. The model (weights, config, tokenizer) is copied at startup from the
 # model store, a directory of published models (on Cloud Run a read-only mounted bucket), and

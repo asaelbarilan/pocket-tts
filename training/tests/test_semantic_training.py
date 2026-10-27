@@ -176,6 +176,55 @@ def test_semantic_checkpoint_resumes_into_a_semantic_model(sp, tmp_path):
     assert opt.state  # the optimizer state came back
 
 
+def test_checkpoint_records_its_encoder(sp, tmp_path):
+    args = TrainArgs()
+    path = _save(tmp_path, trainable(sp, small_config(encoder="renikud_plus")), args, sp)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert payload["semantic_encoder"]["encoder"] == "renikud_plus"
+    assert payload["semantic_encoder"]["filename"] == "model.onnx"
+    from pocket_tts.utils.weights_loading import read_training_checkpoint
+
+    assert read_training_checkpoint(path)[2] == payload["semantic_encoder"]
+    # A plain run adds no key: its checkpoints are unchanged.
+    plain_path = _save(tmp_path / "plain", trainable(sp, None), args, sp)
+    assert "semantic_encoder" not in torch.load(plain_path, map_location="cpu", weights_only=True)
+    # The pocket-tts export carries it as metadata.
+    from pocket_tts.conditioners.semantic import read_encoder_record
+    from training.checkpointing import export_pocket_safetensors
+
+    model = trainable(sp, small_config(encoder="renikud_plus"))
+    export = tmp_path / "model.safetensors"
+    export_pocket_safetensors(export, model.flow_lm, torch.nn.Linear(1, 1))
+    assert read_encoder_record(export)["encoder"] == "renikud_plus"
+
+
+def test_checkpoint_from_another_encoder_is_refused(sp, tmp_path):
+    args = TrainArgs()
+    dictabert_path = _save(tmp_path / "d", trainable(sp, small_config()), args, sp)
+    renikud_path = _save(
+        tmp_path / "r", trainable(sp, small_config(encoder="renikud_plus")), args, sp
+    )
+    for path, other in ((dictabert_path, "renikud_plus"), (renikud_path, None)):
+        target = trainable(sp, small_config(**({"encoder": other} if other else {})))
+        before = target.flow_lm.semantic_fusion.proj.weight.clone()
+        opt = torch.optim.AdamW(optimizer_param_groups(target, args), lr=1e-3)
+        with pytest.raises(ValueError, match="trained with encoder"):
+            load_checkpoint(path, target, opt, EMA(target, 0.9))
+        assert torch.equal(target.flow_lm.semantic_fusion.proj.weight, before)
+    # Same encoder resumes, with the record in place.
+    same = trainable(sp, small_config(encoder="renikud_plus"))
+    assert load_checkpoint(renikud_path, same) == 7
+    # A checkpoint written before the record existed (no key) is DictaBERT's.
+    legacy = torch.load(dictabert_path, map_location="cpu", weights_only=True)
+    del legacy["semantic_encoder"]
+    torch.save(legacy, tmp_path / "legacy.pt")
+    assert load_checkpoint(tmp_path / "legacy.pt", trainable(sp, small_config())) == 7
+    with pytest.raises(ValueError, match="trained with encoder dictabert"):
+        load_checkpoint(tmp_path / "legacy.pt", trainable(sp, small_config(encoder="renikud_plus")))
+    # A plain model still reads any semantic checkpoint (the tensors are dropped).
+    assert load_checkpoint(renikud_path, trainable(sp, None)) == 7
+
+
 def test_model_config_gets_the_semantic_section():
     english = "pocket_tts/config/english.yaml"
     assert load_model_config(english, {}).flow_lm.semantic_conditioner is None

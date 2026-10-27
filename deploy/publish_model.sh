@@ -8,6 +8,8 @@
 # Prints the weights sha256: that hash IS the model. Serve it with
 #   deploy/deploy.sh                      (first deploy / code change; uses the local weights' hash)
 #   deploy/swap_model.sh <sha256>         (just a new model: no image build)
+# A model whose config has a semantic_conditioner section also needs its encoder in the store:
+# deploy/publish_encoder.sh dictabert|renikud_plus (once per encoder revision).
 # A published model is immutable: publishing the same weights again is a no-op, and the same
 # weights with a different config or tokenizer is refused.
 set -euo pipefail

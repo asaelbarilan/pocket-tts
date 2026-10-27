@@ -11,7 +11,10 @@ code (`TrainableTTS.generate`), so it matches the training evals: same CFG, EOS 
 temperature and decoding. The weights are the exported artifacts/model.safetensors, loaded
 through the config in artifacts/hebrew_24l.yaml. Or, with env MODEL_STORE (a directory of
 published models, see deploy/model_store.py) and MODEL_SHA256 (which one), the model is copied
-from the store and verified at startup.
+from the store and verified at startup. A model whose config has a semantic_conditioner section
+also gets its frozen encoder (DictaBERT or RenikudPlus) from the store, found by the identity the
+config names (deploy/encoder_store.py); a model without the section needs none, so one image
+serves all three kinds.
 
 The text goes to the tokenizer with only its characters folded (curly quotes, Unicode dashes,
 invisible marks -- what training saw), with no chunking and no other normalization, and is
@@ -41,10 +44,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from deploy.downloads import CODE_ZIP, GUIDE, Downloads
+from deploy.encoder_store import EncoderStore, describe, semantic_config_of
 from deploy.milim_bench import DEFAULT_DIR as DEFAULT_MILIM_DIR
 from deploy.milim_bench import MAX_BATCH, MilimBench
 from deploy.model_store import ModelStore
-from deploy.validation_set import ValidationSet
+from deploy.validation_set import ValidationBusy, ValidationSet
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import audio_read
 from pocket_tts.data.audio_utils import convert_audio
@@ -77,6 +81,47 @@ DEFAULTS = {
 }
 
 
+def open_encoder_store(config: Path, model_store_dir: str | None) -> EncoderStore | None:
+    """The store of the frozen semantic encoder the model's config names, or None when it needs
+    none or no store is configured (then the encoder comes from the Hugging Face cache).
+
+    Env SEMANTIC_ENCODER_STORE says where encoders are copied from, default
+    `<MODEL_STORE>/encoders`; SEMANTIC_ENCODER_SHA256 pins one by hash (it must still be the
+    encoder the config names). A missing or mismatching encoder is a startup error, like a
+    missing model.
+    """
+    encoders_dir = os.environ.get("SEMANTIC_ENCODER_STORE") or (
+        str(Path(model_store_dir) / "encoders") if model_store_dir else None
+    )
+    pin = os.environ.get("SEMANTIC_ENCODER_SHA256") or None
+    try:
+        semantic = semantic_config_of(config)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"{config}: {exc}") from exc
+    if semantic is None:
+        if pin:
+            logger.warning("SEMANTIC_ENCODER_SHA256 is set but the model has no semantic encoder")
+        logger.info("semantic conditioning: off (the config has no semantic_conditioner)")
+        return None
+    if encoders_dir is None:
+        logger.info(
+            "semantic conditioning: %s, from the Hugging Face cache (no encoder store set)",
+            describe(semantic),
+        )
+        return None
+    try:
+        encoder_store = EncoderStore(Path(encoders_dir), semantic, REPO_ROOT, pin)
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit(f"encoder store: {exc}") from exc
+    logger.info(
+        "semantic conditioning: %s, encoder store %s, encoder %s",
+        describe(semantic),
+        encoders_dir,
+        encoder_store.sha256,
+    )
+    return encoder_store
+
+
 def pick_device(requested: str) -> torch.device:
     if requested != "auto":
         return torch.device(requested)
@@ -100,7 +145,13 @@ def list_voice_files(voices_dir: Path) -> dict[str, Path]:
 class Engine:
     """The loaded model plus a voice-latent cache. One request generates at a time."""
 
-    def __init__(self, config: Path, voices_dir: Path, device: torch.device):
+    def __init__(
+        self,
+        config: Path,
+        voices_dir: Path,
+        device: torch.device,
+        semantic_encoder_dir: Path | None = None,
+    ):
         self.config = config
         self.voices_dir = voices_dir
         self.device = device
@@ -109,7 +160,10 @@ class Engine:
 
         started = time.perf_counter()
         # Builds FlowLM + Mimi from the config and loads artifacts/model.safetensors (strict).
-        tts = TTSModel.load_model(config=config)
+        # With a semantic_conditioner section the frozen encoder is loaded here too: from
+        # semantic_encoder_dir (copied from the encoder store) when there is one, else from the
+        # Hugging Face cache. A config without the section ignores the directory.
+        tts = TTSModel.load_model(config=config, semantic_encoder_dir=semantic_encoder_dir)
         self.sample_rate: int = tts.sample_rate
         self.mimi = tts.mimi.to(device).eval()
         flow_lm = tts.flow_lm.to(device).eval()
@@ -240,11 +294,13 @@ class EngineLoader:
         voices_dir: Path,
         device: torch.device,
         store: ModelStore | None = None,
+        encoder_store: EncoderStore | None = None,
     ):
         self.config = config
         self.voices_dir = voices_dir
         self.device = device
         self.store = store
+        self.encoder_store = encoder_store
         self.engine: Engine | None = None
         self.model_sha256: str | None = None  # set once the model is loaded
         self.stage = "starting"
@@ -252,6 +308,24 @@ class EngineLoader:
 
     def start(self) -> None:
         threading.Thread(target=self._load, name="engine-loader", daemon=True).start()
+
+    def semantic_encoder_info(self) -> dict | None:
+        """The frozen encoder this model runs with, None for a model without semantic
+        conditioning. With an encoder store it includes the hash of the copied file."""
+        if self.engine is None:
+            return None
+        fusion = self.engine.model.flow_lm.semantic_fusion
+        if fusion is None:
+            return None
+        if self.encoder_store is not None:
+            return self.encoder_store.info()
+        config = fusion.config
+        return {
+            "encoder": config.encoder,
+            "model_name": config.model_name,
+            "revision": config.revision,
+            "sha256": None,
+        }
 
     def cache_key(self) -> str | None:
         """Names the validation cache: model weights + device kind (CPU and GPU audio differ)."""
@@ -272,8 +346,20 @@ class EngineLoader:
             else:
                 self.stage = "hashing the weights"
                 sha = file_sha256(Path(yaml.safe_load(self.config.read_text())["weights_path"]))
+            encoder_dir = None
+            if self.encoder_store is not None:
+                self.stage = "copying and verifying the semantic encoder"
+                started = time.perf_counter()
+                encoder_dir = self.encoder_store.fetch()
+                logger.info(
+                    "semantic encoder %s copied and verified in %.1fs",
+                    self.encoder_store.sha256,
+                    time.perf_counter() - started,
+                )
             self.stage = "loading the model"
-            engine = Engine(self.config, self.voices_dir, self.device)
+            engine = Engine(self.config, self.voices_dir, self.device, encoder_dir)
+            if self.encoder_store is not None:
+                self.encoder_store.discard()  # the encoder is in memory now
             self.model_sha256 = sha.lower()
             self.engine = engine
             self.stage = "ready"
@@ -444,12 +530,24 @@ def create_app(
         return validation.status()
 
     @app.post("/validation/start")
-    def validation_start():
+    def validation_start(
+        force: bool = Form(False, description="discard the cached set and render it again"),
+        voice: str | None = Form(
+            None, description="with `force`: name of a file from GET /voices (not random)"
+        ),
+    ):
+        """Show the validation set of the loaded model, generating it if it is not cached. With
+        `force=true` the cached set is deleted and rendered again with `voice`."""
         if loader.engine is None:
             raise HTTPException(
                 status_code=503, detail="warming up...", headers={"Retry-After": "10"}
             )
-        return validation.start()
+        try:
+            return validation.start(force=force, voice=voice)
+        except ValidationBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/validation/audio/{item_id}.wav")
     def validation_audio(item_id: str):
@@ -464,9 +562,14 @@ def create_app(
         model cannot be loaded never takes traffic."""
         if loader.engine is None:
             return JSONResponse(
-                status_code=503, content={"ready": False, "stage": loader.stage, "error": loader.error}
+                status_code=503,
+                content={"ready": False, "stage": loader.stage, "error": loader.error},
             )
-        return {"ready": True, "model_sha256": loader.model_sha256}
+        return {
+            "ready": True,
+            "model_sha256": loader.model_sha256,
+            "semantic_encoder": loader.semantic_encoder_info(),
+        }
 
     @app.get("/health")
     def health():
@@ -488,6 +591,7 @@ def create_app(
             "ready": True,
             "model_sha256": loader.model_sha256,
             "model_store": str(loader.store.dir) if loader.store else None,
+            "semantic_encoder": loader.semantic_encoder_info(),
             "device": str(engine.device),
             "layers": engine.n_layers,
             "sample_rate": engine.sample_rate,
@@ -650,6 +754,7 @@ INDEX_HTML = """<!doctype html>
 </form></dialog>
 <hr style="margin:1.5rem 0">
 <button id="val" dir="rtl" disabled>הצג סט ולידציה</button>
+<button id="valRedo" dir="rtl" disabled title="deletes the cached set of this model and renders it again with the voice selected above">צור מחדש עם הקול הנבחר</button>
 <div id="vstatus"></div>
 <div id="vlist"></div>
 <script>
@@ -675,6 +780,7 @@ const status = document.getElementById("status");
 const go = document.getElementById("go");
 go.disabled = true;
 const valBtn = document.getElementById("val");
+const redoBtn = document.getElementById("valRedo");
 const vstatus = document.getElementById("vstatus");
 const vlist = document.getElementById("vlist");
 const shown = new Set();
@@ -707,7 +813,7 @@ const renderItems = items => {
     if (it.note) row.appendChild(el("div", "vmeta", it.note));
     if (it.status === "ok") {
       const a = el("audio"); a.controls = true; a.preload = "none"; a.style.width = "100%";
-      a.src = "/validation/audio/" + it.id + ".wav";
+      a.src = "/validation/audio/" + it.id + ".wav?t=" + Date.now();  // a regenerated set must not play from the browser cache
       row.appendChild(a);
       row.appendChild(el("div", "vmeta", it.id + " - " + it.audio_seconds + "s audio in " +
         it.generation_seconds + "s" + (it.hit_max_length ? " - hit max length" : "")));
@@ -726,9 +832,9 @@ const pollValidation = async () => {
   const head = "voice " + (s.voice || "?") + ", " + s.done + "/" + s.total;
   if (s.state === "running") {
     vstatus.textContent = "generating validation set… " + head;
-    valBtn.disabled = true; setTimeout(pollValidation, 5000); return;
+    valBtn.disabled = true; redoBtn.disabled = true; setTimeout(pollValidation, 5000); return;
   }
-  valBtn.disabled = false;
+  valBtn.disabled = false; redoBtn.disabled = false;
   if (s.state === "done") vstatus.textContent = head + (s.failed ? " (" + s.failed + " failed)" : "") +
     " - cached for model " + s.model_sha256;
   else if (s.state === "warming") { vstatus.textContent = "warming up…"; setTimeout(pollValidation, 5000); }
@@ -741,13 +847,35 @@ valBtn.onclick = async () => {
   if (!r.ok) { vstatus.className = "err"; vstatus.textContent = r.status + ": " + await r.text(); valBtn.disabled = false; return; }
   pollValidation();
 };
+redoBtn.onclick = async () => {
+  const voice = document.getElementById("voice").value;
+  if (document.getElementById("file").files[0]) {
+    vstatus.className = "err";
+    vstatus.textContent = "the validation set uses a voice from the list: clear the uploaded file first";
+    return;
+  }
+  if (!voice) { vstatus.className = "err"; vstatus.textContent = "no voice selected"; return; }
+  if (!confirm("Delete the cached validation set of this model and render it again with " + voice +
+      "? It takes a few minutes.")) return;
+  valBtn.disabled = true; redoBtn.disabled = true;
+  vstatus.className = ""; vstatus.textContent = "starting…";
+  shown.clear(); vlist.replaceChildren();
+  const f = new FormData(); f.append("force", "true"); f.append("voice", voice);
+  const r = await fetch("/validation/start", {method: "POST", body: f});
+  if (!r.ok) {
+    let d = await r.text(); try { d = JSON.stringify(JSON.parse(d).detail); } catch (e) {}
+    vstatus.className = "err"; vstatus.textContent = r.status + ": " + d;
+    valBtn.disabled = false; redoBtn.disabled = false; return;
+  }
+  pollValidation();
+};
 let ready = false;
 const waitReady = async () => {
   status.className = ""; status.textContent = "warming up… (loading the model)";
   for (;;) {
     try {
       const h = await (await fetch("/health")).json();
-      if (h.ready) { ready = true; status.textContent = "ready"; go.disabled = false; valBtn.disabled = false; syncMilim(); return; }
+      if (h.ready) { ready = true; status.textContent = "ready"; go.disabled = false; valBtn.disabled = false; redoBtn.disabled = false; syncMilim(); return; }
       if (h.error) { status.className = "err"; status.textContent = "model failed to load: " + h.error; return; }
     } catch (e) {}
     await new Promise(res => setTimeout(res, 3000));
@@ -967,6 +1095,7 @@ def main() -> None:
         logger.info("model store %s, model %s", store_dir, store.sha256)
     if not config.exists():
         raise SystemExit(f"config not found: {config}")
+    encoder_store = open_encoder_store(config, store_dir)
     voices_dir = args.voices_dir.resolve()
     sentences = args.sentences.resolve()
     cache_dir = args.cache_dir.resolve()
@@ -980,7 +1109,7 @@ def main() -> None:
     logger.info("device: %s", device)
     if not list_voice_files(voices_dir):
         logger.warning("no voice prompts in %s; upload one per request or add files", voices_dir)
-    loader = EngineLoader(config, voices_dir, device, store)
+    loader = EngineLoader(config, voices_dir, device, store, encoder_store)
     loader.start()
     validation = make_validation_set(loader, sentences, cache_dir)
     downloads = Downloads(REPO_ROOT, config, sentences, DEFAULTS, lambda: loader.model_sha256)

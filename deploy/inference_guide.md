@@ -34,8 +34,23 @@ project/
   requirements.txt            # from the zip
 ```
 
-No network access is needed at run time: all weights are local. (`pocket_tts` can fetch
-`hf://` paths, but this config has none.)
+**Semantic conditioning.** The config has a `flow_lm.semantic_conditioner` section: a frozen
+DictaBERT encoder (`dicta-il/dictabert-large`, a pinned revision, about 1.6 GB) reads the text and
+its states are fused into the text embeddings by the small trained module that is inside
+`model.safetensors`. DictaBERT itself is not in that file. It is downloaded from Hugging Face on the
+first load (needs `transformers`, in `requirements.txt`) and cached under `~/.cache/huggingface`.
+To work offline, fetch it once, then set `HF_HUB_OFFLINE=1`. Do not change the `revision` or delete
+the section: the model was trained with exactly that encoder, and without the section the fusion
+weights are silently ignored and the output is worse.
+
+A model trained with the other encoder has `encoder: renikud_plus` in that section (with
+`notmax123/RenikudPlus`, `model.onnx` and its pinned revision). It needs `onnx` and `onnxruntime`
+(also in `requirements.txt`, so the same environment runs either kind), downloads the ~1.2 GB fp32 ONNX file the same way (cached, then
+`HF_HUB_OFFLINE=1`), and runs on the CPU in ONNX Runtime with one thread. The two are not
+interchangeable: the loader refuses weights trained with a different encoder than the config names.
+
+Apart from DictaBERT (or RenikudPlus), no network access is needed at run time. (`pocket_tts` can
+fetch `hf://` paths, but this config has none.)
 
 ## 2. Environment
 

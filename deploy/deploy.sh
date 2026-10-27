@@ -10,7 +10,8 @@
 #   IMAGE=<image> deploy/deploy.sh                # redeploy an existing image, no build
 #   PROJECT=... REGION=... deploy/deploy.sh
 #
-# A new model alone does not need this: deploy/swap_model.sh changes the model without a build.
+# A new model alone does not need this: deploy/swap_model.sh changes the model without a build,
+# whichever semantic encoder it uses (publish it once with deploy/publish_encoder.sh).
 #
 # The services are private (IAM). To use one from a browser/curl:
 #   gcloud run services proxy hebrew-tts --region europe-west1 --port 8080

@@ -13,3 +13,10 @@ requests==2.34.2
 soundfile==0.14.0
 PyYAML==6.0.3
 typing_extensions==4.16.0
+# DictaBERT semantic conditioning; the encoder (~1.6 GB) is downloaded from Hugging Face on first
+# load, at the revision pinned in artifacts/hebrew_24l.yaml.
+transformers==5.15.0
+tokenizers==0.22.2
+# RenikudPlus semantic conditioning (encoder: renikud_plus): ONNX Runtime, graph edited with onnx.
+onnx==1.23.2
+onnxruntime==1.31.0

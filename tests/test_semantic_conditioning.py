@@ -362,6 +362,10 @@ def test_shipped_configs_have_no_semantic_section_except_its_own():
         config = load_config(path)
         if path.name == "hebrew_semantic.yaml":
             assert config.flow_lm.semantic_conditioner == SemanticConditionerConfig()
+        elif path.name == "hebrew_semantic_renikud.yaml":
+            assert config.flow_lm.semantic_conditioner == SemanticConditionerConfig(
+                encoder="renikud_plus"
+            )
         else:
             assert config.flow_lm.semantic_conditioner is None, path.name
 

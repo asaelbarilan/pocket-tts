@@ -18,7 +18,11 @@ from torch.nn import functional as F
 from typing_extensions import Self
 
 from pocket_tts.conditioners.base import TokenizedText
-from pocket_tts.conditioners.semantic import load_state_dict_allowing_semantic
+from pocket_tts.conditioners.semantic import (
+    encoder_metadata,
+    load_state_dict_allowing_semantic,
+    read_encoder_record,
+)
 from pocket_tts.data.audio import audio_read
 from pocket_tts.data.audio_utils import convert_audio
 from pocket_tts.default_parameters import (
@@ -46,7 +50,7 @@ from pocket_tts.utils.utils import (
 from pocket_tts.utils.weights_loading import (
     get_flow_lm_state_dict,
     get_mimi_state_dict,
-    get_training_checkpoint_state_dicts,
+    read_training_checkpoint,
 )
 
 torch.set_num_threads(1)
@@ -146,7 +150,7 @@ class TTSModel(nn.Module):
     def load_training_checkpoint(self, path: str | Path, use_ema: bool = True) -> None:
         """Load weights from a training checkpoint (.pt) into a config-built model."""
         self.has_custom_weights = True
-        flow_lm_state, mimi_state = get_training_checkpoint_state_dicts(Path(path), use_ema)
+        flow_lm_state, mimi_state, encoder = read_training_checkpoint(Path(path), use_ema)
         config = self.config
         self.flow_lm.speaker_proj_weight = torch.nn.Parameter(
             torch.zeros(
@@ -157,7 +161,9 @@ class TTSModel(nn.Module):
                 dtype=torch.float32,
             )
         )
-        load_state_dict_allowing_semantic(self.flow_lm, flow_lm_state, strict=True)
+        load_state_dict_allowing_semantic(
+            self.flow_lm, flow_lm_state, strict=True, recorded_encoder=encoder, source=str(path)
+        )
         self.mimi = build_mimi(config.mimi).to(device="cpu")
         # Training freezes Mimi and does not checkpoint it, so its weights come
         # from the config -- either its own safetensors or the packaged bundle.
@@ -211,10 +217,15 @@ class TTSModel(nn.Module):
                     "If you specify flow_lm.weights_path you should specify mimi.weights_path"
                 )
             logger.info(f"Loading FlowLM weights from {config.flow_lm.weights_path}")
-            state_dict_flowlm = get_flow_lm_state_dict(
-                download_if_necessary(config.flow_lm.weights_path)
+            flow_lm_file = download_if_necessary(config.flow_lm.weights_path)
+            state_dict_flowlm = get_flow_lm_state_dict(flow_lm_file)
+            load_state_dict_allowing_semantic(
+                tts_model.flow_lm,
+                state_dict_flowlm,
+                strict=True,
+                recorded_encoder=read_encoder_record(flow_lm_file),
+                source=str(config.flow_lm.weights_path),
             )
-            load_state_dict_allowing_semantic(tts_model.flow_lm, state_dict_flowlm, strict=True)
 
         tts_model.mimi = build_mimi(config.mimi).to(device="cpu")
 
@@ -241,7 +252,12 @@ class TTSModel(nn.Module):
 
             state_dict = safetensors.torch.load_file(weights_file)
             load_state_dict_allowing_semantic(
-                tts_model, state_dict, strict=True, prefix="flow_lm.semantic_fusion."
+                tts_model,
+                state_dict,
+                strict=True,
+                prefix="flow_lm.semantic_fusion.",
+                recorded_encoder=read_encoder_record(weights_file),
+                source=str(config.weights_path),
             )
 
         if config.flow_lm.weights_path is None and config.weights_path is None:
@@ -251,7 +267,9 @@ class TTSModel(nn.Module):
         size_in_mb = size_of_dict(tts_model.state_dict()) // 1e6
         if os.environ.get("POCKET_TTS_SAVE_WEIGHTS", "0") == "1":
             save_path = "./model.safetensors"
-            safetensors.torch.save_file(tts_model.state_dict(), save_path)
+            safetensors.torch.save_file(
+                tts_model.state_dict(), save_path, metadata=encoder_metadata(tts_model)
+            )
             logger.info(f"Saved TTSModel weights to {save_path}")
         logging.info(f"TTS Model loaded successfully. Its size is {size_in_mb} MB")
 
@@ -270,6 +288,7 @@ class TTSModel(nn.Module):
         quantize: bool = False,
         checkpoint: str | Path | None = None,
         lsd_decode_steps: int | None = None,
+        semantic_encoder_dir: str | Path | None = None,
     ) -> Self:
         """Load a pre-trained TTS model with specified configuration.
 
@@ -298,6 +317,10 @@ class TTSModel(nn.Module):
                 config's safetensors weights, so any step of a run can be played
                 without exporting first. EMA weights are used when the checkpoint
                 carries them.
+            semantic_encoder_dir: Only for a config with a `flow_lm.semantic_conditioner`
+                section: a local directory with the files of the encoder it pins (what its
+                `model_name`/`revision` would download from Hugging Face), loaded instead of
+                the Hub. The caller vouches that they are the pinned files.
             quantize: If True, apply dynamic int8 quantization to the transformer's
                 attention and FFN layers. Reduces runtime memory by ~48% and improves
                 inference speed by ~27% on x86 (FBGEMM).
@@ -367,7 +390,7 @@ class TTSModel(nn.Module):
             apply_dynamic_int8(tts_model.flow_lm, RECOMMENDED_CONFIG)
         if tts_model.flow_lm.semantic_fusion is not None:
             # Fail at load time, not on the first sentence.
-            tts_model.flow_lm.semantic_fusion.load_encoder()
+            tts_model.flow_lm.semantic_fusion.load_encoder(semantic_encoder_dir)
 
         return tts_model
 

@@ -82,13 +82,25 @@ def get_mimi_state_dict(path: Path) -> dict:
 def get_training_checkpoint_state_dicts(
     path: str | Path, use_ema: bool = True
 ) -> tuple[dict, dict]:
-    """(flow_lm, mimi) state dicts from a training checkpoint (.pt).
+    """(flow_lm, mimi) state dicts from a training checkpoint (.pt); see
+    `read_training_checkpoint`."""
+    flow_lm, mimi, _ = read_training_checkpoint(path, use_ema)
+    return flow_lm, mimi
+
+
+def read_training_checkpoint(
+    path: str | Path, use_ema: bool = True
+) -> tuple[dict, dict, dict | None]:
+    """(flow_lm, mimi, semantic encoder record) from a training checkpoint (.pt).
 
     Training checkpoints hold the trainable model under "model" and, when the
     run tracked one, its EMA shadow under "ema"; both are keyed with the
     "flow_lm." / "mimi." prefixes of the training wrapper, which are otherwise
     the module names this package uses. The shadow covers trained parameters
     only, so it is overlaid on "model" rather than used on its own.
+
+    The record is the encoder identity a semantic run stored under "semantic_encoder"
+    (None for a checkpoint without one).
     """
     payload = torch.load(Path(path), map_location="cpu", weights_only=True)
     state = payload.get("model")
@@ -103,4 +115,4 @@ def get_training_checkpoint_state_dicts(
     mimi = {k.removeprefix("mimi."): v for k, v in state.items() if k.startswith("mimi.")}
     if not flow_lm:
         raise ValueError(f"no flow_lm.* weights in {path}")
-    return flow_lm, mimi
+    return flow_lm, mimi, payload.get("semantic_encoder")

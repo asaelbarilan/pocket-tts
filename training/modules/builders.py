@@ -12,7 +12,11 @@ import torch
 import yaml
 from torch import nn
 
-from pocket_tts.conditioners.semantic import load_state_dict_allowing_semantic
+from pocket_tts.conditioners.semantic import (
+    ENCODER_RECORD_KEY,
+    load_state_dict_allowing_semantic,
+    read_encoder_record,
+)
 from pocket_tts.models.mimi import MimiModel, build_mimi
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.modules.mlp import SimpleMLPAdaLN
@@ -60,7 +64,8 @@ def load_model_config(
     config's value.
 
     `semantic` (TrainArgs.semantic_conditioner) is merged into
-    flow_lm.semantic_conditioner, creating the section when the config has none.
+    flow_lm.semantic_conditioner, creating the section when the config has none. If it
+    selects a different `encoder` than the config's section, it replaces that section.
     """
     config_file = download_if_necessary(str(path))
     if not config_file.exists():
@@ -77,10 +82,17 @@ def load_model_config(
             raise KeyError(f"{path} has no field {dotted!r} to override")
         node[leaf] = value
     if semantic is not None:
-        raw["flow_lm"]["semantic_conditioner"] = {
-            **(raw["flow_lm"].get("semantic_conditioner") or {}),
-            **semantic,
-        }
+        base = raw["flow_lm"].get("semantic_conditioner") or {}
+        if semantic.get("encoder", "dictabert") != base.get("encoder", "dictabert"):
+            # The base section's model, revision, file and limits belong to its own encoder,
+            # so naming another one replaces the section instead of merging into it.
+            logger.info(
+                "semantic_conditioner.encoder %s replaces the model config's %s section",
+                semantic.get("encoder", "dictabert"),
+                base.get("encoder", "dictabert"),
+            )
+            base = {}
+        raw["flow_lm"]["semantic_conditioner"] = {**base, **semantic}
     lookup_table = raw["flow_lm"]["lookup_table"]
     vocab_size = _local_tokenizer_vocab_size(str(lookup_table["tokenizer_path"]))
     if vocab_size is not None:
@@ -131,7 +143,13 @@ def attach_distillation(model: TrainableTTS, flow_lm: nn.Module, args: TrainArgs
         state = {
             k.removeprefix("flow_lm."): v for k, v in state.items() if k.startswith("flow_lm.")
         }
-        load_state_dict_allowing_semantic(teacher, state, strict=True)
+        load_state_dict_allowing_semantic(
+            teacher,
+            state,
+            strict=True,
+            recorded_encoder=payload.get(ENCODER_RECORD_KEY),
+            source=str(args.distill_teacher_weights),
+        )
         teacher = teacher.eval()
         # Seed the student from the teacher: non-backbone tensors verbatim,
         # backbone from the teacher's bottom+top layers — far faster to
@@ -208,6 +226,7 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
         )
 
     if args.start_from_pretrained:
+        recorded_encoder = read_encoder_record(weights_file)
         flow_state = {
             k.removeprefix("flow_lm."): v for k, v in state.items() if k.startswith("flow_lm.")
         }
@@ -219,7 +238,11 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
         if flow.num_time_conds != 2:
             flow_state = {k: v for k, v in flow_state.items() if not k.startswith("flow_net.")}
             missing, unexpected = load_state_dict_allowing_semantic(
-                flow_lm, flow_state, strict=False
+                flow_lm,
+                flow_state,
+                strict=False,
+                recorded_encoder=recorded_encoder,
+                source=str(config.weights_path),
             )
             assert not unexpected, unexpected
             assert all(k.startswith("flow_net.") for k in missing), missing
@@ -230,7 +253,11 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
         else:
             # A plain (pre-semantic) checkpoint leaves the fusion at its zero init.
             missing, unexpected = load_state_dict_allowing_semantic(
-                flow_lm, flow_state, strict=not dropped
+                flow_lm,
+                flow_state,
+                strict=not dropped,
+                recorded_encoder=recorded_encoder,
+                source=str(config.weights_path),
             )
             assert not unexpected, unexpected
             assert set(missing) <= set(dropped), missing
@@ -248,7 +275,8 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
         # Fail before training starts; the encoder stays frozen and outside the module tree.
         flow_lm.semantic_fusion.load_encoder()
         logger.info(
-            "semantic conditioning on: %s@%s layers %d-%d, %s gate",
+            "semantic conditioning on: %s %s@%s layers %d-%d, %s gate",
+            config.flow_lm.semantic_conditioner.encoder,
             config.flow_lm.semantic_conditioner.model_name,
             config.flow_lm.semantic_conditioner.revision,
             config.flow_lm.semantic_conditioner.first_layer,

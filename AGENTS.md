@@ -169,10 +169,17 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
   `pocket_tts/utils/text_fold.py`: the tokenizer filter imports them and inference applies them
   (`fold_text: true` in `pocket_tts/config/hebrew.yaml`; the deploy servers always fold).
   `tests/test_text_fold.py` pins the map to the normalizer's own.
-- Optional DictaBERT semantic conditioning (SEMANTIC_CONDITIONING.md) lives in
-  `pocket_tts/conditioners/semantic.py`. It is off unless `flow_lm.semantic_conditioner` (model
-  config) or `semantic_conditioner` (training/ config) is set; keep the default path identical.
-  Its tensors are `flow_lm.semantic_fusion.*`; DictaBERT itself is never saved or trained.
+- Optional semantic conditioning (SEMANTIC_CONDITIONING.md) lives in
+  `pocket_tts/conditioners/semantic.py` (fusion, alignment, DictaBERT) and
+  `pocket_tts/conditioners/semantic_renikud.py` (RenikudPlus, ONNX Runtime). It is off unless
+  `flow_lm.semantic_conditioner` (model config) or `semantic_conditioner` (training/ config) is
+  set; keep the default path identical and import nothing new when it is off. `encoder:
+  dictabert|renikud_plus` selects the encoder; a missing `encoder` means DictaBERT, so old
+  configs and checkpoints keep working. Its tensors are `flow_lm.semantic_fusion.*`; the encoders
+  are never saved or trained, and checkpoints/exports record which one the fusion was trained
+  with (loading across encoders raises). RenikudPlus uses the fp32 ONNX file only and reads the
+  same final string as SentencePiece through a character-level view (no normalizer at inference).
+  `onnx`/`onnxruntime` are imported only on that path.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation

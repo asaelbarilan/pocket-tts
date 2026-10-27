@@ -53,8 +53,12 @@
 
 - [ ] Run `training/configs/finetune_hebrew_semantic.yaml` after a smoke test; judge homograph
   pairs, English and vocalized samples by listening against the warm-start model.
+- [ ] Run `training/configs/finetune_hebrew_semantic_renikud.yaml` (RenikudPlus encoder) after
+  its smoke test, from a warm-start without DictaBERT fusion tensors, and compare it with the
+  DictaBERT run on homograph pairs, digits and English (the encoder comparison itself, for
+  example a linear probe on homograph/stress sentences, is not done).
 - [ ] Encode the whole input once at inference and slice per chunk (context is per chunk now).
-- [ ] Batch the DictaBERT forward across rows in training.
+- [ ] Batch the encoder forward across rows in training.
 
 ## Data quality
 

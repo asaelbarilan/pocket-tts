@@ -1,8 +1,10 @@
-"""Optional semantic conditioning: frozen DictaBERT states fused into the FlowLM text prefix.
+"""Optional semantic conditioning: frozen encoder states fused into the FlowLM text prefix.
 
 An experimental local extension for Hebrew (see SEMANTIC_CONDITIONING.md). It is not part of
 Kyutai's released models or training recipe, and it is off unless the model config has a
-`flow_lm.semantic_conditioner` section.
+`flow_lm.semantic_conditioner` section. That section selects the encoder: DictaBERT-large
+(the default; `DictaBertEncoder` here) or RenikudPlus (`encoder: renikud_plus`, in
+semantic_renikud.py, imported only when selected).
 
 The backbone keeps reading one vector per SentencePiece token, so sequence length, positions
 and every length heuristic are unchanged. A frozen bidirectional encoder reads the same string;
@@ -19,8 +21,10 @@ the optimizer, EMA or DDP, and are always loaded from the pinned Hugging Face re
 
 import bisect
 import copy
+import json
 import logging
 import unicodedata
+from pathlib import Path
 
 import sentencepiece
 import torch
@@ -181,14 +185,19 @@ def pool_to_tokens(
 
 
 class SemanticEncoder:
-    """A frozen text encoder. Subclasses: DictaBertEncoder, and fakes in tests."""
+    """A frozen text encoder. Subclasses: DictaBertEncoder, RenikudPlusEncoder
+    (semantic_renikud.py), and fakes in tests.
+
+    Each encoder supplies the two things the shared voting needs: the token spans in the final
+    string (`tokenize`) and the hidden states of its layers (`encode`)."""
 
     hidden_size: int
     num_layers: int
 
     def tokenize(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
-        """Token ids without special tokens, and each token's character span in `text`.
-        Tokens that must not vote (unknown tokens) get an empty span."""
+        """Token ids without special tokens, and each token's character span in `text` (the
+        final string the SentencePiece tokenizer reads, even where the encoder reads an edited
+        view of it). Tokens that must not vote (unknown tokens) get an empty span."""
         raise NotImplementedError
 
     def encode(self, ids: list[int], layers: list[int], device: torch.device) -> torch.Tensor:
@@ -199,10 +208,20 @@ class SemanticEncoder:
 
 class DictaBertEncoder(SemanticEncoder):
     def __init__(
-        self, model_name: str, revision: str, max_tokens: int, keep_layers: int | None = None
+        self,
+        model_name: str,
+        revision: str,
+        max_tokens: int,
+        keep_layers: int | None = None,
+        source: str | Path | None = None,
     ):
         """`keep_layers`: drop the transformer layers above it, which nothing reads (layers
-        21-24 with the default band: a sixth of the encoder's compute)."""
+        21-24 with the default band: a sixth of the encoder's compute).
+
+        `source`: a local directory holding the files `from_pretrained` reads (config.json,
+        model.safetensors, tokenizer.json, tokenizer_config.json, vocab.txt) instead of the
+        Hugging Face Hub; `model_name` and `revision` are then only names for the logs. The
+        deploy server copies the pinned files from its model store and passes them here."""
         try:
             from transformers import AutoModel, AutoTokenizer
         except ImportError as exc:
@@ -210,13 +229,18 @@ class DictaBertEncoder(SemanticEncoder):
                 "semantic conditioning needs the `transformers` package: "
                 "pip install 'pocket-tts[semantic]'"
             ) from exc
-        logger.info("loading semantic encoder %s@%s", model_name, revision)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+        if source is not None:
+            logger.info("loading semantic encoder %s@%s from %s", model_name, revision, source)
+            location, extra = str(source), {"local_files_only": True}
+        else:
+            logger.info("loading semantic encoder %s@%s", model_name, revision)
+            location, extra = model_name, {"revision": revision}
+        self.tokenizer = AutoTokenizer.from_pretrained(location, **extra)
         if not self.tokenizer.is_fast:
             raise ValueError(f"{model_name} has no fast tokenizer; character offsets need one")
         # BertModel without the pooler: only hidden states are used, and the checkpoint has no
         # pooler weights (it is a masked-LM checkpoint).
-        model = AutoModel.from_pretrained(model_name, revision=revision, add_pooling_layer=False)
+        model = AutoModel.from_pretrained(location, add_pooling_layer=False, **extra)
         model.eval()
         model.requires_grad_(False)
         self.model = model
@@ -267,6 +291,29 @@ class DictaBertEncoder(SemanticEncoder):
         if not outputs:
             return torch.zeros(len(layers), 0, self.hidden_size, device=device)
         return torch.cat(outputs, dim=1)
+
+
+# ------------------------------------------------------------------------------------------
+# Character classes of a SentencePiece piece (for the per-class gate metrics)
+# ------------------------------------------------------------------------------------------
+
+CHAR_CLASSES = ("hebrew", "digit", "latin", "other")
+
+
+def piece_class(piece: str) -> str:
+    """The class of the letters or digits most common in a piece: "hebrew" (U+05D0-05EA, so
+    the niqqud on a letter does not count), "digit", "latin", else "other" (punctuation, symbols,
+    an empty piece). Ties go to the order Hebrew, digit, Latin."""
+    counts = dict.fromkeys(CHAR_CLASSES[:3], 0)
+    for ch in piece:
+        if "\u05d0" <= ch <= "\u05ea":
+            counts["hebrew"] += 1
+        elif ch.isdecimal():
+            counts["digit"] += 1
+        elif ch.isalpha() and unicodedata.name(ch, "").startswith("LATIN"):
+            counts["latin"] += 1
+    best = max(counts.values())
+    return next(name for name, n in counts.items() if n == best) if best else "other"
 
 
 # ------------------------------------------------------------------------------------------
@@ -330,15 +377,30 @@ class SemanticFusion(nn.Module):
             )
         self.__dict__["_encoder"] = encoder
 
-    def load_encoder(self) -> None:
-        """Load the pinned encoder now (otherwise it loads on first use)."""
-        if self._encoder is None:
+    def load_encoder(self, source: str | Path | None = None) -> None:
+        """Load the pinned encoder now (otherwise it loads on first use).
+
+        `source` is a local directory with the encoder's files (what the config's `model_name`
+        and `revision` would download), for deployments that keep them in their own store: for
+        DictaBERT the files `from_pretrained` reads, for RenikudPlus the config's `filename`.
+        The caller vouches that they are the files the config pins."""
+        if self._encoder is not None:
+            return
+        if source is not None and not Path(source).is_dir():
+            raise FileNotFoundError(f"semantic encoder directory not found: {source}")
+        if self.config.encoder == "renikud_plus":
+            # Imported only here: onnx and onnxruntime are needed by this encoder alone.
+            from pocket_tts.conditioners.semantic_renikud import RenikudPlusEncoder
+
+            self.set_encoder(RenikudPlusEncoder.from_config(self.config, source))
+        else:
             self.set_encoder(
                 DictaBertEncoder(
                     self.config.model_name,
                     self.config.revision,
                     self.config.max_tokens,
                     keep_layers=self.config.last_layer,
+                    source=source,
                 )
             )
 
@@ -402,14 +464,23 @@ class SemanticFusion(nn.Module):
             stats["gate_latin"] = per_token[latin].mean()
         if bool((~latin).any()):
             stats["gate_other"] = per_token[~latin].mean()
+        classes = torch.tensor(
+            [CHAR_CLASSES.index(piece_class(text[b:e])) for b, e in spans], device=gate.device
+        )
+        for index, name in enumerate(CHAR_CLASSES):
+            members = classes == index
+            if bool(members.any()):
+                stats[f"gate_class_{name}"] = per_token[members].mean()
         self._stats.append(stats)
 
     def pop_stats(self) -> dict[str, torch.Tensor]:
-        """Mean gate (overall, Latin-letter tokens, the rest) and cover since the last call,
-        as `semantic_*` metrics. Recorded in training mode only."""
+        """Mean gate (overall, Latin-letter tokens, the rest; and per character class of the
+        token: Hebrew, digit, Latin, other) and cover since the last call, as `semantic_*`
+        metrics. Recorded in training mode only."""
         records, self.__dict__["_stats"] = self._stats, []
         out: dict[str, torch.Tensor] = {}
-        for key in ("gate", "gate_latin", "gate_other", "cover"):
+        keys = ("gate", "gate_latin", "gate_other", "cover")
+        for key in (*keys, *(f"gate_class_{name}" for name in CHAR_CLASSES)):
             values = [r[key] for r in records if key in r]
             if values:
                 out[f"semantic_{key}"] = torch.stack(values).mean()
@@ -443,8 +514,83 @@ def fuse_rows(
 # ------------------------------------------------------------------------------------------
 
 
+# The key under which checkpoints and exports record which encoder their fusion was trained with
+# (a key of the training .pt payload; the safetensors metadata key is this, prefixed).
+ENCODER_RECORD_KEY = "semantic_encoder"
+ENCODER_METADATA_KEY = "pocket_tts." + ENCODER_RECORD_KEY
+
+_NOT_CHECKED = object()
+
+
+def encoder_record(module: nn.Module) -> dict[str, str] | None:
+    """The encoder identity to record next to `module`'s fusion tensors, None without a fusion."""
+    for sub in module.modules():
+        if isinstance(sub, SemanticFusion):
+            return sub.config.identity()
+    return None
+
+
+def encoder_metadata(module: nn.Module) -> dict[str, str] | None:
+    """`encoder_record` as safetensors metadata (string values only), None without a fusion."""
+    record = encoder_record(module)
+    return None if record is None else {ENCODER_METADATA_KEY: json.dumps(record)}
+
+
+def read_encoder_record(path) -> dict[str, str] | None:
+    """The encoder identity recorded in a safetensors file's metadata. None for a file that
+    carries none: every file written before the encoder was selectable (these are DictaBERT's)."""
+    import safetensors
+
+    with safetensors.safe_open(path, framework="pt", device="cpu") as f:
+        raw = (f.metadata() or {}).get(ENCODER_METADATA_KEY)
+    return None if raw is None else json.loads(raw)
+
+
+def check_encoder_record(
+    expected: dict[str, str], recorded: dict[str, str] | None, source: str = "checkpoint"
+) -> None:
+    """Raise if fusion tensors trained with another encoder would be loaded into a model
+    configured with `expected` (`SemanticConditionerConfig.identity()`).
+
+    A checkpoint with no record predates the choice of encoder and is DictaBERT's: only the
+    encoder family can be compared then. Otherwise the encoder, model, revision and file must
+    all match. A different layer band only warns: the mix weights then index other layers, but
+    the tensors still fit.
+    """
+    if recorded is None:
+        recorded = {"encoder": "dictabert"}
+        keys = ("encoder",)
+    else:
+        keys = ("encoder", "model_name", "revision", "filename")
+    differing = [k for k in keys if recorded.get(k) != expected.get(k)]
+    if differing:
+        if "model_name" in recorded:
+            trained = f"{recorded['encoder']} ({recorded['model_name']}@{recorded.get('revision')})"
+        else:
+            trained = f"{recorded['encoder']} (written before the encoder was recorded)"
+        raise ValueError(
+            f"{source} has semantic-conditioning tensors trained with encoder {trained}, but the "
+            f"model is configured with {expected['encoder']} "
+            f"({expected['model_name']}@{expected['revision']}): {', '.join(differing)} differ. "
+            "The fusion cannot be loaded across encoders; configure the encoder the checkpoint "
+            "was trained with, or start from a checkpoint without semantic tensors."
+        )
+    if recorded.get("layers") not in (None, expected.get("layers")):
+        logger.warning(
+            "%s was trained on encoder layers %s, the model mixes layers %s",
+            source,
+            recorded["layers"],
+            expected.get("layers"),
+        )
+
+
 def load_state_dict_allowing_semantic(
-    module: nn.Module, state: dict, strict: bool = True, prefix: str = SEMANTIC_PREFIX
+    module: nn.Module,
+    state: dict,
+    strict: bool = True,
+    prefix: str = SEMANTIC_PREFIX,
+    recorded_encoder: object = _NOT_CHECKED,
+    source: str = "checkpoint",
 ) -> tuple[list[str], list[str]]:
     """`module.load_state_dict(state, strict)` that tolerates the optional fusion tensors.
 
@@ -452,12 +598,20 @@ def load_state_dict_allowing_semantic(
     - The checkpoint has them, the model does not: they are dropped with a warning.
     - The model has them, the checkpoint does not: they keep their initialization (W = 0, so
       the model behaves as the checkpoint did).
+    - Both have them: they must come from the same encoder. `recorded_encoder` is what the
+      checkpoint recorded (`read_encoder_record`, or the .pt payload's `semantic_encoder`), None
+      for a checkpoint that recorded nothing (DictaBERT's); a mismatch raises ValueError before
+      anything is loaded. Left out, the check is skipped.
 
     Returns (missing, unexpected) without the fusion keys. `prefix` is the full key prefix
     in `module`'s naming, e.g. "flow_lm.semantic_fusion." for a TTSModel.
     """
     model_has = any(k.startswith(prefix) for k in module.state_dict())
     state_has = any(k.startswith(prefix) for k in state)
+    if model_has and state_has and recorded_encoder is not _NOT_CHECKED:
+        expected = encoder_record(module)
+        if expected is not None:
+            check_encoder_record(expected, recorded_encoder, source)
     if not model_has and not state_has:
         result = module.load_state_dict(state, strict=strict)
         return list(result.missing_keys), list(result.unexpected_keys)

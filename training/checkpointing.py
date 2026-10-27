@@ -13,7 +13,13 @@ import safetensors.torch
 import torch
 from torch import nn
 
-from pocket_tts.conditioners.semantic import SEMANTIC_PREFIX, load_state_dict_allowing_semantic
+from pocket_tts.conditioners.semantic import (
+    ENCODER_RECORD_KEY,
+    SEMANTIC_PREFIX,
+    encoder_metadata,
+    encoder_record,
+    load_state_dict_allowing_semantic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +86,10 @@ def save_checkpoint(
         "model": model.state_dict(),
         "ema": ema.state_dict() if ema is not None else None,
     }
+    # Which encoder the fusion was trained with (only semantic runs add the key).
+    encoder = encoder_record(model)
+    if encoder is not None:
+        payload[ENCODER_RECORD_KEY] = encoder
     path = run_dir / f"checkpoint_{step:08d}.pt"
     tmp = path.with_suffix(".tmp")
     torch.save(payload, tmp)
@@ -112,7 +122,13 @@ def load_checkpoint(path: Path, model: nn.Module, optimizer=None, ema: EMA | Non
     payload = torch.load(path, map_location="cpu", weights_only=True)
     # Exactly model.load_state_dict(payload["model"]) unless semantic-conditioning tensors are
     # on one side only (pocket_tts/conditioners/semantic.py).
-    load_state_dict_allowing_semantic(model, payload["model"], prefix=_SEMANTIC_KEYS)
+    load_state_dict_allowing_semantic(
+        model,
+        payload["model"],
+        prefix=_SEMANTIC_KEYS,
+        recorded_encoder=payload.get(ENCODER_RECORD_KEY),
+        source=str(path),
+    )
     semantic = any(k.startswith(_SEMANTIC_KEYS) for k in model.state_dict())
     if optimizer is not None:
         opt_state = payload.get("optimizer")
@@ -156,6 +172,6 @@ def export_pocket_safetensors(
     state.update({f"mimi.{k}": v.detach().cpu() for k, v in mimi.state_dict().items()})
     path = Path(path)
     tmp = path.with_suffix(".tmp")
-    safetensors.torch.save_file(state, str(tmp))
+    safetensors.torch.save_file(state, str(tmp), metadata=encoder_metadata(flow_lm))
     tmp.rename(path)
     logger.info(f"exported pocket-tts weights to {path}")

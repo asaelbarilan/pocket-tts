@@ -30,6 +30,9 @@ audio = ["soundfile>=0.12.0"]
 quantize = ["torchao>=0.16.0"]
 # Optional DictaBERT semantic conditioning (SEMANTIC_CONDITIONING.md).
 semantic = ["transformers>=4.40"]
+# Optional RenikudPlus semantic encoder (`semantic_conditioner.encoder: renikud_plus`), run in
+# ONNX Runtime. Imported only on that path.
+semantic-renikud = ["onnx>=1.16", "onnxruntime>=1.18"]
 training = [
     "datasets>=3.0.0",
     "pyarrow>=15.0.0",
@@ -50,6 +53,9 @@ dev = [
     "mkdocs-autolinks-plugin>=0.7.1",
     "mkdocs-material>=9.7.1",
     "mkdocstrings-python>=2.0.1",
+    # RenikudPlus semantic encoder (the `semantic-renikud` extra)
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
     "pyyaml>=6.0",

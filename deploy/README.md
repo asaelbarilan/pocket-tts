@@ -81,7 +81,42 @@ app itself).
   loaded and verified. A revision that cannot load its model (bad hash, corrupt copy, weights the
   code cannot run) never passes it, the deploy fails, and the previous revision keeps serving.
 - A model needs a new image only when the *code* has to change (new architecture, new config keys,
-  sampler changes). `config`/weights that the image's code runs are swapped freely.
+  sampler changes). `config`/weights that the image's code runs are swapped freely, whatever
+  semantic encoder they use.
+- **Semantic encoders (DictaBERT, RenikudPlus).** A model whose config has
+  `flow_lm.semantic_conditioner` also needs a frozen encoder, which is not in the weights. It is a
+  store artifact too, keyed by the sha256 of its main file, so **one image serves models with
+  either encoder or none** (the dependencies of both are in `requirements.txt`; the image has no
+  encoder baked in and runs with `HF_HUB_OFFLINE=1`):
+
+  ```bash
+  deploy/publish_encoder.sh dictabert        # once per encoder revision, not per model
+  deploy/publish_encoder.sh renikud_plus
+  ```
+
+  Layout, next to the models in the same bucket: `encoders/<sha256>/{manifest.json, <files>}`
+  (DictaBERT: `config.json model.safetensors tokenizer.json tokenizer_config.json vocab.txt`;
+  RenikudPlus: the fp32 `model.onnx`, never the int8 one). The script downloads them from Hugging
+  Face at the revision the shipped configs pin, hashes them and uploads the manifest last. Like a
+  model, a published encoder is immutable.
+
+  The *model's own config* names the encoder it needs (`encoder`, `model_name`, `revision`, and
+  `filename` for RenikudPlus), because its fusion weights are tied to exactly that encoder. So
+  swapping the model hash is all it takes: the server finds the published encoder whose manifest
+  matches the config, copies its files to local disk hashing every byte (the same as the weights,
+  and freed again once loaded), and loads it from there. A model without the section needs none; a
+  config written before RenikudPlus existed (no `encoder` key) means DictaBERT. Both pin
+  the same way as before: a model that names an encoder that is not published stops the server at
+  startup with a message that says what to publish, so its revision never passes `/ready` and the
+  old one keeps serving. `GET /health` and `/ready` report the encoder and its hash.
+
+  Environment (both optional): `SEMANTIC_ENCODER_STORE` (where to copy encoders from; default
+  `$MODEL_STORE/encoders`) and `SEMANTIC_ENCODER_SHA256` (pin one by hash, for the case of several
+  published encoders with the same identity; it cannot select an encoder the config does not name).
+
+  Memory: loading RenikudPlus peaks at about 4.8 GB for a few seconds (about 1.9 GB afterwards),
+  and its 1.2 GB (DictaBERT: 1.6 GB) file is copied to Cloud Run's in-memory disk first, so budget
+  for that on top of the 1.4 GB weights copy.
 - To tell which model answered: `GET /health` (`model_sha256`) and the `X-Model-Sha256` header of
   `/tts`. The validation-set cache is keyed on the hash, so each model has its own.
 - Locally nothing changes: without `MODEL_STORE` the server uses `artifacts/` and hashes the
@@ -114,6 +149,13 @@ and shows them with players. The page polls `GET /validation` every 5 s while it
   default `deploy/validation_cache/`, gitignored), in a folder named `<weights sha256[:16]>-<device>`.
   A different model, device kind, sentence file or sampling default never reuses another's audio.
 - A finished cache is shown at once. A run cut short resumes with the same voice.
+- **צור מחדש עם הקול הנבחר** ("regenerate with the selected voice") next to the button deletes the
+  loaded model's cached set and renders all sentences again with the voice selected in the **Voice
+  prompt** list (not a random one; an uploaded file is refused, the set needs a named voice). It
+  asks for confirmation, is refused while a run is in progress, and the new set replaces the old
+  one as that model's cache for everyone. API: `POST /validation/start` with form fields
+  `force=true` and `voice=<name from /voices>` (400 for a missing or unknown voice, 409 while a run
+  is in progress; without the fields it behaves as before).
 - The weights hash is the model store's `MODEL_SHA256` pin (verified while the weights are
   copied); without a store the server hashes the weights file at startup.
 - On Cloud Run the cache is a Cloud Storage bucket (`<project>-hebrew-tts-cache`) mounted at
