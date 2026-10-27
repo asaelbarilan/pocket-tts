@@ -11,6 +11,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from pocket_tts.utils.config import SemanticConditionerConfig  # noqa: E402
 from tests.test_semantic_conditioning import (  # noqa: E402
     CORPUS,
     LDIM,
@@ -18,7 +19,7 @@ from tests.test_semantic_conditioning import (  # noqa: E402
     make_sp,
     small_config,
 )
-from training.args import TrainArgs  # noqa: E402
+from training.args import TrainArgs, load_args  # noqa: E402
 from training.checkpointing import EMA, load_checkpoint, save_checkpoint  # noqa: E402
 from training.modules.builders import load_model_config  # noqa: E402
 from training.modules.model import TrainableTTS  # noqa: E402
@@ -240,3 +241,55 @@ def test_trainargs_default_is_off():
     assert args.semantic_conditioner is None
     with pytest.raises(ValueError, match="semantic_lr_scale"):
         TrainArgs(semantic_lr_scale=0)
+
+
+def test_multi_dataset_semantic_diagnostic_config():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    base = load_args(configs / "finetune_hebrew_multi_1.yaml")
+    args = load_args(configs / "finetune_hebrew_multi_1_semantic_test.yaml")
+    assert args.model_config == base.model_config
+    assert args.model_overrides == base.model_overrides
+    assert args.start_from_pretrained and args.reset_text_embedding
+    assert args.data.datasets == base.data.datasets
+    assert args.data.curriculum == [{**base.data.curriculum[0], "steps": 1000}]
+    for name in ("alt_words_sample_prob", "alt_word_swap_prob", "nikud_word_prob"):
+        assert getattr(args.data, name) == getattr(base.data, name)
+    assert args.flow == base.flow
+    assert args.flow_batch_multiplier == base.flow_batch_multiplier
+    assert args.semantic_conditioner is not None
+    assert SemanticConditionerConfig(**args.semantic_conditioner) == SemanticConditionerConfig()
+    assert args.semantic_lr_scale == 3.0
+    assert args.max_steps == args.sample_freq == args.valid_freq == args.ckpt_freq == 1000
+    assert 0 < args.optim.warmup_steps < args.max_steps
+    assert not args.compile
+    assert args.run_dir != base.run_dir
+    assert args.batch_size * args.grad_accum_steps * 8 == 64
+    assert set(base.sample_sentences) <= set(args.sample_sentences)
+
+
+def test_multi_dataset_semantic_50k_config():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    base = load_args(configs / "finetune_hebrew_multi_1.yaml")
+    diagnostic = load_args(configs / "finetune_hebrew_multi_1_semantic_test.yaml")
+    args = load_args(configs / "finetune_hebrew_multi_1_semantic_50k.yaml")
+    assert args.max_steps == 50000
+    assert args.data.curriculum == base.data.curriculum[:-1] + [
+        {**base.data.curriculum[-1], "steps": 5000}
+    ]
+    assert args.data.datasets == diagnostic.data.datasets
+    assert args.model_config == diagnostic.model_config
+    assert args.model_overrides == diagnostic.model_overrides
+    assert args.start_from_pretrained and args.reset_text_embedding
+    assert args.semantic_conditioner == diagnostic.semantic_conditioner
+    assert args.semantic_lr_scale == diagnostic.semantic_lr_scale
+    for name in ("alt_words_sample_prob", "alt_word_swap_prob", "nikud_word_prob"):
+        assert getattr(args.data, name) == getattr(diagnostic.data, name)
+    assert args.optim == base.optim
+    assert args.flow == diagnostic.flow
+    assert args.flow_batch_multiplier == diagnostic.flow_batch_multiplier
+    assert not args.compile
+    assert args.batch_size * args.grad_accum_steps * 8 == 64
+    assert args.sample_freq == args.valid_freq == args.ckpt_freq == 1000
+    assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq
+    assert args.sample_sentences == diagnostic.sample_sentences
+    assert args.run_dir not in (base.run_dir, diagnostic.run_dir)
