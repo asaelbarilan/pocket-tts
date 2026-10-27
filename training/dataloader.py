@@ -319,7 +319,7 @@ class DataLoader:
             yield from self._batches_on(pool)
         finally:
             # Also when the consumer stops early (generator closed) or a check below raises.
-            pool.shutdown(wait=False, cancel_futures=True)
+            pool.shutdown(wait=True, cancel_futures=True)
 
     def _batches_on(self, pool: ThreadPoolExecutor) -> Iterator[Batch]:
         self._failures = 0
@@ -382,7 +382,9 @@ def _prefetch(iterator: Iterator[Batch], depth: int = 4) -> Iterator[Batch]:
     Closing the returned generator (`contextlib.closing`, or just dropping the last reference)
     stops the thread: it sets `stop`, the worker notices within `STOP_POLL_SEC` even when
     blocked on a full queue, closes the loader's own generator from its own thread (which
-    shuts down the loader's I/O pool) and exits. Without that, a consumer that stops early,
+    shuts down the loader's I/O pool) and exits. Closing waits for that cleanup before
+    returning, so native audio work cannot outlive the interpreter. Without that, a consumer
+    that stops early,
     as validation does after `num_valid_batches`, leaves a thread blocked in `q.put` forever.
     """
     q: queue.Queue = queue.Queue(maxsize=depth)
@@ -416,7 +418,8 @@ def _prefetch(iterator: Iterator[Batch], depth: int = 4) -> Iterator[Batch]:
             if close is not None:
                 close()
 
-    threading.Thread(target=worker, daemon=True).start()
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
     try:
         while True:
             item = q.get()
@@ -432,6 +435,7 @@ def _prefetch(iterator: Iterator[Batch], depth: int = 4) -> Iterator[Batch]:
                 q.get_nowait()
             except queue.Empty:
                 break
+        thread.join()
 
 
 @dataclass

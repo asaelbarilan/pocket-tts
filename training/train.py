@@ -303,6 +303,12 @@ def main(config_path: str) -> None:
                 ": the mix continues, but each dataset's shuffle restarts from its beginning"
             )
 
+    def close_train_loaders():
+        if mixed is not None:
+            mixed.close()
+        else:
+            train_loader.close()
+
     autocast = torch.autocast(
         device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
     )
@@ -376,6 +382,7 @@ def main(config_path: str) -> None:
                 )
                 progress.log("checkpoint", completed_step, interrupted=True)
                 logger.info("graceful shutdown complete")
+            close_train_loaders()
             shutdown_distributed()
             if rank == 0:
                 wandb.finish()
@@ -469,6 +476,7 @@ def main(config_path: str) -> None:
         progress.log("checkpoint", args.max_steps)
         logger.info("done")
         wandb.finish()
+    close_train_loaders()
     shutdown_distributed()
 
 

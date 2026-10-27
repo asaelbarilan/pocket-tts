@@ -255,6 +255,38 @@ The trainer takes one YAML file, so the switches are keys rather than command-li
   `pip install 'pocket-tts[semantic-renikud]'`), imported only when `encoder: renikud_plus`.
   Without them, only that path fails, with an error that says so before anything is downloaded.
 
+## Starting the 90K RenikudPlus curriculum
+
+`training/configs/finetune_hebrew_semantic_renikud_90k.yaml` copies all seven phases,
+dataset paths, augmentation, optimization and listening sentences from
+`training/configs/finetune_hebrew_semantic_dicta_90k.yaml`. It starts from the released English
+24-layer weights with a fresh Hebrew text embedding and semantic fusion, not from a DictaBERT
+checkpoint. The only behavioral changes are the encoder and a separate run directory:
+`runs/finetune_hebrew_semantic_renikud_90k`.
+
+From the repository root, use the normal commands (no special launcher or extra flags):
+
+```bash
+uv sync --locked
+NCCL_P2P_DISABLE=1 uv run torchrun --standalone --nproc-per-node 8 -m training.train \
+    training/configs/finetune_hebrew_semantic_renikud_90k.yaml
+```
+
+The default `dev` group already includes `onnx` and `onnxruntime`. The first launch downloads
+the pinned fp32 encoder (~1.2 GB) to the Hugging Face cache. Each rank runs its frozen encoder
+on CPU with one ONNX thread; the TTS model trains on GPU. The per-GPU batch is 8 (effective
+batch 64). All 90,000 optimizer steps are inferred from the curriculum and checked against
+`max_steps`. As usual, log in to W&B first or set `WANDB_MODE=disabled`. Run a short smoke
+test with a separate config and run directory before the full run; never shorten the production
+config in place. The trainer automatically resumes if its run directory contains a checkpoint.
+
+Validated on this Linux host with eight A40 GPUs: four optimizer steps at the configured
+per-GPU batch of 8, finite losses and semantic metrics, validation on all five datasets,
+checkpoint/export saving and clean process exit. The checkpoint, optimizer and EMA reload;
+the fusion projection moves from zero, the encoder output stays unchanged, and the exported
+Mimi weights match the frozen pretrained codec. This is a startup smoke test, not a quality
+evaluation or a full 90K training run. Smoke artifacts live outside the production run directory.
+
 ## Checkpoints
 
 The fusion's tensors live under `flow_lm.semantic_fusion.*` in training checkpoints and in the
@@ -403,4 +435,4 @@ deleted.
   added, and the comparison of the two encoders (for example a linear probe on homograph and
   stress sentences) is not part of this change.
 - **Not done here:** speaker or gender inputs of RenikudPlus, converting the ONNX model to
-  PyTorch, any TTS training run with it.
+  PyTorch, a full-length TTS training run with it (only short smoke tests have run).

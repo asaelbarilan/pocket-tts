@@ -566,6 +566,23 @@ def test_closing_works_as_a_context_manager_like_validate_uses_it():
     assert _wait_until(lambda: threading.active_count() <= before)
 
 
+def test_closing_prefetch_waits_for_worker_cleanup():
+    closed = threading.Event()
+
+    def batches():
+        try:
+            while True:
+                yield 0
+        finally:
+            time.sleep(0.1)  # stand in for native audio / I/O pool cleanup
+            closed.set()
+
+    prefetched = td._prefetch(batches(), depth=1)
+    next(prefetched)
+    _within(5, prefetched.close)
+    assert closed.is_set(), "close must finish cleanup, not just request it"
+
+
 def test_a_prefetch_that_never_started_leaves_no_thread():
 
     closed = threading.Event()
@@ -610,7 +627,8 @@ def test_closing_the_prefetched_loader_shuts_its_io_pool_down(
     batches = iter(loader)
     next(batches)
     batches.close()
-    assert _wait_until(lambda: recorded_pools and recorded_pools[0].was_shut_down)
+    assert recorded_pools and recorded_pools[0].was_shut_down
+    assert all(not thread.is_alive() for pool in recorded_pools for thread in pool._threads)
 
 
 def test_a_loader_that_fails_its_checks_shuts_its_io_pool_down(tmp_path, recorded_pools):

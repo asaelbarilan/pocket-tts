@@ -293,3 +293,56 @@ def test_multi_dataset_semantic_50k_config():
     assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq
     assert args.sample_sentences == diagnostic.sample_sentences
     assert args.run_dir not in (base.run_dir, diagnostic.run_dir)
+
+
+def test_multi_dataset_renikud_90k_config():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    args = load_args(configs / "finetune_hebrew_semantic_renikud_90k.yaml")
+    assert args.max_steps == 90000
+    phase_steps = [5000, 20000, 5000, 5000, 10000, 5000, 40000]
+    assert [p["steps"] for p in args.data.curriculum] == phase_steps
+    names = ("committee", "plenum", "recital", "hifitts2", "libritts_r")
+    assert [tuple(p["mix"][n] for n in names) for p in args.data.curriculum] == [
+        (0.35, 0.30, 0.10, 0.20, 0.05),
+        (0.62, 0.35, 0.0, 0.02, 0.01),
+        (0.50, 0.30, 0.10, 0.05, 0.05),
+        (0.30, 0.20, 0.20, 0.15, 0.15),
+        (0.62, 0.35, 0.0, 0.02, 0.01),
+        (0.45, 0.35, 0.10, 0.05, 0.05),
+        (0.55, 0.40, 0.10, 0.03, 0.01),
+    ]
+    assert tuple(args.data.datasets) == names
+    assert [args.data.datasets[n]["valid_weight"] for n in names] == [0.45, 0.25, 0.15, 0.10, 0.05]
+    assert args.data.curriculum_checkpoint_at_phase_end
+    assert (args.data.max_duration_sec, args.data.max_voice_prompt_sec) == (30.0, 5.0)
+    assert (
+        args.data.alt_words_sample_prob,
+        args.data.alt_word_swap_prob,
+        args.data.nikud_word_prob,
+    ) == (1.0, 0.7, 0.3)
+    assert args.model_config == "pocket_tts/config/english_2026-04_24l.yaml"
+    assert args.model_overrides == {
+        "flow_lm.lookup_table.tokenizer_path": (
+            "artifacts/tokenizer-he-en-niqqud/selected/tokenizer.model"
+        )
+    }
+    assert args.start_from_pretrained and args.reset_text_embedding
+    assert SemanticConditionerConfig(**args.semantic_conditioner) == SemanticConditionerConfig(
+        encoder="renikud_plus"
+    )
+    assert args.semantic_lr_scale == 3.0
+    assert args.flow.type == "lsd" and args.flow.kwargs == {}
+    assert args.flow_batch_multiplier == 4
+    assert (args.eos_loss_weight, args.text_dropout, args.voice_dropout) == (0.1, 0.2, 0.2)
+    assert (
+        args.optim.lr,
+        args.optim.schedule,
+        args.optim.warmup_steps,
+        args.optim.lr_min_ratio,
+    ) == (2e-4, "cosine", 1000, 0.1)
+    assert not args.compile
+    assert args.batch_size * args.grad_accum_steps * 8 == 64
+    assert args.run_dir == Path("runs/finetune_hebrew_semantic_renikud_90k")
+    assert args.stats_ema_steps == 1000 and args.ema_decay == 0.999
+    assert args.sample_freq == args.valid_freq == args.ckpt_freq == 2500
+    assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq

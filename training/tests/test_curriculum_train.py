@@ -54,9 +54,14 @@ class FakeLoader:
     def __init__(self, jsonl, rows=40):
         self.jsonl = jsonl
         self.entries = [None] * rows
+        self.closed = False
 
     def __iter__(self):
-        return iter(SimpleNamespace(jsonl=self.jsonl, text_tokens=[]) for _ in itertools.count())
+        try:
+            for _ in itertools.count():
+                yield SimpleNamespace(jsonl=self.jsonl, text_tokens=[])
+        finally:
+            self.closed = True
 
 
 class Harness:
@@ -75,6 +80,7 @@ class Harness:
         self.drawn: list[str] = []  # manifest of every micro-batch, in order
         self.valid_calls: list[tuple[str, int]] = []
         self.checkpoints: list[int] = []
+        self.loaders: list[FakeLoader] = []
         self.progress_path = tmp_path / "progress.jsonl"
 
     def write_valid_manifests(self, rows):
@@ -110,9 +116,14 @@ class Harness:
             self.valid_calls.append((jsonl, num_batches))
             return {"loss": {"av.jsonl": 1.0, "bv.jsonl": 2.0}.get(Path(jsonl).name, 4.0)}
 
+        def make_loader(jsonl, *a, **k):
+            loader = FakeLoader(jsonl)
+            self.loaders.append(loader)
+            return loader
+
         patches = {
             "setup": lambda config_path: fake_run,
-            "make_loader": lambda jsonl, *a, **k: FakeLoader(jsonl),
+            "make_loader": make_loader,
             "encode_batch": encode_batch,
             "_valid_pass": valid_pass,
             "save_checkpoint": lambda run_dir, step, *a: self.checkpoints.append(step),
@@ -236,3 +247,26 @@ def test_a_plain_config_trains_and_validates_as_before(tmp_path):
     assert [r["step"] for r in h.progress("valid")] == [2, 4]
     assert h.progress("phase") == []
     assert "phase" not in h.progress("train")[0]
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_training_closes_loaders_before_distributed_shutdown(tmp_path, mixed, interrupted):
+    data = (
+        {"datasets": DATASETS, "curriculum": PHASES}
+        if mixed
+        else {"train_jsonl": "t.jsonl", "valid_jsonl": "v.jsonl"}
+    )
+    h = Harness(tmp_path, data, **({} if mixed else {"max_steps": 4}))
+    if mixed:
+        h.write_valid_manifests(rows=400)
+
+    def shutdown():
+        assert h.loaders and all(loader.closed for loader in h.loaders)
+
+    with (
+        mock.patch("training.train.any_across_ranks", return_value=interrupted),
+        mock.patch("training.train.shutdown_distributed", side_effect=shutdown) as stopped,
+    ):
+        h.run()
+    stopped.assert_called_once()
