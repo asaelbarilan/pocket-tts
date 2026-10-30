@@ -77,3 +77,61 @@ Two things this does **not** license, both unmeasured:
 - that the TTS model will inherit these errors. It reads the text it is given; if the text
   is vocalized by hand, as `text_nikud` is in the eval set, none of this applies. That is
   exactly why the set carries both spellings of all seven.
+
+---
+
+# Does `dictabert-large` know, even though it cannot say?
+
+Measured 2026-10-30. `dicta-il/dictabert-large` is the wordpiece model, with no nikud head,
+so it cannot be asked to vocalize `הספר`. The question is whether the distinction is in the
+representation anyway — because if it is, a small head can read it off, and if it is not,
+nothing downstream will recover it.
+
+## The method, and the one thing to get right
+
+Cosine similarity is the right instrument, on **contextual** vectors, not static ones.
+Comparing the embedding of `ספר` against `לספר` or `סַפָּר` asks about BERT's input table,
+which has one vector per wordpiece and therefore cannot hold a sense distinction at all.
+The sense lives in the last hidden layer, where the same wordpiece gets a different vector
+in a different sentence. So:
+
+1. Write sentences where the reading is beyond doubt — four barbers, four books, the target
+   written `הספר` in every one so the probe compares like with like.
+2. Take the last-layer vector of `ספר` in each, averaged over its wordpieces, L2-normalized.
+3. Average each sense into a centroid.
+4. For the sentence in question, take cosine to both centroids. The larger wins.
+
+**Validate the probe before believing it.** Leave each anchor out, rebuild the centroids
+without it, and classify it. A probe that cannot label sentences whose answer is written on
+them is not evidence about one whose answer is the open question. This one scores 8/8.
+
+## Result: it knows
+
+    homo_01  הספר סיפר לי שהוא קרא ספר על תספורות.
+             -> barber    barber +0.717   book +0.469   margin 0.248
+
+    control  הספר סיפר לי על חייו של המלך.
+             -> book      barber +0.803   book +0.897   margin 0.094
+
+The sentence the diacritizer read as *the book told me* is, to `dictabert-large`, clearly
+the barber — by a margin two and a half times the control's. Swap the haircut for a king's
+life and it moves to the book. The information the menaked model needed was available in
+the encoder; its vocalization head did not use it.
+
+A masked-fill probe on the same two sentences is weaker and worth recording as such: mask
+`הספר` and the top ten are people in **both** frames (`הוא, בעלי, חבר, מישהו, אחי`), because
+`סיפר לי` demands a person whichever reading is meant. It confirms the model parses the
+syntax; it does not separate the senses. The centroid probe is the one that carries weight.
+
+## What this does and does not establish
+
+It is not a fair race against the diacritizer. The probe is handed the two candidate senses
+and labelled examples of each; the menaked model chooses over all of Hebrew with neither.
+The claim is only the one asked for: **the distinction is present in `dictabert-large`'s
+contextual representation, and recoverable with a linear read-off.**
+
+It also rests on eight anchors and two test sentences. Before building on it, the next step
+is the cheap one: twenty sentences per sense, held out properly, and the same probe over all
+seven homographs rather than `ספר` alone.
+
+Rerun with `hebrew_training/probe_sense.py`.
