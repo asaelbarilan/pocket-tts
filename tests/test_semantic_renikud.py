@@ -66,7 +66,7 @@ def sp():
 def test_missing_encoder_means_dictabert_with_todays_defaults():
     for config in (
         SemanticConditionerConfig(),
-        SemanticConditionerConfig(**{}),
+        SemanticConditionerConfig(**{}),  # noqa: PIE804 - exercise an explicit empty config mapping
         SemanticConditionerConfig.model_validate({"first_layer": 3}),
     ):
         assert config.encoder == "dictabert"
@@ -89,6 +89,7 @@ def test_renikud_defaults():
     assert (config.model_name, config.revision) == (RENIKUD_PLUS, RENIKUD_PLUS_REVISION)
     assert config.filename == "model.onnx"  # fp32, never the int8 file
     assert (config.max_tokens, config.onnx_threads, config.hidden_size) == (2048, 1, 1024)
+    assert config.onnx_provider == "cuda"
     assert (config.first_layer, config.last_layer) == (8, 20)
     # Explicit values win over the encoder's defaults.
     config = SemanticConditionerConfig(
@@ -181,7 +182,12 @@ def test_default_import_loads_nothing_new():
         "assert not bad, bad\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO, timeout=300
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        timeout=300,
+        check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
 
@@ -409,7 +415,7 @@ def test_voting_means_the_characters_of_a_piece(sp):
     sp_ids, sp_spans = semantic_module.sentencepiece_spans(sp, text)
     hidden = encoder.encode(ids, [3], torch.device("cpu"))[0]
     owner = char_owner(len(text), spans)
-    pooled, cover = pool_to_tokens(
+    pooled, _cover = pool_to_tokens(
         hidden,
         owner,
         char_owner(len(text), sp_spans),
@@ -814,7 +820,7 @@ def _real_onnx() -> str | None:
         return hf_hub_download(
             RENIKUD_PLUS, "model.onnx", revision=RENIKUD_PLUS_REVISION, local_files_only=True
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unavailable optional cache must skip the integration test
         return None
 
 
@@ -857,7 +863,9 @@ def test_real_model_taps_all_24_layers_and_leaves_the_outputs_alone():
     assert [g.shape for g in got[3:]] == [(1, seq, 1024)] * 24
     assert all(np.isfinite(g).all() for g in got[3:])
 
-    config = SemanticConditionerConfig(encoder="renikud_plus", first_layer=8, last_layer=20)
+    config = SemanticConditionerConfig(
+        encoder="renikud_plus", first_layer=8, last_layer=20, onnx_provider="cpu"
+    )
     encoder = RenikudPlusEncoder.from_config(config)
     assert encoder.hidden_size == 1024 and len(encoder.tapped) == 13
     states = encoder.encode(ids, list(range(8, 21)), torch.device("cpu"))
@@ -922,7 +930,9 @@ def test_dictabert_loads_from_a_local_directory(tmp_path, monkeypatch):
 def test_real_model_loads_from_a_local_directory():
     """What the deploy server does: the file comes from a directory, not the Hub."""
     directory = Path(_real_onnx()).parent
-    config = SemanticConditionerConfig(encoder="renikud_plus", first_layer=8, last_layer=9)
+    config = SemanticConditionerConfig(
+        encoder="renikud_plus", first_layer=8, last_layer=9, onnx_provider="cpu"
+    )
     local = RenikudPlusEncoder.from_config(config, directory)
     ids, _ = local.tokenize("הילדה רצה הביתה.")
     assert local.encode(ids, [8, 9], torch.device("cpu")).shape == (2, len(ids), 1024)

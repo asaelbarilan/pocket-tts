@@ -32,7 +32,14 @@ quantize = ["torchao>=0.16.0"]
 semantic = ["transformers>=4.40"]
 # Optional RenikudPlus semantic encoder (`semantic_conditioner.encoder: renikud_plus`), run in
 # ONNX Runtime. Imported only on that path.
-semantic-renikud = ["onnx>=1.16", "onnxruntime>=1.18"]
+semantic-renikud = [
+    "onnx>=1.16",
+    # CUDA 12 wheels: 1.27+ defaults to CUDA 13, which needs a newer server driver.
+    "onnxruntime-gpu==1.23.2; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version < '3.14'",
+    # 1.23.2 has no Python 3.14 wheel; 1.26 is the last CUDA-12 default release.
+    "onnxruntime-gpu==1.26.0; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.14'",
+    "onnxruntime>=1.18; sys_platform != 'linux' or platform_machine != 'x86_64'",
+]
 training = [
     "datasets>=3.0.0",
     "pyarrow>=15.0.0",
@@ -55,7 +62,9 @@ dev = [
     "mkdocstrings-python>=2.0.1",
     # RenikudPlus semantic encoder (the `semantic-renikud` extra)
     "onnx>=1.16",
-    "onnxruntime>=1.18",
+    "onnxruntime-gpu==1.23.2; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version < '3.14'",
+    "onnxruntime-gpu==1.26.0; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.14'",
+    "onnxruntime>=1.18; sys_platform != 'linux' or platform_machine != 'x86_64'",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
     "pyyaml>=6.0",

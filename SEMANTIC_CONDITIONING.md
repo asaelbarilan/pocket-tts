@@ -32,7 +32,7 @@ imported when selected).
 | token unit | WordPiece (1.2 tokens per word) | one token per character |
 | layers, width | 24, 1024 | 24, 1024 |
 | positions | 512 | 2048 |
-| runtime | PyTorch (`transformers`) | ONNX Runtime, CPU (`onnx`, `onnxruntime`) |
+| runtime | PyTorch (`transformers`) | ONNX Runtime, CUDA by default; explicit `onnx_provider: cpu` for CPU |
 | download | ~1.6 GB (safetensors) | ~1.2 GB (`model.onnx`, fp32) |
 | lowercases | yes (the tokenizer) | yes (the encoder view, see below) |
 | niqqud | the tokenizer strips it | deleted by the encoder view |
@@ -129,16 +129,18 @@ never be mixed (the config's `filename` is part of the checkpoint's encoder iden
 - **Pruning.** Everything not needed for the band is removed in the same edit: the layers above
   it, FiLM, the final LayerNorm, the residual MLP and the three heads, with their weights and
   the speaker inputs. The pruned graph has two inputs (`input_ids`, `attention_mask`). The edited
-  graph goes through a temporary file into an `onnxruntime` CPU session (one intra-op thread by
-  default, as `torch.set_num_threads(1)` in `tts_model.py`; `onnx_threads` changes it).
+  graph goes through a temporary file into an `onnxruntime` session (CUDA by default;
+  `onnx_provider: cpu` selects CPU execution). `onnx_threads` controls CPU intra-op threads.
 - **FiLM is above the encoder.** The speaker embeddings modulate only the output of the last
   encoder layer (`h * (1 + gamma) + beta` on `layer_norm_48`, then a final LayerNorm, a residual
   MLP and the heads). Every encoder-layer hidden state is therefore speaker-independent, and
   nothing about speaker or gender is fed. A test checks this on a toy graph, and the integration
   test checks that the pruned real graph has no speaker input.
 - **Frozen, outside the model.** Like DictaBERT it is a plain attribute of the fusion, not a
-  module. The ONNX session lives on the CPU whatever device the model trains on; its output is
-  moved to the model's device.
+  module. By default the ONNX session runs the frozen fp32 graph on the current CUDA device
+  (the local rank's GPU under torchrun). TF32 is disabled for the encoder. Explicit
+  `onnx_provider: cpu` runs it on CPU and moves its output to the model's device. Provider
+  placement does not change checkpoint identity or the learned fusion.
 
 ### The text it reads: no heavy normalization at inference
 
@@ -208,6 +210,7 @@ is DictaBERT. Omitted keys take the selected encoder's defaults:
 | `gate_hidden` | 256 | 256 | |
 | `max_tokens` | 512 | 2048 | the encoder's positions, `[CLS]`/`[SEP]` included |
 | `onnx_threads` | not allowed | 1 | ONNX Runtime intra-op threads |
+| `onnx_provider` | not allowed | `cuda` | `cuda` or explicit `cpu`; CUDA requires a compatible GPU runtime |
 
 For inference with a model trained this way, add the same section to its inference YAML. For
 example, a copy of `artifacts/hebrew_24l.yaml` with the section under `flow_lm`, and
@@ -251,9 +254,57 @@ The trainer takes one YAML file, so the switches are keys rather than command-li
   the semantics are not being used. With RenikudPlus, `_digit` is the one to watch: its encoder
   reads digits as digits, with no normalization.
 - **Dependencies.** DictaBERT: `transformers` (in the `dev` group, or `pip install
-  'pocket-tts[semantic]'`). RenikudPlus: `onnx` and `onnxruntime` (in the `dev` group, or
-  `pip install 'pocket-tts[semantic-renikud]'`), imported only when `encoder: renikud_plus`.
-  Without them, only that path fails, with an error that says so before anything is downloaded.
+  'pocket-tts[semantic]'`). RenikudPlus: `onnx` and ONNX Runtime (in the `dev` group or the
+  `semantic-renikud` extra), imported only when `encoder: renikud_plus`. Linux x86-64 uses
+  CUDA-12-compatible `onnxruntime-gpu`; other platforms install CPU `onnxruntime` and must
+  explicitly select `onnx_provider: cpu`.
+Without them, only that path fails, with an error that says so before anything is downloaded.
+
+### RenikudPlus runtime performance
+
+CUDA is the RenikudPlus default. On an eight-A40 host, moving the same frozen fp32 encoder
+from CPU/one thread to CUDA improved matched-batch training from 5.30 to 1.20 seconds/step
+(4.43x); a separate 120-step normal-streaming smoke test completed at a median 1.55 seconds/step.
+No objective, optimizer, precision or batch-size change was needed. This is a throughput and
+numerical-equivalence check, not a speech-quality evaluation.
+
+For CPU-only training/inference or CPU deployments, override the default explicitly:
+
+```yaml
+semantic_conditioner:
+  encoder: renikud_plus
+  onnx_provider: cpu
+```
+
+Increasing `onnx_threads` to 4 or 8 also helps the CPU path, but the best count depends on
+core availability, rank count and topology; benchmark the whole distributed job.
+
+`uv sync --locked` installs the GPU runtime on Linux x86-64. It pins the tested
+`onnxruntime-gpu==1.23.2` for Python 3.10–3.13; Python 3.14 uses CUDA-12 release 1.26.0 because
+1.23.2 has no 3.14 wheel. Do not replace dependencies under a running job or install CPU and
+GPU ONNX Runtime packages together (they provide the same Python module). New GPU wheels
+may target a newer CUDA major version: the standard 1.31 GPU wheel requested CUDA 13 libraries,
+whereas this server uses CUDA-12 PyTorch and driver 575.57.08. Check the
+[CUDA provider compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
+against the actual driver, PyTorch CUDA and cuDNN versions.
+
+CUDA uses the same pinned fp32 file, layer band and alignment; `use_tf32=0` avoids silently
+reducing the encoder's matrix-multiply precision. It is numerically close, not bit-identical,
+to CPU execution. Checkpoint encoder identity deliberately excludes runtime placement, so
+choosing CUDA does not reset the fusion or optimizer. A missing or failed CUDA provider raises
+instead of silently falling back to a CPU-only session. Small shape-bookkeeping operations
+can still run on CPU. Encoding remains row-by-row and uses ordinary NumPy outputs before
+moving features to the training device; this keeps existing windowing and alignment intact.
+
+During tests, always set `WANDB_MODE=disabled`, use a new run directory, and leave the production
+checkpoint and optimizer sidecar untouched. Benchmark throughput with identical augmented
+text/audio batches, then confirm performance with the normal streaming loader.
+
+Existing RenikudPlus checkpoints can continue with the new CUDA default: leave the original
+run directory, optimizer sidecar, tokenizer, layer band, curriculum and `max_steps` intact.
+The trainer automatically loads its newest checkpoint and optimizer; do not use a new run
+directory or reset the fusion. CPU-only deployments using older configs that omitted
+`onnx_provider` must now explicitly add `onnx_provider: cpu` before upgrading.
 
 ## Starting the 90K RenikudPlus curriculum
 
@@ -272,9 +323,9 @@ NCCL_P2P_DISABLE=1 uv run torchrun --standalone --nproc-per-node 8 -m training.t
     training/configs/finetune_hebrew_semantic_renikud_90k.yaml
 ```
 
-The default `dev` group already includes `onnx` and `onnxruntime`. The first launch downloads
+The default `dev` group includes `onnx` and CUDA-12 ONNX Runtime on Linux x86-64. The first launch downloads
 the pinned fp32 encoder (~1.2 GB) to the Hugging Face cache. Each rank runs its frozen encoder
-on CPU with one ONNX thread; the TTS model trains on GPU. The per-GPU batch is 8 (effective
+on its local CUDA device, as does the TTS model. The per-GPU batch is 8 (effective
 batch 64). All 90,000 optimizer steps are inferred from the curriculum and checked against
 `max_steps`. As usual, log in to W&B first or set `WANDB_MODE=disabled`. Run a short smoke
 test with a separate config and run directory before the full run; never shorten the production
@@ -350,7 +401,8 @@ the new one). Then confirm:
 - the checkpoint reloads.
 
 Use batch size 1 on an 8 GB card. DictaBERT adds about 1.7 GB in fp32 on the training device;
-RenikudPlus runs on the CPU (about 1.9 GB of host memory). Unit tests use a fake encoder:
+RenikudPlus also uses CUDA by default; explicit CPU mode uses about 1.9 GB of host memory.
+CPU-only tests and deployments must select `onnx_provider: cpu`. Unit tests use a fake encoder:
 `uv run pytest tests/test_semantic_conditioning.py tests/test_semantic_renikud.py
 training/tests/test_semantic_training.py`. `tests/test_semantic_renikud.py` also has one
 integration test, skipped unless the pinned fp32 ONNX file is in the Hugging Face cache (or

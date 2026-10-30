@@ -63,10 +63,11 @@ _ENCODER_DEFAULTS: dict[str, dict[str, object]] = {
         "filename": RENIKUD_PLUS_FILENAME,
         "max_tokens": 2048,
         "onnx_threads": 1,
+        "onnx_provider": "cuda",
     },
 }
 # Keys that only mean something for one encoder.
-_RENIKUD_ONLY = ("filename", "onnx_threads")
+_RENIKUD_ONLY = ("filename", "onnx_threads", "onnx_provider")
 
 
 class SemanticConditionerConfig(StrictModel):
@@ -98,6 +99,9 @@ class SemanticConditionerConfig(StrictModel):
     max_tokens: int = 512
     # renikud_plus only: ONNX Runtime intra-op threads (1 matches `torch.set_num_threads(1)`).
     onnx_threads: int | None = None
+    # RenikudPlus only. Defaults to CUDA; set cpu explicitly on non-CUDA hosts.
+    # Runtime placement is not encoder identity: both paths use the same frozen fp32 weights.
+    onnx_provider: Literal["cpu", "cuda"] | None = None
 
     @model_validator(mode="before")
     @classmethod

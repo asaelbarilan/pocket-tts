@@ -12,9 +12,9 @@
 #
 # Run:  uv run torchrun --nproc-per-node 8 training/train.py \
 #           training/configs/finetune_hebrew_semantic_renikud.yaml
-# Needs `onnx` and `onnxruntime` (in the dev group, or the `semantic-renikud` extra) and
+# Needs `onnx` and CUDA ONNX Runtime (in the dev group, or the `semantic-renikud` extra) and
 # downloads the pinned fp32 RenikudPlus ONNX file (~1.2 GB) on first use. The encoder runs on
-# the CPU in ONNX Runtime, once per row, whatever device the model trains on. Smoke test first
+# the local CUDA device in ONNX Runtime, once per row. Set onnx_provider: cpu for CPU mode. Smoke test first
 # (SEMANTIC_CONDITIONING.md).
 model_config: artifacts/hebrew_24l_nosemantic.yaml
 start_from_pretrained: true
@@ -34,6 +34,7 @@ semantic_conditioner:
   gate_hidden: 256
   max_tokens: 2048
   onnx_threads: 1
+  onnx_provider: cuda
 semantic_lr_scale: 3.0
 
 data:

@@ -1,9 +1,9 @@
 # Hebrew with optional RenikudPlus semantic conditioning (SEMANTIC_CONDITIONING.md). This is
 # hebrew_semantic.yaml with `encoder: renikud_plus`: the frozen encoder is RenikudPlus's
-# character-level BERT (notmax123/RenikudPlus, fp32 ONNX, run in ONNX Runtime on one CPU thread)
+# character-level BERT (notmax123/RenikudPlus, fp32 ONNX, CUDA ONNX Runtime by default)
 # instead of DictaBERT. Every key in the section is written out at its RenikudPlus default.
 # Experimental, not a Kyutai release. Inference needs
-# `pip install 'pocket-tts[semantic-renikud]'` (onnx, onnxruntime) and downloads the pinned
+# `pip install 'pocket-tts[semantic-renikud]'` (onnx, ONNX Runtime) and downloads the pinned
 # ONNX file (~1.2 GB) on first load. A model trained with this encoder must be run with it: its
 # fusion weights are tied to it (checkpoints record the encoder and refuse to load across them).
 #
@@ -58,6 +58,7 @@ flow_lm:
     gate_hidden: 256
     max_tokens: 2048  # the encoder's positions, [CLS]/[SEP] included; longer texts are windowed
     onnx_threads: 1  # ONNX Runtime intra-op threads, as torch.set_num_threads(1)
+    onnx_provider: cuda  # set cpu explicitly for CPU-only inference/deployment
   #weights_path: final.safetensors
 
 mimi:

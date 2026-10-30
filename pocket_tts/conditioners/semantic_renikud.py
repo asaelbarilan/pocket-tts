@@ -313,7 +313,28 @@ def tap_layer_outputs(
 # ------------------------------------------------------------------------------------------
 
 
-def _tapped_session(path: str, layers: Sequence[int], threads: int):
+def _onnx_providers(provider: str) -> list:
+    if provider == "cpu":
+        return ["CPUExecutionProvider"]
+    if provider != "cuda":
+        raise ValueError(f"unknown RenikudPlus ONNX provider: {provider}")
+    ort = _need_onnxruntime()
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        raise RuntimeError(
+            "onnx_provider: cuda requires onnxruntime-gpu with CUDAExecutionProvider; "
+            "the installed ONNX Runtime is CPU-only. Use a build compatible with your "
+            "PyTorch CUDA/cuDNN and NVIDIA driver. Newer GPU wheels may require a "
+            "newer CUDA major version."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("onnx_provider: cuda requires an available CUDA device")
+    # The GPU wheel can reuse PyTorch's CUDA/cuDNN libraries. Do not do this on the CPU path.
+    if hasattr(ort, "preload_dlls"):
+        ort.preload_dlls()
+    return [("CUDAExecutionProvider", {"device_id": torch.cuda.current_device(), "use_tf32": 0})]
+
+
+def _tapped_session(path: str, layers: Sequence[int], threads: int, provider: str = "cpu"):
     """(InferenceSession, output names, ONNX metadata) of the pruned graph tapping `layers`.
 
     The graph is read, edited and written to a temporary file that onnxruntime then loads, and
@@ -329,7 +350,7 @@ def _tapped_session(path: str, layers: Sequence[int], threads: int):
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.log_severity_level = 3
-    providers = ["CPUExecutionProvider"]
+    providers = _onnx_providers(provider)
 
     model = onnx.load(path)
     meta = {entry.key: entry.value for entry in model.metadata_props}
@@ -345,6 +366,15 @@ def _tapped_session(path: str, layers: Sequence[int], threads: int):
             del model
             gc.collect()
             session = ort.InferenceSession(str(tapped), options, providers=providers)
+    if provider == "cuda":
+        if session.get_providers()[0] != "CUDAExecutionProvider":
+            raise RuntimeError(
+                "RenikudPlus CUDAExecutionProvider failed to initialize; check the "
+                "onnxruntime-gpu build and CUDA/cuDNN libraries. Refusing to silently "
+                "run the encoder on CPU."
+            )
+        # Shape bookkeeping may run on CPU, but a CUDA EP failure must not restart on CPU.
+        session.disable_fallback()
     return session, names, meta
 
 
@@ -382,10 +412,11 @@ class RenikudPlusEncoder(SemanticEncoder):
 
         _need_onnx(), _need_onnxruntime()  # before downloading 1.2 GB
         logger.info(
-            "loading semantic encoder %s@%s/%s (ONNX Runtime, %d thread(s))",
+            "loading semantic encoder %s@%s/%s (ONNX Runtime, %s, %d CPU thread(s))",
             config.model_name,
             config.revision,
             config.filename,
+            config.onnx_provider,
             config.onnx_threads,
         )
         if source is not None:
@@ -395,7 +426,9 @@ class RenikudPlusEncoder(SemanticEncoder):
         else:
             path = hf_hub_download(config.model_name, config.filename, revision=config.revision)
         layers = list(range(config.first_layer, config.last_layer + 1))
-        session, names, meta = _tapped_session(path, layers, config.onnx_threads)
+        session, names, meta = _tapped_session(
+            path, layers, config.onnx_threads, provider=config.onnx_provider
+        )
         vocab = {str(k): int(v) for k, v in json.loads(meta["vocab"]).items()}
         tokenizer = RenikudTokenizer(vocab, int(meta["cls_token_id"]), int(meta["sep_token_id"]))
         inputs = [i.name for i in session.get_inputs()]
