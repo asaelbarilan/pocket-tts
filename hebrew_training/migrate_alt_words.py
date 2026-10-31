@@ -93,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args(argv)
+    builder.check_merge_args(parser, args)
     if not args.normalize_text:
         parser.error(
             "pass --normalize-text, as the manifest was built with: without the normalizer "

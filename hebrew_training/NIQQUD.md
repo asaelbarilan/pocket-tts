@@ -143,7 +143,9 @@ uv run python -m hebrew_training.migrate_alt_words \
 ```
 
 It takes the builder's own flags (`--min-duration`, `--merge-gap`, `--merge-target`,
-`--merge-jitter`, `--seed`, `--min-quality`, ...): pass the ones the manifest was built with.
+`--merge-jitter`, `--seam-window`, `--seam-gap`, `--seed`, `--min-quality`, ...): pass the ones
+the manifest was built with. A manifest built before seam-aware merging needs `--greedy-merge`,
+or its rows will not be found in the rebuild.
 The corpus is run through the builder again to get the words and their alternates, and every
 row of the manifest (any stage's output, `nikud` and aligned times included) is matched to its
 rebuilt row by recording and `start` (`original_start` once the aligner has moved it) and

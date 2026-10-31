@@ -59,6 +59,10 @@ class Entry:
     # Seed of this sample's cut generator; set only by a `fixed_draws` loader (validation).
     # None: the cut is drawn from the loader's shared `rng`.
     cut_seed: int | None = None
+    # Milliseconds of silence after the last word before the next speech in the recording
+    # (`tail_gap`, written by build_official_manifest and kept true by the aligner). None: the
+    # row does not say, and the tail is whatever the row's own duration holds.
+    tail_gap: int | None = None
 
 
 @dataclass
@@ -188,6 +192,21 @@ class DataLoader:
         ends = [w["end"] for w in entry.words if w.get("end") is not None]
         return max(ends) if ends else None
 
+    def _end_after(self, entry: Entry, last: float) -> float:
+        """Where the audio ends, in seconds from the row start, given the last word ends at `last`.
+
+        A row with no `tail_gap` keeps up to TRAIL_SEC of whatever follows the last word inside
+        its own duration. An aligned row ends exactly where the aligner puts the last word,
+        which is early (CTC ends a word before its last frame) and leaves no silence, so the
+        word can be clipped and EOS lands on the final frame of speech. With `tail_gap` the
+        audio is read past the row's end, from the same file, up to TRAIL_SEC but never more
+        than half the silence that is really there: a row cut out of running speech
+        (`tail_gap` ~0) gets no tail, so the next word's first syllable is not read in.
+        """
+        if entry.tail_gap is None:
+            return min(entry.duration, last + self.TRAIL_SEC)
+        return last + min(self.TRAIL_SEC, max(0, entry.tail_gap) / 2000)
+
     def _words_text(self, entry: Entry, first_word: int) -> str:
         """The text of `words[first_word:]`, with this sample's digit/niqqud variants."""
         return render_text(
@@ -245,7 +264,7 @@ class DataLoader:
                 end = entry.duration
                 last = self._last_word_end(entry)
                 if last is not None and last > cut:
-                    end = min(entry.duration, last + self.TRAIL_SEC)
+                    end = self._end_after(entry, last)
                 wav = _load_window(
                     entry.path,
                     entry.start + cut,
@@ -259,7 +278,7 @@ class DataLoader:
                 )
                 return wav, tokens, prompt, length, text
         last = self._last_word_end(entry)
-        end = min(entry.duration, last + self.TRAIL_SEC) if last is not None else entry.duration
+        end = self._end_after(entry, last) if last is not None else entry.duration
         duration = min(end, self.max_duration_sec)
         wav = _load_window(entry.path, entry.start, duration, self.sample_rate)
         # Rows with digit/niqqud variants take their text from `words` (cut at word 0), the
@@ -297,6 +316,7 @@ class DataLoader:
             nikud,
             text_seed,
             cut_seed,
+            tail_gap=d.get("tail_gap"),
         )
 
     def _sample_or_none(self, entry: Entry) -> tuple | None:

@@ -237,6 +237,20 @@ that manifest will repeat the last failure with a bigger bill.
 
 For CrowdRecital, whose segments are already utterance-length, pass `--merge-gap 0`.
 
+**Cutting at pauses.** Greedy merging closes a row at the first segment boundary past its
+target, and ~28% of those boundaries are in running speech (gap <= 0.3 s), where a split can
+clip the last word or leave the next word's first syllable in. The builder therefore closes rows
+at a pause (`--seam-gap`, 0.3 s) within `--seam-window` (default 5 s) of the target instead.
+Measured on 30 plenum recordings, same hours: running-speech cuts fell from 28% to 10% (window
+4) and 6% (window 5). `--greedy-merge` is the old merge; `migrate_alt_words` rebuilds the
+grouping from the same flags, so a manifest built before this existed must be migrated with
+`--greedy-merge`. Every row also gets `lead_gap` and `tail_gap`, the milliseconds of silence
+beside its first and last word (`build_official_manifest` docstring); the aligner keeps them
+true, and the loader reads up to `TRAIL_SEC` (0.2 s) of that silence past the last word, never
+more than half of it, so an aligned row no longer ends on the last frame of speech. About 18% of
+rows still have a `tail_gap` of 300 ms or less: they end next to speech the quality filter
+dropped, which no choice of cut can avoid, and get little or no tail.
+
 ### ivrit-ai/crowd-transcribe-v5: short clips, no word times, no speaker
 
 205,491 distinct clips, 299 h, from 51 podcast/lecture shows. Measured on its metadata: median

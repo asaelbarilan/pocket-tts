@@ -383,6 +383,28 @@ def original_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     return updated
 
 
+def shift_gaps(updated: dict[str, Any], row: dict[str, Any], first: float, last: float) -> None:
+    """Keep `lead_gap` / `tail_gap` (ms of silence beside the first / last word, see
+    build_official_manifest) true after the aligner moved those words.
+
+    `first` and `last` are the new absolute times of the first word's start and the last word's
+    end. A last word that ends earlier leaves more silence before the next speech, a later one
+    less, and the first word the other way round. Rows from a build without the fields, or
+    with no words to compare, are left alone."""
+    words = row.get("words")
+    if not words:
+        return
+    start = float(row["start"])
+    if "lead_gap" in row:
+        updated["lead_gap"] = max(
+            0, round(row["lead_gap"] + (first - start - words[0]["start"]) * 1000)
+        )
+    if "tail_gap" in row:
+        updated["tail_gap"] = max(
+            0, round(row["tail_gap"] + (start + words[-1]["end"] - last) * 1000)
+        )
+
+
 def update_timings(
     row: dict[str, Any], origin: float, timed: list[dict[str, Any]], aligner: str
 ) -> dict[str, Any]:
@@ -400,6 +422,7 @@ def update_timings(
     if row.get("words") and len(timed) != len(row["words"]):
         raise ValueError(f"alignment returned {len(timed)} words for {len(row['words'])}")
     updated = original_snapshot(row)
+    shift_gaps(updated, row, origin + first, origin + last)
     updated["alignment_backend"] = aligner
     updated.pop("timing", None)  # "estimated" (placeholder times) is no longer true
     updated["start"] = round(origin + first, 4)

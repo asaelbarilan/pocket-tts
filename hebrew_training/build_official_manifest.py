@@ -15,6 +15,19 @@ Row schema (see `get_entry` in training/dataloader.py):
 window for the voice prompt. Word times are RELATIVE to `start`, because align_data.py
 keys on (path, start) and aligns inside that window.
 
+Optional, written when the row has a neighbouring segment in the recording:
+
+    "lead_gap": 840, "tail_gap": 120
+
+Milliseconds of natural silence next to the row: from the previous raw segment's last word to
+this row's first word, and from this row's last word to the next raw segment's first word (by
+Whisper's word times; the neighbour counts even if a filter dropped it, since that is speech
+nobody transcribed). Small values mean the row was cut out of running speech or sits against
+untranscribed speech, so its edge words are the ones whose timing to doubt; large ones mean it
+ends in a pause. They describe the source, not how much silence the row's audio includes. The
+aligner moves the first and last word, and `update_timings` shifts both gaps by the same amount
+so they stay true (align_official_manifest.py).
+
 Optional, written only for rows where --normalize-text changed a word:
 
     "alt_words": {"norms": [{"from": 1, "to": 2, "replace": ["ב-14:30"], "k": "n"}]}
@@ -70,6 +83,17 @@ rest is gavel, procedure and dead air, and merging across it would train the mod
 silence). Measured on the same 120 recordings, --merge-gap 1.5 --min-duration 4 yields an
 11.88 s median row and retains ~5,490 h of the plenum corpus.
 
+WHERE MERGED ROWS ARE CUT
+-------------------------
+Greedy merging closes a group at the first segment boundary past its target, so ~28% of cuts
+between touching rows land in running speech (measured: gap <= 0.3 s between segments, by word
+times). Those are the cuts where a word can be clipped or a neighbour's syllable left in.
+The default merge is therefore `seam_groups`: close at a pause of at least `--seam-gap` within
++/- `--seam-window` of the target. `--greedy-merge` restores the earlier behaviour, which is only
+needed to reproduce a manifest built with it. Whisper's gaps are good enough to find pauses: of gaps
+>= 0.3 s, 75-86% were 12+ dB under the surrounding speech in the audio, and of gaps <= 0.1 s
+only 5% were.
+
 This is the same job prepare_ivritai.py's generate_slices did for the earlier dataset --
 including drawing each group's target around the aim rather than fixing it, which
 DurationController did there and --merge-jitter does here. The difference is only the
@@ -92,6 +116,7 @@ import sys
 import tempfile
 import time
 from array import array
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
@@ -220,6 +245,33 @@ def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
         "which is right only for already-utterance-length corpora.",
     )
     parser.add_argument(
+        "--seam-window",
+        type=float,
+        default=5.0,
+        help="Merging closes a group at the best boundary within +/- this many seconds of its "
+        "target (see --merge-target): a pause of at least --seam-gap if there is one, rather "
+        "than the first boundary past the target. On 30 plenum recordings the share of splits "
+        "through running speech (gap <= 0.3 s) fell from 28%% to 10%% at 4 and 6%% at 5, with "
+        "the same hours.",
+    )
+    parser.add_argument(
+        "--greedy-merge",
+        action="store_true",
+        help="Close each group at the first segment boundary past its target, ignoring pauses: "
+        "the merge every manifest built before seam-aware merging used. Needed only to "
+        "reproduce one -- pass it to migrate_alt_words for such a manifest, which must "
+        "rebuild the same grouping. Ignores --seam-window and --seam-gap.",
+    )
+    parser.add_argument(
+        "--seam-gap",
+        type=float,
+        default=0.3,
+        help="A silence this long (seconds, between the last word of one segment and the first "
+        "of the next, by Whisper's word times) is a natural seam. In the plenum audio 75-86%% "
+        "of gaps >= 0.3 s measured 12+ dB below the speech around them, and 83%% of gaps "
+        "<= 0.1 s were not silent at all.",
+    )
+    parser.add_argument(
         "--min-quality",
         type=float,
         default=0.6,
@@ -262,9 +314,17 @@ def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
+def check_merge_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.seam_window <= 0:
+        parser.error("--seam-window must be positive; use --greedy-merge for the earlier merge")
+    if args.seam_gap < 0:
+        parser.error("--seam-gap must not be negative")
+
+
 def parse_args() -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args()
+    check_merge_args(parser, args)
     if args.workers < 1:
         parser.error("--workers must be at least 1")
     if args.max_spool_gib <= 0:
@@ -681,9 +741,10 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
 def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[dict]]:
     """Group consecutive segments into utterance-length runs.
 
-    A group closes when it reaches its target length, when the next segment would push it
-    past --max-duration, or when the silence before it exceeds --merge-gap. See the module
-    docstring for why merging is required and not a tuning knob.
+    By default the groups are cut at pauses near the target (`seam_groups`). With
+    --greedy-merge a group closes when it reaches its target length, when the next segment
+    would push it past --max-duration, or when the silence before it exceeds --merge-gap. See
+    the module docstring for why merging is required and not a tuning knob.
 
     Each group draws its own target around --merge-target rather than using it fixed, which
     is what prepare_ivritai.py's DurationController did. Measured over 120 plenum
@@ -700,6 +761,9 @@ def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[
         low = max(args.min_duration, args.merge_target * (1 - args.merge_jitter))
         high = min(args.max_duration, args.merge_target * (1 + args.merge_jitter))
         return rng.uniform(low, high)
+
+    if not getattr(args, "greedy_merge", False):
+        return seam_groups(segments, args, next_target)
 
     groups: list[list[dict]] = []
     current: list[dict] = []
@@ -723,6 +787,132 @@ def merge_segments(segments: list[dict], args, rng: random.Random) -> list[list[
     if current:
         groups.append(current)
     return groups
+
+
+def segment_gap(before: dict, after: dict) -> float:
+    """Silence between the last word of `before` and the first word of `after`, by the
+    segments' word times. Segment times are looser: Whisper pads them."""
+    return after["words"][0]["start"] - before["words"][-1]["end"]
+
+
+def seam_groups(segments: list[dict], args, next_target) -> list[list[dict]]:
+    """Group segments like the greedy merge, but cut where the speaker paused.
+
+    Greedy merging closes a group at the first segment boundary past its target, whatever is
+    happening there. About 30% of those boundaries sit in running speech (gap <= 0.3 s), where
+    Whisper's timings are least trustworthy and a split can clip the last word of one row or
+    leave the first syllable of the next in its tail. Whisper segments are short (median 1.8 s),
+    so a window around the target almost always holds a real pause.
+
+    A run is a stretch of segments with no silence over --merge-gap between them. It is
+    consumed from the left: the group takes everything left if that fits the window, else it
+    closes at a boundary inside [target - w, target + w] (clamped to --min/--max-duration),
+    preferring a seam of at least --seam-gap and, among those, the one nearest the target. With
+    no seam in the window it takes the longest pause there. A cut that would leave a remainder
+    shorter than --min-duration (a row the loader could not cut) is avoided when another
+    boundary exists. The target is still drawn per group, so --merge-jitter still widens the
+    duration distribution.
+    """
+    window = getattr(args, "seam_window", 5.0)
+    seam = getattr(args, "seam_gap", 0.3)
+    groups: list[list[dict]] = []
+    run: list[dict] = []
+
+    def flush() -> None:
+        index = 0
+        while index < len(run):
+            first = run[index]["start"]
+            target = next_target()
+            low = max(args.min_duration, target - window)
+            high = min(args.max_duration, target + window)
+            if run[-1]["end"] - first <= high:
+                groups.append(run[index:])
+                return
+            inside = [j for j in range(index, len(run) - 1) if low <= run[j]["end"] - first <= high]
+            usable = [
+                j for j in inside if run[-1]["end"] - run[j + 1]["start"] >= args.min_duration
+            ]
+            inside = usable or inside
+            if inside:
+                gaps = {j: segment_gap(run[j], run[j + 1]) for j in inside}
+                natural = [j for j in inside if gaps[j] >= seam]
+                if natural:
+                    last = min(natural, key=lambda j: abs(run[j]["end"] - first - target))
+                else:
+                    last = max(
+                        inside, key=lambda j: (gaps[j], -abs(run[j]["end"] - first - target))
+                    )
+            else:
+                # One long segment spans the window: close as late as --max-duration allows.
+                fits = [
+                    j
+                    for j in range(index, len(run) - 1)
+                    if run[j]["end"] - first <= args.max_duration
+                ]
+                last = fits[-1] if fits else index
+            groups.append(run[index : last + 1])
+            index = last + 1
+
+    for segment in segments:
+        if run and segment["start"] - run[-1]["end"] > args.merge_gap:
+            flush()
+            run.clear()
+        run.append(segment)
+    flush()
+    return groups
+
+
+def _speech_bounds(segment: dict) -> tuple[float, float] | None:
+    """When speech starts and stops in a raw Whisper segment: its first and last word times,
+    else the segment's own. None if it has no usable times."""
+    words = [
+        w
+        for w in segment.get("words") or []
+        if w.get("start") is not None and w.get("end") is not None
+    ]
+    try:
+        if words:
+            return float(words[0]["start"]), float(words[-1]["end"])
+        return float(segment["start"]), float(segment["end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def neighbour_gaps(segments: list[dict]):
+    """A function `(group) -> (lead_gap_ms, tail_gap_ms)` over the raw `segments`.
+
+    A row's boundary is only a natural seam if the audio next to it is quiet, and that depends
+    on the next RAW segment, including the ones the quality and language filters dropped:
+    those are speech nobody transcribed. In 30 plenum recordings 56% of rows end next to a
+    dropped segment, and 27% of those within 0.3 s of it. Each gap is the silence between the
+    row's first (last) word and the previous (next) raw segment's last (first) word, None at the
+    ends of the recording."""
+    raw = sorted(
+        (
+            (float(segment["start"]), bounds)
+            for segment in segments
+            if isinstance(segment.get("start"), (int, float))
+            and (bounds := _speech_bounds(segment)) is not None
+        ),
+        key=lambda item: item[0],
+    )
+    starts = [start for start, _ in raw]
+
+    def gaps(group: list[dict]) -> tuple[int | None, int | None]:
+        first, last = group[0], group[-1]
+        after = bisect_right(starts, last["start"])
+        before = bisect_left(starts, first["start"]) - 1
+        lead = tail = None
+        if before >= 0:
+            lead = max(0.0, first["words"][0]["start"] - raw[before][1][1])
+        if after < len(raw):
+            tail = max(0.0, raw[after][1][0] - last["words"][-1]["end"])
+        return (
+            None if lead is None else round(lead * 1000),
+            None if tail is None else round(tail * 1000),
+        )
+
+    return gaps
 
 
 def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[list[dict], dict]:
@@ -759,6 +949,7 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
 
     rows = []
     groups = merge_segments(clean_segments(segments, args, stats), args, rng)
+    neighbours = neighbour_gaps(segments)
     for index, group in enumerate(groups):
         start = group[0]["start"]
         duration = group[-1]["end"] - start
@@ -801,6 +992,11 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
             "words": timed,
             "speaker": speaker,
         }
+        lead_gap, tail_gap = neighbours(group)
+        if lead_gap is not None:
+            row["lead_gap"] = lead_gap
+        if tail_gap is not None:
+            row["tail_gap"] = tail_gap
         if alt_words:
             validate_alt_words(alt_words, len(timed))
             row["alt_words"] = alt_words

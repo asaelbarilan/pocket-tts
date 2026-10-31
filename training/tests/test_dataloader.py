@@ -637,3 +637,54 @@ def test_a_loader_that_fails_its_checks_shuts_its_io_pool_down(tmp_path, recorde
     with pytest.raises(ValueError, match="a batch can never be filled"):
         next(loader._batches())
     assert [p.was_shut_down for p in recorded_pools] == [True]
+
+
+# ------------------------------------------------------------------ silence after the last word
+
+
+def _target_seconds(tmp_path, monkeypatch, tail_gap, **row_overrides):
+    """Seconds of target audio asked for, from a row whose last word ends with the row (as an
+    aligned row does) and whose only cut is at 2.1 s."""
+    row = {
+        "path": "x.wav",
+        "start": 100.0,
+        "duration": 5.0,
+        "transcript": "a b",
+        "words": [{"word": "a", "start": 0.0, "end": 2.0}, {"word": "b", "start": 2.2, "end": 5.0}],
+    }
+    row.update(row_overrides)
+    if tail_gap is not None:
+        row["tail_gap"] = tail_gap
+    calls = []
+    monkeypatch.setattr(
+        td, "_load_window",
+        lambda p, s, d, sr: (calls.append((round(s, 6), round(d, 6))), np.zeros(1, np.float32))[1],
+    )  # fmt: skip
+    loader = _text_loader(tmp_path, [row], [])
+    loader.rng = _PickCut(1)
+    loader._sample(loader.get_entry(0))
+    return next(d for s, d in calls if s == round(100.0 + 2.1, 6))
+
+
+def test_a_row_without_tail_gap_is_trimmed_as_before(tmp_path, monkeypatch):
+    # The row ends with the last word, so there is nothing past it to keep.
+    assert _target_seconds(tmp_path, monkeypatch, None) == pytest.approx(5.0 - 2.1)
+
+
+@pytest.mark.parametrize(("tail_gap", "tail"), [(0, 0.0), (100, 0.05), (400, 0.2), (3000, 0.2)])
+def test_the_tail_read_past_the_row_is_capped_and_at_most_half_the_silence(
+    tmp_path, monkeypatch, tail_gap, tail
+):
+    seconds = _target_seconds(tmp_path, monkeypatch, tail_gap)
+    assert seconds == pytest.approx(5.0 + tail - 2.1)
+
+
+def test_the_tail_extends_past_the_rows_own_duration(tmp_path, monkeypatch):
+    seconds = _target_seconds(tmp_path, monkeypatch, 3000)
+    assert seconds > 5.0 - 2.1
+
+
+def test_get_entry_reads_tail_gap(tmp_path):
+    row = dict(_fixture_rows()[0], tail_gap=240)
+    assert _text_loader(tmp_path, [row], []).get_entry(0).tail_gap == 240
+    assert _text_loader(tmp_path, _fixture_rows()[:1], []).get_entry(0).tail_gap is None
