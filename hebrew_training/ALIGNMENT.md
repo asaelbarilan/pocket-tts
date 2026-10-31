@@ -110,6 +110,19 @@ a batch; rows without a speaker use the recording path as their speaker key.
 - Explicit MMS-only mode retains its previous error handling: unsuccessful rows
   are recorded in the failure file rather than written to the output.
 
+### `--strict`: no fallback, for corpora without word times
+
+A corpus with only audio and text (`build_crowd_transcribe_manifest`) has placeholder word
+times (`"timing": "estimated"`), so "keep the original timings" would train on invented
+numbers. `--strict` is Viter only: no MMS, no retained-original row. A row Viter cannot align
+(digits, a word outside the Hebrew alphabet, a failed alignment) is written to
+`*_aligned.failed.jsonl` and left out of `*_aligned.jsonl`. It also drops a row whose aligned
+span has no word boundary with 1.0 s on both sides (`MIN_CUT_SEC`, the loader's cut rule),
+because Viter trims each row to its first and last word, which can take a 2.5 s clip under
+the 2 s the loader needs. Every row written by a strict run has `alignment_backend: viter`
+and no `timing` key. The default behaviour is unchanged, and a strict run cannot resume a
+non-strict one (or the reverse).
+
 Progress is saved in `*_aligned.progress.json`; repeat the same command to
 resume. Backend/model/beam settings must match the saved progress to prevent
 mixing configurations. Completed outputs are skipped. Use `--overwrite` to

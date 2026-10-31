@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import itertools
 import json
 import math
 import multiprocessing as mp
@@ -50,6 +51,9 @@ ALREADY_ALIGNED_KEYS = ("alignment_backend", "original_words")
 VERIFY_ROWS = 20
 
 SAMPLE_RATE = 16_000
+# training/dataloader.py keeps this much audio on both sides of a cut; a copy of
+# official_manifest_common.MIN_CUT_SEC (this file cannot import it), pinned by a test.
+MIN_CUT_SEC = 1.0
 PRE_PADDING = 0.5
 POST_PADDING = 1.0
 DEFAULT_ENV = Path("/home/yoadsnapir/time-align/mms-ctc/ctc-env")
@@ -141,6 +145,15 @@ def parse_args() -> argparse.Namespace:
         help="Process at most this many source rows per split (for benchmarking)",
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="For a corpus whose manifest times are placeholders (no word times to fall back "
+        "to): Viter only, no MMS fallback, no retained original timings. A row Viter cannot "
+        "align, or whose aligned span has no word boundary leaving 1.0 s on both sides (the "
+        "loader would take its prompt-leaking fallback), is written to *_aligned.failed.jsonl "
+        "and left out of the output.",
+    )
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
@@ -388,6 +401,7 @@ def update_timings(
         raise ValueError(f"alignment returned {len(timed)} words for {len(row['words'])}")
     updated = original_snapshot(row)
     updated["alignment_backend"] = aligner
+    updated.pop("timing", None)  # "estimated" (placeholder times) is no longer true
     updated["start"] = round(origin + first, 4)
     updated["duration"] = round(last - first, 4)
     updated["words"] = [
@@ -401,6 +415,20 @@ def update_timings(
     # The official loader trains from words, so keep its fallback transcript in sync.
     updated["transcript"] = " ".join(word["word"] for word in updated["words"])
     return updated
+
+
+def has_eligible_cut(row: dict[str, Any]) -> bool:
+    """Whether training/dataloader.py can cut `row` at a word boundary (its `_sample`).
+
+    A cut is the midpoint between two words and needs MIN_CUT_SEC of audio on both sides. When
+    none exists the loader reads the voice prompt from the start of the row, which overlaps the
+    target."""
+    words = row["words"]
+    for previous, current in itertools.pairwise(words):
+        cut = 0.5 * (previous["end"] + current["start"])
+        if cut >= MIN_CUT_SEC and row["duration"] - cut >= MIN_CUT_SEC:
+            return True
+    return False
 
 
 def initialize_worker(device: str, model_name: str, dtype_name: str) -> None:
@@ -614,6 +642,7 @@ class MMSFallback:
 def align_viter_batch(
     rows: list[Any], args: argparse.Namespace, fallback: MMSFallback
 ) -> list[dict[str, Any]]:
+    strict = getattr(args, "strict", False)
     outcomes: list[Any] = [None] * len(rows)
     candidates = []
     reasons = {}
@@ -676,14 +705,23 @@ def align_viter_batch(
                     ]
                     if timed[-1]["end"] > len(audio) / SAMPLE_RATE + 0.02:
                         raise ValueError("Viter timings extend beyond decoded audio")
-                    outcomes[index] = {
-                        "row": update_timings(rows[index][1], origin, timed, "viter")
-                    }
+                    updated = update_timings(rows[index][1], origin, timed, "viter")
+                    if strict and not has_eligible_cut(updated):
+                        raise ValueError(
+                            f"aligned span of {updated['duration']:.2f} s has no word boundary "
+                            f"with {MIN_CUT_SEC:g} s on both sides"
+                        )
+                    outcomes[index] = {"row": updated}
                 except Exception as exc:  # noqa: BLE001
                     reasons.setdefault(index, f"Viter failed: {exc}")
 
     fallback_indices = [index for index, outcome in enumerate(outcomes) if outcome is None]
-    if fallback_indices:
+    if fallback_indices and strict:
+        # Nothing to fall back to: the manifest's own times are placeholders, so a retained
+        # "original" row would train on invented timings. Record the failure and drop the row.
+        for index in fallback_indices:
+            outcomes[index] = {"error": f"strict: {reasons[index]}"[:1000]}
+    elif fallback_indices:
         try:
             replies = fallback.align([rows[index] for index in fallback_indices])
         except Exception as exc:  # noqa: BLE001 - retain the source if fallback is unavailable
@@ -889,6 +927,8 @@ def align_split(args: argparse.Namespace, split: str, devices: list[str]) -> Non
         "beam": args.beam,
         "retry_beam": args.retry_beam,
     }
+    if args.strict:  # only when set, so a resumable non-strict run keeps its saved configuration
+        configuration["strict"] = True
     try:
         output_handle, failed_handle, start_line = open_resumable_files(
             output, args.overwrite, configuration

@@ -237,6 +237,37 @@ that manifest will repeat the last failure with a bigger bill.
 
 For CrowdRecital, whose segments are already utterance-length, pass `--merge-gap 0`.
 
+### ivrit-ai/crowd-transcribe-v5: short clips, no word times, no speaker
+
+205,491 distinct clips, 299 h, from 51 podcast/lecture shows. Measured on its metadata: median
+3.8 s, p90 9.2 s; 255 h in clips of 3 s or more, 210 h of 4 s or more. It has audio and a
+human-corrected sentence only, so:
+
+```bash
+python -m hebrew_training.build_crowd_transcribe_manifest --out-dir data/crowd --normalize-text
+python hebrew_training/align_official_manifest.py data/crowd --strict --batch-size 64 --devices all
+```
+
+Train on `train_aligned.jsonl`, never on `train.jsonl` (placeholder times). `--strict` is
+Viter-only and drops rows it cannot align or cut (`ALIGNMENT.md`).
+
+Whether the loader can use a clip this short, with the 1.0 s `MIN_CUT_SEC` on both sides of a
+cut and the prompt being everything before it: it can, but the sample is small. Simulated with
+word-length-proportional timing on the real transcripts, 93% of clips have a cut if Viter
+trimmed nothing, 81% if it trims 0.4 s in total and 70% at 0.8 s. A cut sample has a median
+prompt of 1.7 s (p90 3.7 s) and a median target of 1.9 s (p90 about 7 s), so the 205k clips
+(all lengths) give only 140-180 h of target speech, mostly in short stretches. Neighbouring
+clips cannot be merged to fix that: only 5% of clips have a neighbour at the next index. Use
+this corpus as part of a mix with long rows, not alone: few of its samples have a target
+beyond ~7 s or a prompt beyond ~4 s, so it teaches little about long generations or about
+cloning from a full 5 s prompt (`max_voice_prompt_sec`).
+
+There is no speaker id (`transcriber` is who typed the text). `speaker` is the episode, and
+the split is by show: the dataset's own test split is two shows that never appear in train,
+so it is the validation set. Hosts recur across a show's episodes, so splitting by episode
+would leak voices. 17k clips were transcribed by several people; by default the builder keeps
+one only when the transcripts agree.
+
 ### How long should a row be? Match their data, not their paper
 
 Three sources disagree, so measure rather than infer:

@@ -189,3 +189,94 @@ def test_a_row_the_aligner_cannot_place_keeps_its_nikud(monkeypatch):
     (outcome,) = aligner.align_viter_batch([(1, row)], options(), fallback)
     assert outcome["row"]["nikud"] == ["שָׁלוֹם"]
     assert outcome["row"]["alt_words"] == {"norms": []}
+
+
+def placeholder_row(*words, duration=4.0):
+    step = duration / len(words)
+    return {
+        "path": "clip.flac",
+        "start": 0.0,
+        "duration": duration,
+        "transcript": " ".join(words),
+        "speaker": "episode",
+        "timing": "estimated",
+        "words": [
+            {"word": w, "start": i * step, "end": (i + 1) * step} for i, w in enumerate(words)
+        ],
+    }
+
+
+def strict_options():
+    return Namespace(decode_workers=1, beam=100, retry_beam=800, strict=True)
+
+
+def viter_result(*spans):
+    return SimpleNamespace(
+        words=[SimpleNamespace(label=word, start=start, end=end) for word, start, end in spans]
+    )
+
+
+def test_strict_keeps_a_viter_row_and_clears_the_placeholder_marker(monkeypatch):
+    row = placeholder_row("שלום", "עולם", "יפה")
+    monkeypatch.setattr(aligner, "_VITER_WORDS", {"שלום", "עולם", "יפה"})
+    monkeypatch.setattr(aligner, "decode_audio", lambda _: ([0.0] * 80000, 0.0))
+    viter = Mock()
+    viter.align_many.return_value = [
+        viter_result(("שלום", 0.2, 0.9), ("עולם", 1.2, 2.0), ("יפה", 2.4, 3.5))
+    ]
+    monkeypatch.setattr(aligner, "_VITER", viter)
+    fallback = Mock()
+    (outcome,) = aligner.align_viter_batch([(1, row)], strict_options(), fallback)
+    assert outcome["row"]["alignment_backend"] == "viter"
+    assert "timing" not in outcome["row"] and "error" not in outcome
+    fallback.align.assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["digits", "unsupported", "viter"])
+def test_strict_drops_a_row_viter_cannot_align_and_never_calls_mms(monkeypatch, reason):
+    word = "2026" if reason == "digits" else "עולם"
+    row = placeholder_row("שלום", word)
+    monkeypatch.setattr(
+        aligner, "_VITER_WORDS", set() if reason == "unsupported" else {"שלום", "עולם"}
+    )
+    monkeypatch.setattr(aligner, "decode_audio", lambda _: ([0.0] * 80000, 0.0))
+    viter = Mock()
+    viter.align_many.return_value = [None]
+    monkeypatch.setattr(aligner, "_VITER", viter)
+    fallback = Mock()
+    outcomes = aligner.align_viter_batch([(5, row)], strict_options(), fallback)
+    assert "row" not in outcomes[0] and outcomes[0]["error"].startswith("strict: ")
+    fallback.align.assert_not_called()
+    output, failed = io.BytesIO(), io.BytesIO()
+    assert aligner.write_batch(output, failed, outcomes, [(5, row)]) == 1
+    assert output.getvalue() == b"" and json.loads(failed.getvalue())["input_line"] == 5
+
+
+def test_strict_drops_a_row_whose_aligned_span_cannot_be_cut(monkeypatch):
+    row = placeholder_row("שלום", "עולם", duration=3.0)
+    monkeypatch.setattr(aligner, "_VITER_WORDS", {"שלום", "עולם"})
+    monkeypatch.setattr(aligner, "decode_audio", lambda _: ([0.0] * 48000, 0.0))
+    viter = Mock()
+    # 1.6 s of speech: the one boundary is at 0.8 s, under MIN_CUT_SEC from the start
+    viter.align_many.return_value = [viter_result(("שלום", 0.3, 0.7), ("עולם", 0.9, 1.9))]
+    monkeypatch.setattr(aligner, "_VITER", viter)
+    fallback = Mock()
+    (outcome,) = aligner.align_viter_batch([(1, row)], strict_options(), fallback)
+    assert "row" not in outcome and "no word boundary" in outcome["error"]
+    fallback.align.assert_not_called()
+    # the same alignment is kept without --strict: the default behaviour is unchanged
+    viter.align_many.return_value = [viter_result(("שלום", 0.3, 0.7), ("עולם", 0.9, 1.9))]
+    (kept,) = aligner.align_viter_batch([(1, row)], options(), fallback)
+    assert kept["row"]["alignment_backend"] == "viter"
+
+
+def test_has_eligible_cut_follows_the_loaders_rule():
+    def row(duration, *spans):
+        return {
+            "duration": duration,
+            "words": [{"word": "w", "start": s, "end": e} for s, e in spans],
+        }
+
+    assert aligner.has_eligible_cut(row(3.0, (0.0, 1.0), (1.2, 3.0)))  # cut 1.1, 1.9 left
+    assert not aligner.has_eligible_cut(row(2.0, (0.0, 0.9), (1.2, 2.0)))  # cut 1.05, 0.95 left
+    assert not aligner.has_eligible_cut(row(3.0, (0.0, 3.0)))  # one word
