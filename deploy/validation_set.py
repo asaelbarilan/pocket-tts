@@ -15,10 +15,10 @@ button). The new set replaces the old one as the model's cache.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
-import random
 import threading
 import time
 from collections.abc import Callable
@@ -29,9 +29,9 @@ logger = logging.getLogger("hebrew_tts_server.validation")
 SEED = 1234
 MANIFEST = "manifest.json"
 
-# (text, voice file name, seed) -> (wav bytes or None when the model ended speech at once,
-# audio seconds, hit max length)
-GenerateFn = Callable[[str, str, int], tuple[bytes | None, float, bool]]
+# (text, voice file name, seed[, settings]) -> (wav bytes or None when the model ended speech at
+# once, audio seconds, hit max length)
+GenerateFn = Callable[..., tuple[bytes | None, float, bool]]
 
 
 def load_sentences(path: Path) -> tuple[list[dict], str]:
@@ -54,14 +54,17 @@ class ValidationSet:
         generate: GenerateFn,
         cache_key: Callable[[], str | None],
     ):
-        self.sentences, sentences_sha = load_sentences(sentences_path)
+        self.sentences, self._sentences_sha = load_sentences(sentences_path)
         self.cache_root = cache_root
+        self._default_settings = dict(settings)
         self._voices = voices
         self._generate = generate
+        self._gen_takes_settings = len(inspect.signature(generate).parameters) >= 4
         self._cache_key = cache_key
         self.fingerprint = hashlib.sha256(
             json.dumps(
-                {"sentences": sentences_sha, "settings": settings, "seed": SEED}, sort_keys=True
+                {"sentences": self._sentences_sha, "settings": settings, "seed": SEED},
+                sort_keys=True,
             ).encode()
         ).hexdigest()
         self._lock = threading.Lock()
@@ -69,7 +72,9 @@ class ValidationSet:
         self._error: str | None = None
         self._loaded_key: str | None = None
         self._manifest: dict | None = None
-        self._forced_voice: str | None = None  # the voice of a forced regeneration, once
+        self._forced_voice: str | None = None  # the voice of a new or forced run, once
+        self._pending_settings: dict | None = None
+        self._pending_seed: int | None = None
 
     # -- manifest -----------------------------------------------------------------------
 
@@ -90,7 +95,11 @@ class ValidationSet:
         except (OSError, ValueError) as exc:
             logger.warning("ignoring unreadable validation manifest %s: %s", path, exc)
             return
-        if data.get("fingerprint") != self.fingerprint:
+        if "sentences_sha" in data:
+            if data["sentences_sha"] != self._sentences_sha:
+                logger.info("validation manifest is for other sentences; regenerating")
+                return
+        elif data.get("fingerprint") != self.fingerprint:
             logger.info("validation manifest is for other sentences/settings; regenerating")
             return
         self._manifest = data
@@ -137,6 +146,8 @@ class ValidationSet:
                 "done": len(finished),
                 "failed": sum(1 for i in items.values() if i["status"] == "error"),
                 "voice": manifest.get("voice"),
+                "settings": manifest.get("settings"),
+                "seed": manifest.get("seed"),
                 "model_sha256": key.split("-")[0],
                 "error": self._error,
                 "items": ordered,
@@ -151,12 +162,19 @@ class ValidationSet:
         self._manifest = None
         self._loaded_key = key
 
-    def start(self, force: bool = False, voice: str | None = None) -> dict:
+    def start(
+        self,
+        force: bool = False,
+        voice: str | None = None,
+        settings: dict | None = None,
+        seed: int | None = None,
+    ) -> dict:
         """Start (or resume) the run for the loaded model.
 
         With `force`, the cached set is deleted and every sentence is rendered again with
-        `voice`, a name from the voices list (required, so the result is reproducible with the
-        voice the user chose). Raises ValueError for a missing or unknown voice and
+        `voice` and `settings`. When no cached set exists yet, an initial `start` also uses the
+        provided `voice` and `settings` (falling back to the first voice and default settings
+        when omitted). Raises ValueError for a missing (on force) or unknown voice and
         ValidationBusy while a run is in progress.
         """
         key = self._cache_key()
@@ -169,6 +187,18 @@ class ValidationSet:
                 self._discard(key)
                 self._error = None
                 self._forced_voice = voice
+                self._pending_settings = {**self._default_settings, **(settings or {})}
+                self._pending_seed = seed if seed is not None else SEED
+        elif key is not None:
+            with self._lock:
+                if voice:
+                    if voice not in self._voices():
+                        raise ValueError(f"unknown voice {voice!r}: choose one from the voice list")
+                    self._forced_voice = voice
+                if settings is not None:
+                    self._pending_settings = {**self._default_settings, **settings}
+                if seed is not None:
+                    self._pending_seed = seed
         if key is not None:
             with self._lock:
                 self._ensure_loaded(key)
@@ -202,17 +232,35 @@ class ValidationSet:
                     if not voices:
                         raise RuntimeError("no voice prompts available")
                     chosen, self._forced_voice = self._forced_voice, None
+                    run_settings = self._pending_settings or dict(self._default_settings)
+                    self._pending_settings = None
+                    run_seed = self._pending_seed if self._pending_seed is not None else SEED
+                    self._pending_seed = None
                     manifest = {
                         "fingerprint": self.fingerprint,
+                        "sentences_sha": self._sentences_sha,
                         "model_sha256": key.split("-")[0],
-                        "voice": chosen or random.choice(voices),
-                        "seed": SEED,
+                        "voice": chosen or voices[0],
+                        "settings": run_settings,
+                        "seed": run_seed,
                         "items": {},
                     }
                     self._manifest = manifest
+                else:
+                    self._forced_voice = None
+                    self._pending_settings = None
+                    self._pending_seed = None
                 done = self._finished_ids()
             voice = manifest["voice"]
-            logger.info("validation set: %d sentences, voice %s", len(self.sentences), voice)
+            run_settings = manifest.get("settings") or dict(self._default_settings)
+            run_seed = manifest.get("seed", SEED)
+            logger.info(
+                "validation set: %d sentences, voice %s, settings %s, seed %s",
+                len(self.sentences),
+                voice,
+                run_settings,
+                run_seed,
+            )
             directory = self._dir(key)
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -222,7 +270,12 @@ class ValidationSet:
                 item = {k: sentence[k] for k in ("id", "category", "text", "note") if k in sentence}
                 started = time.perf_counter()
                 try:
-                    wav, seconds, hit_max = self._generate(sentence["text"], voice, SEED)
+                    if self._gen_takes_settings:
+                        wav, seconds, hit_max = self._generate(
+                            sentence["text"], voice, run_seed, run_settings
+                        )
+                    else:
+                        wav, seconds, hit_max = self._generate(sentence["text"], voice, run_seed)
                     elapsed = time.perf_counter() - started
                     item.update(
                         status="ok" if wav is not None else "eos",

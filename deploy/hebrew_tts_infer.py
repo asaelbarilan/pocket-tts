@@ -49,6 +49,7 @@ DEFAULTS = {
     "cfg": 2.0,
     "n_steps": 1,
     "eos_threshold": -1.0,
+    "eos_countdown": 3,
     "max_seconds": 30.0,
     "prompt_seconds": 5.0,
 }
@@ -106,6 +107,7 @@ class HebrewTTS:
         cfg: float = DEFAULTS["cfg"],
         n_steps: int = DEFAULTS["n_steps"],
         eos_threshold: float = DEFAULTS["eos_threshold"],
+        eos_countdown: int = DEFAULTS["eos_countdown"],
         max_seconds: float = DEFAULTS["max_seconds"],
         seed: int | None = None,
     ) -> torch.Tensor | None:
@@ -126,6 +128,7 @@ class HebrewTTS:
             n_steps=n_steps,
             cfg_coef=cfg,
             eos_threshold=eos_threshold,
+            eos_countdown=eos_countdown,
         )[0]
         if latents.shape[0] < MIN_FRAMES:
             return None
@@ -170,6 +173,7 @@ def main() -> None:
         cfg=args.cfg,
         n_steps=args.n_steps,
         eos_threshold=args.eos_threshold,
+        eos_countdown=args.eos_countdown,
         max_seconds=args.max_seconds,
         seed=args.seed,
     )

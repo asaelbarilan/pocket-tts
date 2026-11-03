@@ -21,6 +21,7 @@ class Fixture:
         path = tmp_path / "sentences.jsonl"
         path.write_text("\n".join(json.dumps(s, ensure_ascii=False) for s in SENTENCES))
         self.calls: list[tuple[str, str, int]] = []
+        self.settings_calls: list[dict] = []
         self.generation = 0
         self.gate = gate
         self.key = "abcd-cpu"
@@ -33,10 +34,12 @@ class Fixture:
             cache_key=lambda: self.key,
         )
 
-    def generate(self, text, voice, seed):
+    def generate(self, text, voice, seed, settings=None):
         if self.gate is not None:
             self.gate.wait(5)
         self.calls.append((text, voice, seed))
+        if settings is not None:
+            self.settings_calls.append(dict(settings))
         # The bytes say which regeneration made them.
         return f"audio-{voice}-{self.generation}".encode(), 1.0, False
 
@@ -196,3 +199,65 @@ def test_page_has_the_regenerate_button(tmp_path):
     # It sends the selected voice, and a regenerated set must not play from the browser cache.
     assert 'f.append("force", "true"); f.append("voice", voice)' in page
     assert '.wav?t=" + Date.now()' in page
+    assert 'eos_countdown:"eos countdown"' in page
+    assert 'id="vwave"' in page and 'id="vplayer"' in page and 'id="vplaySlice"' in page
+    assert (
+        "How <code>eos threshold</code> and <code>eos countdown</code> control the ending:" in page
+    )
+
+
+def test_initial_and_forced_start_use_configured_voice_and_settings(tmp_path):
+    fx = Fixture(tmp_path)
+    loader = SimpleNamespace(engine=object(), error=None, stage="ready", model_sha256="ab" * 32)
+    http = TestClient(
+        hebrew_tts_server.create_app(loader, fx.set, SimpleNamespace(), SimpleNamespace())
+    )
+    res = http.post(
+        "/validation/start",
+        data={"voice": "b.wav", "eos_threshold": "4.0", "eos_countdown": "3", "seed": "77"},
+    )
+    assert res.status_code == 200
+    status = fx.wait()
+    assert status["voice"] == "b.wav" and status["seed"] == 77
+    assert status["settings"]["eos_threshold"] == 4.0 and status["settings"]["eos_countdown"] == 3
+    assert all(c[1:] == ("b.wav", 77) for c in fx.calls)
+    assert all(s["eos_threshold"] == 4.0 and s["eos_countdown"] == 3 for s in fx.settings_calls)
+    # Force regenerate with another voice and updated settings.
+    fx.calls.clear()
+    fx.settings_calls.clear()
+    res2 = http.post(
+        "/validation/start",
+        data={
+            "force": "true",
+            "voice": "a.wav",
+            "eos_threshold": "2.5",
+            "eos_countdown": "2",
+            "temp": "0.5",
+        },
+    )
+    assert res2.status_code == 200
+    status2 = fx.wait()
+    assert status2["voice"] == "a.wav"
+    assert status2["settings"]["eos_threshold"] == 2.5
+    assert status2["settings"]["eos_countdown"] == 2
+    assert status2["settings"]["temp"] == 0.5
+    assert all(
+        s["eos_threshold"] == 2.5 and s["eos_countdown"] == 2 and s["temp"] == 0.5
+        for s in fx.settings_calls
+    )
+
+
+def test_voice_audio_endpoint_serves_known_voices(tmp_path):
+    fx = Fixture(tmp_path)
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "a.wav").write_bytes(b"RIFF-fake-wav")
+    loader = SimpleNamespace(
+        engine=object(), error=None, stage="ready", model_sha256="ab" * 32, voices_dir=voices_dir
+    )
+    http = TestClient(
+        hebrew_tts_server.create_app(loader, fx.set, SimpleNamespace(), SimpleNamespace())
+    )
+    ok = http.get("/voices/a.wav")
+    assert ok.status_code == 200 and ok.content == b"RIFF-fake-wav"
+    assert http.get("/voices/missing.wav").status_code == 404

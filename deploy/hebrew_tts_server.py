@@ -76,6 +76,7 @@ DEFAULTS = {
     "cfg": 2.0,
     "n_steps": 1,
     "eos_threshold": -1.0,
+    "eos_countdown": 3,
     "max_seconds": 30.0,
     "prompt_seconds": 5.0,
 }
@@ -225,6 +226,7 @@ class Engine:
         cfg: float,
         n_steps: int,
         eos_threshold: float,
+        eos_countdown: int = DEFAULTS["eos_countdown"],
         max_seconds: float,
         seed: int | None,
     ) -> tuple[torch.Tensor | None, bool]:
@@ -242,28 +244,31 @@ class Engine:
             n_steps=n_steps,
             cfg_coef=cfg,
             eos_threshold=eos_threshold,
+            eos_countdown=eos_countdown,
         )[0]
         if latents.shape[0] < MIN_FRAMES:
             return None, False
         return self._decode(latents).float().cpu(), latents.shape[0] >= max_frames
 
     def render_voice_file(
-        self, text: str, voice: str, seed: int
+        self, text: str, voice: str, seed: int, settings: dict | None = None
     ) -> tuple[bytes | None, float, bool]:
         """WAV bytes (None on immediate EOS), audio seconds and hit-max for a named voice file,
-        with the default sampling settings. Takes the generation lock per call."""
+        with the given sampling settings (or defaults). Takes the generation lock per call."""
+        cfg_vals = {**DEFAULTS, **(settings or {})}
         path = self.list_voices()[voice]
         key = ("file", voice, path.stat().st_mtime_ns)
         with self.lock:
-            latents = self.voice_latents(key, path, DEFAULTS["prompt_seconds"])
+            latents = self.voice_latents(key, path, float(cfg_vals["prompt_seconds"]))
             waveform, hit_max = self.synthesize(
                 text,
                 latents,
-                temp=DEFAULTS["temp"],
-                cfg=DEFAULTS["cfg"],
-                n_steps=DEFAULTS["n_steps"],
-                eos_threshold=DEFAULTS["eos_threshold"],
-                max_seconds=DEFAULTS["max_seconds"],
+                temp=float(cfg_vals["temp"]),
+                cfg=float(cfg_vals["cfg"]),
+                n_steps=int(cfg_vals["n_steps"]),
+                eos_threshold=float(cfg_vals["eos_threshold"]),
+                eos_countdown=int(cfg_vals["eos_countdown"]),
+                max_seconds=float(cfg_vals["max_seconds"]),
                 seed=seed,
             )
         if waveform is None:
@@ -378,16 +383,19 @@ def wav_bytes(samples: torch.Tensor, sample_rate: int) -> bytes:
 
 
 def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) -> ValidationSet:
-    def generate(text: str, voice: str, seed: int) -> tuple[bytes | None, float, bool]:
+    def generate(
+        text: str, voice: str, seed: int, settings: dict | None = None
+    ) -> tuple[bytes | None, float, bool]:
         engine = loader.engine
         if engine is None:
             raise RuntimeError("model not loaded")
-        return engine.render_voice_file(text, voice, seed)
+        return engine.render_voice_file(text, voice, seed, settings)
 
+    val_settings = {k: v for k, v in DEFAULTS.items() if k != "eos_countdown"}
     return ValidationSet(
         sentences,
         cache_dir,
-        DEFAULTS,
+        val_settings,
         voices=lambda: list(list_voice_files(loader.voices_dir)),
         generate=generate,
         cache_key=loader.cache_key,
@@ -442,6 +450,7 @@ def create_app(
         cfg: float = Form(DEFAULTS["cfg"], ge=0.0, le=6.0),
         n_steps: int = Form(DEFAULTS["n_steps"], ge=1, le=8),
         eos_threshold: float = Form(DEFAULTS["eos_threshold"], ge=-12.0, le=12.0),
+        eos_countdown: int = Form(DEFAULTS["eos_countdown"], ge=1, le=25),
         max_seconds: float = Form(DEFAULTS["max_seconds"], gt=0.0, le=60.0),
         prompt_seconds: float = Form(DEFAULTS["prompt_seconds"], ge=0.0, le=30.0),
         seed: int | None = Form(None),
@@ -478,6 +487,7 @@ def create_app(
                             cfg=cfg,
                             n_steps=n_steps,
                             eos_threshold=eos_threshold,
+                            eos_countdown=eos_countdown,
                             max_seconds=max_seconds,
                             seed=seed,
                         )
@@ -533,17 +543,37 @@ def create_app(
     def validation_start(
         force: bool = Form(False, description="discard the cached set and render it again"),
         voice: str | None = Form(
-            None, description="with `force`: name of a file from GET /voices (not random)"
+            None, description="name of a file from GET /voices (used for initial or forced run)"
         ),
+        temp: float | None = Form(None, ge=0.0, le=2.0),
+        cfg: float | None = Form(None, ge=0.0, le=6.0),
+        n_steps: int | None = Form(None, ge=1, le=8),
+        eos_threshold: float | None = Form(None, ge=-12.0, le=12.0),
+        eos_countdown: int | None = Form(None, ge=1, le=25),
+        max_seconds: float | None = Form(None, gt=0.0, le=60.0),
+        prompt_seconds: float | None = Form(None, ge=0.0, le=30.0),
+        seed: int | None = Form(None),
     ):
-        """Show the validation set of the loaded model, generating it if it is not cached. With
-        `force=true` the cached set is deleted and rendered again with `voice`."""
+        """Show the validation set of the loaded model, generating it with the selected `voice`
+        and sampling settings if it is not cached. With `force=true` the cached set is deleted
+        and rendered again with `voice` and the current sampling settings."""
         if loader.engine is None:
             raise HTTPException(
                 status_code=503, detail="warming up...", headers={"Retry-After": "10"}
             )
+        raw_settings = {
+            "temp": temp,
+            "cfg": cfg,
+            "n_steps": n_steps,
+            "eos_threshold": eos_threshold,
+            "eos_countdown": eos_countdown,
+            "max_seconds": max_seconds,
+            "prompt_seconds": prompt_seconds,
+        }
+        overrides = {k: v for k, v in raw_settings.items() if v is not None}
+        settings = {**DEFAULTS, **overrides} if overrides else None
         try:
-            return validation.start(force=force, voice=voice)
+            return validation.start(force=force, voice=voice, settings=settings, seed=seed)
         except ValidationBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
@@ -604,6 +634,13 @@ def create_app(
     def voices():
         return {"voices": list(list_voice_files(loader.voices_dir))}
 
+    @app.get("/voices/{name}")
+    def voice_audio(name: str):
+        known = list_voice_files(loader.voices_dir)
+        if name not in known:
+            raise HTTPException(status_code=404, detail="no such voice")
+        return FileResponse(known[name])
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return INDEX_HTML.replace("__DEFAULTS__", repr(DEFAULTS).replace("'", '"')).replace(
@@ -619,6 +656,7 @@ def create_app(
         cfg: float = Form(DEFAULTS["cfg"], ge=0.0, le=6.0),
         n_steps: int = Form(DEFAULTS["n_steps"], ge=1, le=8),
         eos_threshold: float = Form(DEFAULTS["eos_threshold"], ge=-12.0, le=12.0),
+        eos_countdown: int = Form(DEFAULTS["eos_countdown"], ge=1, le=25),
         max_seconds: float = Form(DEFAULTS["max_seconds"], gt=0.0, le=60.0),
         prompt_seconds: float = Form(DEFAULTS["prompt_seconds"], ge=0.0, le=30.0),
         seed: int | None = Form(None),
@@ -643,6 +681,7 @@ def create_app(
                     cfg=cfg,
                     n_steps=n_steps,
                     eos_threshold=eos_threshold,
+                    eos_countdown=eos_countdown,
                     max_seconds=max_seconds,
                     seed=seed,
                 )
@@ -668,13 +707,14 @@ def create_app(
             "Content-Disposition": 'inline; filename="speech.wav"',
         }
         logger.info(
-            "%.1fs audio in %.1fs (%.2fx) cfg=%s temp=%s eos=%s hit_max=%s chars=%d",
+            "%.1fs audio in %.1fs (%.2fx) cfg=%s temp=%s eos=%s countdown=%s hit_max=%s chars=%d",
             seconds,
             elapsed,
             seconds / elapsed,
             cfg,
             temp,
             eos_threshold,
+            eos_countdown,
             hit_max,
             len(text),
         )
@@ -698,6 +738,13 @@ INDEX_HTML = """<!doctype html>
  #status{color:#555;white-space:pre-wrap} #status.err{color:#b00020}
  .dl{background:#f4f6f8;border-radius:6px;padding:.6rem 1rem;margin-bottom:1rem}
  .dl ul{margin:.4rem 0 0;padding-left:1.2rem} .dl li{margin:.2rem 0} .meta{color:#777;font-size:.85rem}
+ .vbox{border:1px solid #ddd;border-radius:6px;padding:.55rem .75rem;margin-top:.5rem;background:#fafbfc}
+ .vhead{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.35rem}
+ .vhead button{margin:0;padding:.25rem .7rem;font-size:.85rem}
+ #vwave{width:100%;height:76px;display:block;border-radius:4px;background:#fff;border:1px solid #e3e6ea;cursor:pointer}
+ #vplayer{height:32px;margin-top:.35rem}
+ .shelp{margin-top:.6rem;padding:.55rem .75rem;background:#f4f6f8;border-radius:6px;font-size:.86rem;line-height:1.45;color:#333}
+ .shelp code{background:#e6eaef;padding:.05rem .3rem;border-radius:3px;font-size:.82rem}
  #vstatus{color:#555} #vstatus.err{color:#b00020}
  .vcat{margin:1.2rem 0 .3rem;font-weight:700;text-transform:capitalize}
  .vrow{border:1px solid #ddd;border-radius:6px;padding:.5rem .7rem;margin:.4rem 0}
@@ -729,7 +776,26 @@ INDEX_HTML = """<!doctype html>
 <select id="voice"></select>
 <label for="file">…or upload one (wins over the list; first <span id="ps"></span>s are used)</label>
 <input type="file" id="file" accept="audio/*">
-<details><summary style="margin-top:1rem;cursor:pointer">Sampling settings</summary><div class="grid" id="params"></div></details>
+<div class="vbox" id="vbox">
+ <div class="vhead">
+  <span id="vinfo" class="meta">loading voice prompt…</span>
+  <span style="flex:1"></span>
+  <button type="button" id="vplaySlice" title="Play only the active prompt slice (0 to prompt seconds)">▶ Play used slice</button>
+ </div>
+ <canvas id="vwave" height="76" title="Click to seek in voice prompt"></canvas>
+ <audio id="vplayer" controls preload="metadata"></audio>
+</div>
+<details><summary style="margin-top:1rem;cursor:pointer">Sampling settings</summary>
+ <div class="grid" id="params"></div>
+ <div class="shelp">
+  <b>How <code>eos threshold</code> and <code>eos countdown</code> control the ending:</b>
+  Audio is generated in <b>80 ms frames</b> (12.5 Hz). At each frame <i>t</i>, the model outputs an EOS logit (amplified by <code>cfg</code>).
+  EOS triggers on the first frame <i>t</i> where <code>eos_logit &gt; eos_threshold</code> (higher threshold = needs stronger confidence = stops later).
+  Once triggered at frame <i>t</i>, <code>eos_countdown</code> ticks down by 1 each frame (including frame <i>t</i> itself) and stops when it hits 0, dropping the frame where it hits 0:
+  <b><code>1</code></b> stops immediately before frame <i>t</i> (0 extra frames; can clip the final consonant if EOS fires early), while
+  <b><code>2</code>–<code>3</code></b> keeps 1–2 extra frames (80–160 ms) from frame <i>t</i> onward so the final word releases naturally into silence.
+ </div>
+</details>
 <div class="row">
 <button id="go">Generate</button>
 <button id="milimBtn" dir="rtl" hidden>בחר דוגמה מ MILIM</button>
@@ -760,21 +826,161 @@ INDEX_HTML = """<!doctype html>
 <script>
 const D = __DEFAULTS__;
 const names = {temp:"temperature", cfg:"cfg (guidance)", n_steps:"decode steps",
-  eos_threshold:"eos threshold", max_seconds:"max seconds", prompt_seconds:"prompt seconds", seed:"seed"};
+  eos_threshold:"eos threshold", eos_countdown:"eos countdown", max_seconds:"max seconds",
+  prompt_seconds:"prompt seconds", seed:"seed"};
+const intKeys = new Set(["n_steps", "eos_countdown", "seed"]);
 const box = document.getElementById("params");
 for (const k of [...Object.keys(D), "seed"]) {
   const l = document.createElement("label");
   l.textContent = names[k] + " ";
   const i = document.createElement("input");
-  i.id = "p_" + k; i.type = "number"; i.step = "any"; i.value = D[k] ?? "";
+  i.id = "p_" + k; i.type = "number"; i.step = intKeys.has(k) ? "1" : "any"; i.value = D[k] ?? "";
+  if (k === "n_steps" || k === "eos_countdown") i.min = "1";
   if (k === "seed") i.placeholder = "random";
   l.appendChild(i); box.appendChild(l);
 }
 document.getElementById("ps").textContent = D.prompt_seconds;
+
+// Browser-side voice prompt waveform + cutoff marker + playback.
+const vSel = document.getElementById("voice");
+const fInp = document.getElementById("file");
+const psInp = document.getElementById("p_prompt_seconds");
+const vInfo = document.getElementById("vinfo");
+const vWave = document.getElementById("vwave");
+const vPlayer = document.getElementById("vplayer");
+const vPlaySlice = document.getElementById("vplaySlice");
+let vPeaks = null, vDur = 0, vName = "", vObjUrl = null, sliceTimer = null, audioCtx = null;
+
+const getPromptSec = () => {
+  const v = parseFloat(psInp.value);
+  return Number.isFinite(v) && v >= 0 ? v : D.prompt_seconds;
+};
+const drawWave = () => {
+  const dpr = window.devicePixelRatio || 1;
+  const w = vWave.clientWidth || 680, h = vWave.clientHeight || 76;
+  if (vWave.width !== Math.round(w * dpr) || vWave.height !== Math.round(h * dpr)) {
+    vWave.width = Math.round(w * dpr); vWave.height = Math.round(h * dpr);
+  }
+  const ctx = vWave.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!vPeaks || !vDur) return;
+  const ps = getPromptSec();
+  document.getElementById("ps").textContent = ps;
+  const cutSec = ps > 0 ? Math.min(ps, vDur) : vDur;
+  const cutX = Math.round((cutSec / vDur) * w);
+  if (cutX < w) {
+    ctx.fillStyle = "#f9ebed";
+    ctx.fillRect(cutX, 0, w - cutX, h);
+  }
+  const mid = h / 2, n = vPeaks.length;
+  for (let i = 0; i < n; i++) {
+    const x = (i / n) * w;
+    const amp = Math.max(1, vPeaks[i] * (mid - 6));
+    ctx.fillStyle = x <= cutX ? "#1a73e8" : "#b8bec6";
+    ctx.fillRect(x, mid - amp, Math.max(1, w / n - 0.5), amp * 2);
+  }
+  if (ps > 0 && ps < vDur) {
+    ctx.strokeStyle = "#b00020";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(cutX + 0.5, 0); ctx.lineTo(cutX + 0.5, h); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#b00020";
+    ctx.font = "600 11px system-ui, sans-serif";
+    const lbl = `cut @ ${ps.toFixed(2)}s`;
+    const tw = ctx.measureText(lbl).width;
+    const lx = cutX + 6 + tw < w ? cutX + 5 : Math.max(4, cutX - tw - 5);
+    ctx.fillText(lbl, lx, 13);
+  }
+  if (vPlayer.currentTime > 0 && vDur > 0) {
+    const px = (vPlayer.currentTime / vDur) * w;
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, h); ctx.stroke();
+  }
+  const cutNote = ps <= 0 ? `all ${vDur.toFixed(2)}s used (prompt_seconds=0)` :
+    (ps < vDur ? `using first ${ps.toFixed(2)}s of ${vDur.toFixed(2)}s (${(vDur - ps).toFixed(2)}s cut off)` :
+    `using all ${vDur.toFixed(2)}s (shorter than ${ps.toFixed(2)}s cutoff)`);
+  vInfo.textContent = `${vName} — ${cutNote}`;
+};
+
+const loadVoicePrompt = async () => {
+  if (sliceTimer) { clearInterval(sliceTimer); sliceTimer = null; }
+  const file = fInp.files[0];
+  let url = "", label = "";
+  if (vObjUrl) { URL.revokeObjectURL(vObjUrl); vObjUrl = null; }
+  if (file) {
+    vObjUrl = URL.createObjectURL(file);
+    url = vObjUrl; label = file.name;
+  } else if (vSel.value) {
+    url = "/voices/" + encodeURIComponent(vSel.value); label = vSel.value;
+  } else {
+    vPeaks = null; vDur = 0; vInfo.textContent = "no voice prompt selected";
+    vPlayer.removeAttribute("src"); drawWave(); return;
+  }
+  vName = label;
+  vInfo.textContent = `loading ${label}…`;
+  vPlayer.src = url;
+  try {
+    const buf = file ? await file.arrayBuffer() : await (await fetch(url)).arrayBuffer();
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await audioCtx.decodeAudioData(buf.slice(0));
+    vDur = decoded.duration;
+    const ch = decoded.getChannelData(0);
+    const bins = 240, step = Math.max(1, Math.floor(ch.length / bins));
+    const peaks = new Float32Array(bins);
+    let maxPeak = 0.01;
+    for (let b = 0; b < bins; b++) {
+      let m = 0, start = b * step, end = Math.min(ch.length, start + step);
+      for (let j = start; j < end; j++) { const a = Math.abs(ch[j]); if (a > m) m = a; }
+      peaks[b] = m; if (m > maxPeak) maxPeak = m;
+    }
+    for (let b = 0; b < bins; b++) peaks[b] /= maxPeak;
+    vPeaks = peaks;
+    drawWave();
+  } catch (e) {
+    vPeaks = null; vDur = 0;
+    vInfo.textContent = `${label} — waveform unavailable`;
+    drawWave();
+  }
+};
+
+vWave.onclick = e => {
+  if (!vDur) return;
+  const rect = vWave.getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  vPlayer.currentTime = frac * vDur;
+  drawWave();
+};
+vPlayer.ontimeupdate = drawWave;
+vPlayer.onended = () => { if (sliceTimer) { clearInterval(sliceTimer); sliceTimer = null; } drawWave(); };
+vPlaySlice.onclick = () => {
+  if (!vPlayer.src) return;
+  if (sliceTimer) { clearInterval(sliceTimer); sliceTimer = null; }
+  const ps = getPromptSec();
+  const stopAt = ps > 0 && vDur > 0 ? Math.min(ps, vDur) : vDur;
+  vPlayer.currentTime = 0;
+  vPlayer.play();
+  if (stopAt > 0) {
+    sliceTimer = setInterval(() => {
+      drawWave();
+      if (vPlayer.paused || vPlayer.currentTime >= stopAt) {
+        if (vPlayer.currentTime >= stopAt) vPlayer.pause();
+        clearInterval(sliceTimer); sliceTimer = null; drawWave();
+      }
+    }, 30);
+  }
+};
+vSel.onchange = () => { if (!fInp.files[0]) loadVoicePrompt(); };
+fInp.onchange = loadVoicePrompt;
+psInp.oninput = drawWave;
+window.addEventListener("resize", drawWave);
+
 fetch("/voices").then(r => r.json()).then(j => {
-  const s = document.getElementById("voice");
-  j.voices.forEach(v => s.add(new Option(v, v)));
-  if (!j.voices.length) s.add(new Option("(none - put files in deploy/voices or upload)", ""));
+  j.voices.forEach(v => vSel.add(new Option(v, v)));
+  if (!j.voices.length) vSel.add(new Option("(none - put files in deploy/voices or upload)", ""));
+  loadVoicePrompt();
 });
 const status = document.getElementById("status");
 const go = document.getElementById("go");
@@ -823,13 +1029,28 @@ const renderItems = items => {
     }
   }
 };
+const appendSamplingParams = f => {
+  for (const k of [...Object.keys(D), "seed"]) {
+    const v = document.getElementById("p_" + k).value;
+    if (v !== "") f.append(k, v);
+  }
+  return f;
+};
+const formatValSettings = st => {
+  if (!st) return "";
+  const parts = [];
+  for (const k of ["cfg", "temp", "eos_threshold", "eos_countdown", "n_steps", "prompt_seconds"]) {
+    if (st[k] !== undefined) parts.push(`${k}=${st[k]}`);
+  }
+  return parts.length ? " (" + parts.join(", ") + ")" : "";
+};
 const pollValidation = async () => {
   let s;
   try { s = await (await fetch("/validation")).json(); }
   catch (e) { setTimeout(pollValidation, 5000); return; }
   renderItems(s.items);
   vstatus.className = "";
-  const head = "voice " + (s.voice || "?") + ", " + s.done + "/" + s.total;
+  const head = "voice " + (s.voice || "?") + formatValSettings(s.settings) + ", " + s.done + "/" + s.total;
   if (s.state === "running") {
     vstatus.textContent = "generating validation set… " + head;
     valBtn.disabled = true; redoBtn.disabled = true; setTimeout(pollValidation, 5000); return;
@@ -843,7 +1064,11 @@ const pollValidation = async () => {
 valBtn.onclick = async () => {
   valBtn.disabled = true;
   vstatus.className = ""; vstatus.textContent = "starting…";
-  const r = await fetch("/validation/start", {method: "POST"});
+  const f = new FormData();
+  const voice = document.getElementById("voice").value;
+  if (voice) f.append("voice", voice);
+  appendSamplingParams(f);
+  const r = await fetch("/validation/start", {method: "POST", body: f});
   if (!r.ok) { vstatus.className = "err"; vstatus.textContent = r.status + ": " + await r.text(); valBtn.disabled = false; return; }
   pollValidation();
 };
@@ -856,11 +1081,12 @@ redoBtn.onclick = async () => {
   }
   if (!voice) { vstatus.className = "err"; vstatus.textContent = "no voice selected"; return; }
   if (!confirm("Delete the cached validation set of this model and render it again with " + voice +
-      "? It takes a few minutes.")) return;
+      " and current sampling settings? It takes a few minutes.")) return;
   valBtn.disabled = true; redoBtn.disabled = true;
   vstatus.className = ""; vstatus.textContent = "starting…";
   shown.clear(); vlist.replaceChildren();
   const f = new FormData(); f.append("force", "true"); f.append("voice", voice);
+  appendSamplingParams(f);
   const r = await fetch("/validation/start", {method: "POST", body: f});
   if (!r.ok) {
     let d = await r.text(); try { d = JSON.stringify(JSON.parse(d).detail); } catch (e) {}

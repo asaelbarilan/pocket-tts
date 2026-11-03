@@ -666,9 +666,28 @@ def _target_seconds(tmp_path, monkeypatch, tail_gap, **row_overrides):
     return next(d for s, d in calls if s == round(100.0 + 2.1, 6))
 
 
-def test_a_row_without_tail_gap_is_trimmed_as_before(tmp_path, monkeypatch):
-    # The row ends with the last word, so there is nothing past it to keep.
-    assert _target_seconds(tmp_path, monkeypatch, None) == pytest.approx(5.0 - 2.1)
+def test_a_row_without_tail_gap_flows_up_to_trail_sec_past_the_last_word(tmp_path, monkeypatch):
+    # No following segment (`tail_gap` is None): request up to TRAIL_SEC past the last word.
+    assert _target_seconds(tmp_path, monkeypatch, None) == pytest.approx(
+        5.0 + DataLoader.TRAIL_SEC - 2.1
+    )
+
+
+def test_last_segment_without_tail_gap_stops_at_eof_when_file_ends_before_trail_sec(tmp_path):
+    # Audio file is 5.08 s long; last word ends at 5.0 s (only 0.08 s < TRAIL_SEC left to EOF).
+    wav = tmp_path / "eof.wav"
+    _write_wav(wav, seconds=5.08)
+    row = {
+        "path": str(wav),
+        "start": 0.0,
+        "duration": 5.0,
+        "transcript": "a b",
+        "words": [{"word": "a", "start": 0.0, "end": 2.0}, {"word": "b", "start": 2.2, "end": 5.0}],
+    }
+    loader = _text_loader(tmp_path, [row], [])
+    loader.rng = _PickCut(1)
+    target_wav, *_ = loader._sample(loader.get_entry(0))
+    assert len(target_wav) / SR == pytest.approx(5.08 - 2.1, abs=1e-3)
 
 
 @pytest.mark.parametrize(("tail_gap", "tail"), [(0, 0.0), (100, 0.05), (400, 0.2), (3000, 0.2)])

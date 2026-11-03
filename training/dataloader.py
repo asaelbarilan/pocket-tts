@@ -195,16 +195,17 @@ class DataLoader:
     def _end_after(self, entry: Entry, last: float) -> float:
         """Where the audio ends, in seconds from the row start, given the last word ends at `last`.
 
-        A row with no `tail_gap` keeps up to TRAIL_SEC of whatever follows the last word inside
-        its own duration. An aligned row ends exactly where the aligner puts the last word,
-        which is early (CTC ends a word before its last frame) and leaves no silence, so the
-        word can be clipped and EOS lands on the final frame of speech. With `tail_gap` the
-        audio is read past the row's end, from the same file, up to TRAIL_SEC but never more
-        than half the silence that is really there: a row cut out of running speech
-        (`tail_gap` ~0) gets no tail, so the next word's first syllable is not read in.
+        An aligned row ends where the aligner puts the last word, which is early (CTC ends a word
+        before its last frame) and leaves no silence, so the word can be clipped and EOS lands on
+        the final frame of speech. With `tail_gap` the audio is read past the row's end, from the
+        same file, up to TRAIL_SEC but never more than half the silence that is really there: a
+        row cut out of running speech (`tail_gap` ~0) gets no tail, so the next word's first
+        syllable is not read in. A row with no `tail_gap` (the last segment in a recording, or a
+        single-utterance file) has no following speech, so it flows up to TRAIL_SEC past `last`
+        (and the audio reader stops at EOF if the file ends sooner).
         """
         if entry.tail_gap is None:
-            return min(entry.duration, last + self.TRAIL_SEC)
+            return last + self.TRAIL_SEC
         return last + min(self.TRAIL_SEC, max(0, entry.tail_gap) / 2000)
 
     def _words_text(self, entry: Entry, first_word: int) -> str:
