@@ -36,30 +36,101 @@ So "capture the good from both worlds" does not mean averaging two embeddings. I
 **take a semantic encoder and give it a phonological training objective.** One model, one
 vector, and the vector's geometry has to encode the reading because the loss made it.
 
-## The binding constraint, before any option
+## The binding constraint, and the dataset that removes it
 
 **Twelve decisions cannot tell these options apart.** 11/12 against 10/12 is one word of
 difference; a coin lands that way often. This is the same wall the alignment work hit at
 72 clips.
 
-Before training anything, mine a real test set — and it can be mined, not annotated:
+**MILIM-Bench removes it.** `renikud/MILIM-Bench` on the Hub (MIT, from the ReNikud paper)
+is 1,653 Hebrew sentences in 11 categories with gold IPA for 3,110 target words, written
+as `token_index=IPA`. It was built for exactly the confusing parts of Hebrew: homographs,
+gender, acronyms, loanwords, names, slang, colloquial register, rare phonemes, penultimate
+stress, minimal stress pairs, and the test split of ILSpeech as a control.
 
-1. Take a **vocalized** Hebrew corpus (the Dicta vocalized corpora, the Tanakh, the
-   Ben-Yehuda project, any ktiv-menukad text).
-2. Strip the nikud. Group the sentences by bare form.
-3. Any bare form that appears with **two or more distinct vocalizations** is a homograph,
-   and each sentence it came from is a labelled decision — the gold label is the nikud that
-   was stripped off it.
+Two properties that make it better than the vocalized-corpus mining this document
+originally proposed:
 
-That yields thousands of decisions across hundreds of homographs for the cost of a script,
-with no human in the loop, and it doubles as the training set for options 1, 2 and 5
-below. Expect a frequency-skewed set: `אוכל` and `רוצה` will dominate, so report
-macro-averaged per-form accuracy as well as the raw number, or a model that always says
-*eating* will look good.
+- **Gold IPA, not gold nikud, so stress is in the label.** Nikud cannot write stress, and
+  stress is two of the eleven categories. A nikud-supervised objective is blind there.
+- **Wide and shallow: 1,284 distinct target forms, none appearing more than four times.**
+  Mining a corpus gives the opposite — `אוכל` and `רוצה` dominating — where a model that
+  always picks the frequent reading looks good. Nothing here needs reweighting.
 
-The known weakness of this set: it is written, mostly literary Hebrew, and it will
-under-represent the loanwords and the spoken register the TTS actually has to say. It is
-still four orders of magnitude better than twelve.
+Split with `hebrew_training/milim_split.py`, 60/20/20, two ways, because they measure
+different things:
+
+- `--by sentence` (983 / 318 / 350 sentences, stratified by category): the same form may
+  appear in train and test in different sentences. The deployment setting — your TTS will
+  meet `בוקר` in the wild and you would of course have trained on it.
+- `--by form` (900 / 302 / 287): a form never crosses a split, so the test words are
+  unseen. Harder, and the number will be lower. Quote both or the easy one flatters. This
+  mode collapses `ilspeech-v2` from 1,539 target words to 11, because its sentences carry
+  ten targets each and nearly all of them straddle; score that category under
+  `--by sentence` only.
+
+The split is a SHA-1 of the sentence text rather than a seed, so it is identical on any
+machine and after any reshuffle; `hebrew_training/milim/*_assignment.tsv` is the audit
+trail. Three traps are documented in that script and cost an afternoon otherwise: row 0 of
+`predictions.tsv` is a `#meta` row (so the benchmark's own `src/evaluate.py` raises on its
+length check against the published `gold.tsv`), rows 940 and 1129 have a target index past
+the end of the sentence, and `ilspeech-v2` is half the benchmark by target word, so a
+micro-average over target words is 50% one control category. **Quote the macro average
+over the eleven categories.**
+
+MILIM is not a substitute for a Hebrew corpus to *train* on — 983 training sentences will
+not move an encoder. It is the measurement. Training data still comes from a vocalized
+corpus or, better, from the label factory below.
+
+## What MILIM says about the two models — measured
+
+`predictions.tsv` ships nine systems' answers: two Hebrew g2p models, one preview g2p, and
+six LLM runs with the prompts in the repo's `PROMPTS.md`. Reproduce with
+`hebrew_training/milim_systems.py`, which scores per target word rather than per row.
+These are the benchmark authors' runs, not ours; the LLM numbers depend on the prompt as
+well as the model.
+
+| system | MACRO | colloquial | acronyms | rare phon. | homographs | ilspeech |
+|---|---|---|---|---|---|---|
+| gemini-4-argon | **82.7** | 51.0 | 80.9 | 76.8 | 93.0 | 89.1 |
+| conikud (preview) | 78.8 | 52.3 | 78.9 | 59.6 | 90.0 | 91.8 |
+| gpt-6-astra | 76.8 | 47.7 | 70.4 | 70.9 | 81.1 | 87.3 |
+| gemini-3.1-pro | 75.1 | 34.4 | 77.6 | 56.3 | 94.0 | 95.4 |
+| claude-fable-5 | 73.4 | 18.5 | 78.9 | 74.2 | 92.0 | 88.4 |
+| claude-opus-5 | 71.3 | 17.2 | 68.4 | 65.6 | 78.6 | 83.0 |
+| **renikud** | 59.7 | **55.0** | **3.3** | **27.2** | 77.1 | **90.4** |
+| phonikud | 49.5 | 9.3 | 35.5 | 17.9 | 77.6 | 84.1 |
+
+Three things fall out, and all three change the plan.
+
+**1. ReNikud is not the second model. It comes seventh of nine.** 59.7 macro against
+gemini-4's 82.7. It scores 3.3% on acronyms — it has no acronym handling at all — and
+27.2% on rare phonemes. The twelve-word result that started this document had it at 10/12;
+at 3,107 words it is nowhere near DictaBERT's class of competitor. Note also that
+**MILIM is by ReNikud's own authors and ReNikud loses on it**, which is a point in the
+benchmark's favour, not against it.
+
+**2. But its one win is exactly the register a TTS has to speak.** `colloquial` 55.0
+against gemini-4's 51.0, beating every LLM in the file; `ilspeech-v2` — real speech
+transcripts — 90.4 against 89.1. And the losses are *systematic*, not noise:
+
+```
+[slang]      קרוע       gold kaʁˈua     renikud kaʁˈua     gemini-4 kaʁˈuʔa
+[slang]      טירוף      gold teʁˈuf     renikud teʁˈuf     gemini-4 tiʁˈuf
+[colloquial] הגיע       gold heɡˈia     renikud heɡˈia     gemini-4 hiɡˈiʔa
+[colloquial] לשניים     gold leʃnˈajim  renikud leʃnˈajim  gemini-4 liʃnˈajim
+```
+
+The LLM inserts glottal stops nobody says and applies literary vowel reduction. **It reads
+book Hebrew; ReNikud speaks street Hebrew.** This is the real "good from both worlds", and
+it is narrower and sharper than "two semantic models": the LLM knows *which word*, ReNikud
+knows *how it is actually said*.
+
+**3. The gate's ceiling is measured, not hoped for.** ReNikud plus gemini-4, oracle:
+**90.3%** micro against gemini-4's 85.7% alone, and 94.8% on ilspeech. Over all nine
+systems, 95.4%, with only 4.6% of target words that no system gets right (and 80 of those
+142 are ilspeech and colloquial). The 143 words where ReNikud alone is right are
+concentrated where you would now expect: ilspeech 87, colloquial 24, foreign 11.
 
 ## Option 1 — distil the reading into the semantic encoder (multi-task)
 
@@ -185,28 +256,92 @@ its supervision inherits that blind spot. Phonikud exists for exactly this and p
 stress on top of nikud; and IPA, option 1's other possible target, carries stress where
 nikud does not. If the mined set shows stress errors surviving, that is where to go.
 
+## The four picked, re-costed against the measurement
+
+The four chosen were 6.1 (LLM as label factory), 4 (ensemble then distil), the contrastive
+half of 5, and the TTS loss as the gate's supervision. They compose into one pipeline, and
+MILIM changes each of them.
+
+### 6.1, the label factory — confirmed, with a correction
+
+A frontier LLM at 82.7 macro is a far better teacher than ReNikud at 59.7, so the choice
+is right. But **its errors are systematic in the direction that hurts a TTS most**: it
+writes book Hebrew. Train an encoder on raw LLM labels and you teach it to say *hiɡˈiʔa*
+where a speaker says *heɡˈia*, across the whole corpus and not just on hard words.
+
+Two things follow. Pick the teacher on `colloquial` and `ilspeech`, not on macro — on those
+two, gemini-4 (51.0) and conikud (52.3) beat the rest and claude-opus-5 is at 17.2, a
+spread of 35 points that the macro column hides. And **take ReNikud as the register
+corrector**: where the two disagree and the disagreement is a glottal stop or a reduced
+vowel, ReNikud is right about 24 times in 42 on colloquial. That is a rule you can write
+and check on the validation split today.
+
+### 4, ensemble then distil — now has a number
+
+The target is no longer a guess: **90.3%** for ReNikud + gemini-4, against 85.7% for the
+LLM alone. If the distilled student lands below 85.7 the ensemble bought nothing; above
+that, the gap to 90.3 tells you how much of the gate survived distillation. Nine systems
+oracle at 95.4%, so a larger pool is worth more — but each extra teacher is another LLM
+bill, and the three-way gate has to be trained on something.
+
+### 5, the contrastive half — the negatives are already written
+
+The thing option 5 lacked was hard negatives. `predictions.tsv` is a free supply: for each
+target word you have the gold IPA and up to eight *distinct wrong* IPA strings that real
+systems produced in that exact context. Anchor = the word in its sentence, positive = gold
+IPA, negatives = the wrong strings. They are hard by construction — `kaʁˈua` against
+`kaʁˈuʔa` differ by one phoneme — and no generation step is needed.
+
+3,107 anchors is small for contrastive training, so this is a fine-tune on top of option
+1's run rather than a run of its own. The 142 words no system gets right are the natural
+held-out difficulty probe.
+
+### The TTS loss — cheapest, but it cannot be scored on MILIM
+
+The audio-as-label argument stands and is still the best supervision available. One wrinkle
+the measurement exposes: **a gate over two vectors produces a vector, and MILIM scores
+IPA strings.** A vector gate is only measurable by listening or by TTS loss, neither of
+which gives a number per category.
+
+So build the gate over **IPA candidates**, not over vectors: two candidate strings per
+word, ReNikud's and the cached LLM's, with the gate choosing. Then
+
+- MILIM scores it directly, per category, today, with the oracle 90.3% as the known
+  ceiling and 85.7% as the floor to beat;
+- the chosen string feeds the phoneme path the TTS already has, so nothing downstream
+  changes;
+- the TTS loss can still train it, and the two kinds of supervision become comparable
+  because they now score the same object.
+
+Keep the vector residual as it is. Gate the strings.
+
 ## What I would do
 
 In this order, stopping as soon as the numbers stop moving:
 
-1. **Mine the test set.** A script over a vocalized corpus. Nothing else here is
-   falsifiable until it exists, and twelve decisions is not a measurement.
-2. **Option 3, the gate, supervised by the TTS loss.** No new data, no new model, free
-   supervision, and the oracle already says there is headroom to collect. Measure it on the
-   mined set, not on twelve words.
-3. **Re-measure the premise.** With thousands of decisions, check whether ReNikud still
-   wins anything. If its 4-of-21 shrinks to noise at scale, the fusion question dissolves
-   and the answer is "use DictaBERT, drop ReNikud" — the cheapest possible outcome, and a
-   live possibility on twelve words.
-4. **If it survives: options 1 and 5 together.** One continued-pretraining run of
-   DictaBERT-large with a gold-nikud head and a contrastive homograph head, ambiguous forms
-   upweighted. This is the one model the question asked for.
-5. **Then option 6.1**, an LLM used offline as the label factory for step 4, which raises
-   the ceiling without putting a 7B model in the pipeline.
+1. **Take the split.** Done: `hebrew_training/milim_split.py`, 983/318/350 by sentence and
+   900/302/287 by form. Report macro over the eleven categories, both splits.
+2. **Score the pipeline as it stands on the test split.** You have never had a per-category
+   number for what the TTS front end actually does. One afternoon, and it decides
+   everything after it.
+3. **The IPA-candidate gate, ReNikud against one cached LLM.** Fit on train, select on val,
+   report on test. Floor 85.7, ceiling 90.3, and a trivial baseline to beat first: "use the
+   LLM except on colloquial and slang, where you use ReNikud". If that hand rule gets most
+   of the 4.6 points, the learned gate may not be worth building.
+4. **Then the label factory**, chosen on colloquial and ilspeech rather than on macro, with
+   the step-3 gate applied to its output so the labels carry the spoken register.
+5. **Then one encoder**: option 1's nikud-or-IPA head plus option 5's contrastive head,
+   trained on the factory's labels, MILIM held out. This is the single model the question
+   asked for, and by this point its target is a measured number.
 
-Option 4's distillation is only worth building if step 2 wins and step 4 does not reach it
-— it is the fallback that buys the ensemble's accuracy at one model's cost.
+Option 4's distillation is the last step, and only if step 5 lands below step 3.
 
 Not on the list: training a Hebrew semantic encoder from scratch. DictaBERT is a
 Hebrew-only encoder with a real pretraining budget behind it, and nothing measured here
-suggests its semantics are the bottleneck — it sits at 68/72.
+suggests its semantics are the bottleneck — it sits at 68/72 on the homograph probe, while
+ReNikud's 59.7 macro says the *reading* side is where the loss is.
+
+One more thing worth a day: **conikud** (preview, 78.8 macro, and the best system in the
+file on ilspeech at 91.8 and on colloquial at 52.3) dominates ReNikud everywhere —
+per-word, ReNikud wins only 74 of 3,107 against it. If a local ONNX g2p is wanted in the
+pipeline, it is probably the wrong one that is in there now.

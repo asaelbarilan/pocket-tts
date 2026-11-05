@@ -1,0 +1,1490 @@
+sha1_8	category	split	n_targets
+725529af	acronyms	val	1
+ba12128d	acronyms	val	1
+6b0f9014	acronyms	test	1
+2beeb821	acronyms	train	1
+daf8993a	acronyms	train	1
+bb3726fd	acronyms	train	1
+9650318c	acronyms	train	1
+d9ec75a1	acronyms	val	1
+f400be77	acronyms	train	1
+3d8c50ff	acronyms	train	1
+2ae8f6db	acronyms	train	1
+e79746ca	acronyms	test	1
+29a6a5dc	acronyms	train	1
+cbc82c99	acronyms	val	1
+41d0afcc	acronyms	train	1
+39536d7f	acronyms	test	1
+a1fb7558	acronyms	train	1
+216947d0	acronyms	train	1
+ab2287e3	acronyms	val	1
+5db9e1b4	acronyms	val	1
+46edfa3b	acronyms	train	1
+d0fa4b0b	acronyms	train	1
+306d4dfa	acronyms	train	1
+7b5f46be	acronyms	test	1
+f4aed566	acronyms	train	1
+a39bf38e	acronyms	train	1
+85811cc7	acronyms	val	1
+73a8d50d	acronyms	train	1
+4b187026	acronyms	train	1
+4d7e8011	acronyms	train	2
+dffefc34	acronyms	train	1
+be9f7d13	acronyms	train	1
+b639b446	acronyms	train	1
+3ce50e84	acronyms	train	1
+4a93497a	acronyms	val	1
+8990265b	acronyms	test	1
+dfbe0c68	acronyms	test	1
+811dd120	acronyms	train	1
+f7c08ee6	acronyms	train	1
+11743719	acronyms	test	1
+fec77938	acronyms	val	1
+50d80fce	acronyms	val	1
+f3182d91	acronyms	train	1
+5420dc7f	acronyms	test	1
+36ab38a4	acronyms	train	1
+25014143	acronyms	test	1
+61ce9879	acronyms	train	1
+00c89dd4	acronyms	test	1
+35acb5d1	acronyms	test	1
+43c3520c	acronyms	val	1
+e91d6a5f	acronyms	train	1
+e5c5cd12	acronyms	train	1
+01194504	acronyms	train	1
+7e5a7d1a	acronyms	train	1
+72c4e29d	acronyms	train	1
+578f286c	acronyms	test	1
+b52d3f84	acronyms	train	1
+371d8c7c	acronyms	test	1
+58ba6245	acronyms	train	1
+65c0c3bd	acronyms	train	1
+cca5c374	acronyms	val	1
+418d63fd	acronyms	train	1
+c0bb4215	acronyms	test	1
+de15b922	acronyms	train	1
+4b3a7634	acronyms	train	1
+5aae2eb6	acronyms	train	1
+abd32bf5	acronyms	test	1
+f64013a0	acronyms	test	1
+f4e9bbf7	acronyms	train	1
+9b9398c7	acronyms	train	1
+e2668568	acronyms	train	1
+48a72a11	acronyms	val	1
+47eb77bb	acronyms	val	1
+1b3422c1	acronyms	train	1
+09e751a1	acronyms	train	1
+46056c5a	acronyms	train	1
+7744c91b	acronyms	val	1
+2e3c030d	acronyms	train	1
+7e22148b	acronyms	val	1
+9bc578bd	acronyms	train	1
+b86c7f43	acronyms	train	1
+d5277148	acronyms	train	1
+68d811fb	acronyms	train	1
+5ffdcb06	acronyms	train	1
+853c3692	acronyms	train	1
+1adc188f	acronyms	train	1
+9aaa0d9c	acronyms	train	1
+7ee3ba4a	acronyms	train	1
+5f97a2cc	acronyms	val	1
+c9ef5f80	acronyms	val	1
+f791703e	acronyms	train	1
+81654446	acronyms	val	1
+7750609c	acronyms	val	1
+1c437c31	acronyms	train	1
+2ee66e13	acronyms	train	1
+72da9bc1	acronyms	train	1
+aa37c7cb	acronyms	train	1
+75e4dd58	acronyms	val	1
+5721658b	acronyms	train	1
+03787e6f	acronyms	test	1
+f8e88036	acronyms	val	1
+35a1be4d	acronyms	val	1
+76ad839c	acronyms	train	1
+9d273559	acronyms	test	1
+8dd8bd2d	acronyms	train	1
+613c13d9	acronyms	val	1
+28a8f342	acronyms	train	1
+fc0f44ed	acronyms	val	1
+cedd44e5	acronyms	train	1
+3bbf75db	acronyms	train	1
+195900c8	acronyms	test	1
+4f07b6fa	acronyms	train	1
+57083514	acronyms	train	1
+531145f9	acronyms	test	1
+058f549b	acronyms	train	1
+4559d6ef	acronyms	val	1
+428a9869	acronyms	train	1
+46a2d137	acronyms	train	1
+a807761d	acronyms	test	1
+39ae4b7e	acronyms	train	1
+87a3d22d	acronyms	val	1
+0ae34dc9	acronyms	val	1
+01d08f6c	acronyms	train	1
+9a4fe889	acronyms	train	1
+deaf2693	acronyms	test	1
+50750832	acronyms	train	1
+82efecaa	acronyms	train	1
+f91e05d6	acronyms	train	1
+5c61240c	acronyms	train	1
+b7fe4e7b	acronyms	train	1
+efe7f666	acronyms	train	1
+b1d006eb	acronyms	train	1
+790e17c8	acronyms	val	1
+cc6e7df7	acronyms	train	1
+6a87d5cf	acronyms	test	1
+ba44e5ac	acronyms	test	1
+8d3a2e19	acronyms	train	1
+f88cccce	acronyms	train	1
+3dd79cf0	acronyms	test	1
+1e8fe0c8	acronyms	val	1
+8887df80	acronyms	test	1
+04195841	acronyms	train	1
+03d5be88	acronyms	val	1
+c4e2b6bb	acronyms	train	1
+5a3a254c	acronyms	train	1
+358b0d3f	acronyms	val	1
+74a97f55	acronyms	train	1
+18236076	acronyms	train	1
+d3b24e12	acronyms	train	1
+b0d786a8	colloquial	test	1
+738772d7	colloquial	test	1
+39137832	colloquial	val	1
+9b6f94d7	colloquial	test	1
+faa92daf	colloquial	train	1
+351b7460	colloquial	train	1
+e7c33e62	colloquial	test	1
+bc61dcff	colloquial	train	1
+68f1462e	colloquial	test	1
+6bbbb81c	colloquial	train	1
+52c74222	colloquial	train	1
+c4dcbac1	colloquial	val	1
+7926d6f4	colloquial	train	1
+671932db	colloquial	train	1
+201e31fa	colloquial	train	1
+6388367d	colloquial	train	1
+40a06eae	colloquial	val	1
+ab5769fb	colloquial	train	1
+b89c4292	colloquial	train	1
+70a2d853	colloquial	val	1
+ad46c788	colloquial	train	1
+332613b7	colloquial	val	1
+d882b4bf	colloquial	test	1
+9130b371	colloquial	val	1
+79b011ec	colloquial	train	1
+875faca7	colloquial	train	1
+48ce096e	colloquial	val	1
+0d63d36f	colloquial	train	1
+777f7e2f	colloquial	train	1
+0c71475a	colloquial	train	1
+cf7b6f3c	colloquial	test	1
+1cb82f21	colloquial	train	1
+05f68bc6	colloquial	train	1
+4959654a	colloquial	test	1
+9f08979e	colloquial	test	1
+b97898b0	colloquial	val	1
+f2b55889	colloquial	train	1
+cfb8b6a3	colloquial	train	1
+e471e52b	colloquial	train	1
+911f4767	colloquial	train	1
+c4c6659a	colloquial	train	1
+704303fc	colloquial	train	1
+c9f5c0f6	colloquial	val	1
+ee3027fe	colloquial	train	1
+53059d0c	colloquial	train	1
+9e44dc9d	colloquial	train	1
+76776083	colloquial	train	1
+bd1d58ff	colloquial	val	1
+15dcf8b8	colloquial	val	1
+08a1af84	colloquial	train	1
+d5794e64	colloquial	val	1
+09199712	colloquial	train	1
+164324ad	colloquial	train	1
+f08a884f	colloquial	train	1
+631c7e6e	colloquial	test	1
+98f5f222	colloquial	train	1
+23999d86	colloquial	train	1
+e5e9b36f	colloquial	val	1
+4e613cb2	colloquial	train	1
+1b362dc6	colloquial	train	1
+6fce3177	colloquial	val	1
+155546a3	colloquial	train	1
+dd472aa1	colloquial	train	1
+8cd6421b	colloquial	test	1
+40e9ef80	colloquial	val	1
+8f2de8ae	colloquial	train	1
+1b160601	colloquial	test	1
+4d186757	colloquial	train	1
+d7d1dfcf	colloquial	val	1
+a76c6b86	colloquial	train	1
+f3dbf8b4	colloquial	test	1
+e787d177	colloquial	train	1
+7e0f10ec	colloquial	test	1
+a33f0a54	colloquial	test	1
+9a6f9bb6	colloquial	train	1
+8b1e9a19	colloquial	train	1
+b43f8c7b	colloquial	val	1
+893ca171	colloquial	train	1
+daaaad09	colloquial	test	1
+7af006eb	colloquial	train	1
+13316b5a	colloquial	train	1
+7fc71275	colloquial	val	1
+0751fbbf	colloquial	train	1
+4eb91312	colloquial	test	1
+631dcdcf	colloquial	train	1
+898db212	colloquial	train	1
+8b3f4d6f	colloquial	test	1
+148d1bf0	colloquial	train	1
+7fc15fd9	colloquial	train	1
+7e9699a0	colloquial	test	1
+c49d576a	colloquial	val	1
+3fddc001	colloquial	test	1
+7dc038ae	colloquial	train	1
+2c048cb9	colloquial	test	1
+1778203d	colloquial	test	1
+facb5a73	colloquial	train	1
+279dca1e	colloquial	train	1
+2d27f70e	colloquial	train	1
+0f1d2c48	colloquial	test	1
+82a8a52a	colloquial	train	1
+f50f1a86	colloquial	val	1
+a74b7adf	colloquial	val	1
+9aae5325	colloquial	val	1
+d3f09b67	colloquial	test	1
+0aed3a51	colloquial	train	1
+54494682	colloquial	test	1
+4a31bfe5	colloquial	test	1
+7b1de9e8	colloquial	test	1
+01b7837b	colloquial	train	1
+b9e69119	colloquial	train	1
+2d46085d	colloquial	train	1
+81ae3999	colloquial	train	1
+bb721ad1	colloquial	test	1
+1236742c	colloquial	test	1
+e057c30f	colloquial	train	1
+8a0dbe53	colloquial	val	1
+901e9946	colloquial	test	1
+65f7c21f	colloquial	train	1
+8cfdff45	colloquial	train	1
+1a63431a	colloquial	val	1
+0a60ebb1	colloquial	train	1
+c954f00c	colloquial	train	1
+c6608db2	colloquial	train	1
+213853dd	colloquial	train	1
+d1e3ed27	colloquial	train	1
+400a5850	colloquial	train	1
+b7736a36	colloquial	train	1
+a9f83a9d	colloquial	train	1
+1e296748	colloquial	train	1
+c7a373d3	colloquial	train	1
+2dc7fd87	colloquial	train	1
+35df0491	colloquial	val	1
+5a0b8cfc	colloquial	train	1
+8f2f5370	colloquial	val	1
+81ac64a9	colloquial	train	1
+4020454a	colloquial	val	1
+fce698c2	colloquial	train	1
+f72b9ef6	colloquial	test	1
+512c4f9a	colloquial	train	1
+b5293511	colloquial	train	1
+df10bd8c	colloquial	train	1
+7796dc29	colloquial	test	1
+a038e0b5	colloquial	val	1
+e79cf5bf	colloquial	train	1
+723a5bc7	colloquial	train	1
+e75947df	colloquial	val	1
+0f6a9e78	colloquial	test	1
+cf01996c	colloquial	val	1
+be198b9e	colloquial	test	1
+7aaae1ac	foreign	train	1
+0f9f8f4f	foreign	train	1
+e8b0e455	foreign	train	1
+eaa447c5	foreign	test	1
+dd0356b2	foreign	val	1
+95179f97	foreign	train	1
+3ad43f90	foreign	test	1
+d9fd6f70	foreign	test	1
+c5db7b7e	foreign	train	2
+77efc459	foreign	train	1
+246dbe7e	foreign	train	1
+6de7f3bd	foreign	train	1
+ba8e09e8	foreign	train	1
+a704b394	foreign	train	1
+8e048d10	foreign	train	1
+6f420c10	foreign	test	1
+15a5c0e4	foreign	train	1
+05e10161	foreign	train	1
+947510cc	foreign	train	1
+e6336eb4	foreign	train	1
+41d7f0a6	foreign	train	1
+030a9fc9	foreign	test	1
+06af3eef	foreign	train	1
+fd864e01	foreign	train	1
+90fb3811	foreign	train	1
+6badf2f5	foreign	train	1
+39fad4bb	foreign	train	2
+84ba977a	foreign	train	1
+bcea7b11	foreign	train	1
+7cd24f6d	foreign	train	1
+39a8e1d7	foreign	val	1
+30431b47	foreign	train	1
+c7140779	foreign	val	1
+0f61dcf1	foreign	test	1
+133c9221	foreign	test	1
+df09edf6	foreign	train	1
+009e4c1c	foreign	val	1
+dd37aaf7	foreign	train	1
+9789bce9	foreign	train	1
+c933b9ed	foreign	val	1
+dd776bb5	foreign	train	1
+b1545c97	foreign	train	1
+c753836b	foreign	train	1
+bf93aab9	foreign	train	1
+589dac8c	foreign	train	1
+bb1083c0	foreign	train	1
+b12f3ddd	foreign	train	1
+70fd5bba	foreign	train	1
+203beecb	foreign	train	1
+38c879ee	foreign	train	1
+de4348a1	foreign	train	1
+b706e436	foreign	val	1
+eed5b3fa	foreign	train	1
+ff6f0f79	foreign	val	1
+817786ef	foreign	train	1
+f4cc3b1e	foreign	train	1
+7547e653	foreign	train	1
+2d936387	foreign	train	1
+ca74db9b	foreign	train	1
+5497f0ed	foreign	train	1
+871831e4	foreign	train	1
+d1a67d5d	foreign	train	1
+6e55766f	foreign	train	1
+e21f7183	foreign	train	1
+9c4ada5f	foreign	val	1
+50bed4f8	foreign	test	1
+a772629d	foreign	train	1
+ebef18e9	foreign	train	1
+9e07409e	foreign	val	1
+30285ce3	foreign	train	1
+2e303526	foreign	test	1
+6257dc9b	foreign	train	1
+042dc118	foreign	test	1
+5863d3ec	foreign	train	1
+e3c8c5a9	foreign	train	1
+d5a8b3a1	foreign	val	1
+2d570a38	foreign	test	1
+86a4bd89	foreign	train	1
+3210850a	foreign	test	1
+7dcb248d	foreign	test	1
+30403036	foreign	test	1
+b149af2d	foreign	train	1
+1e7c31c2	foreign	train	1
+650a8c50	foreign	val	1
+ae50d146	foreign	train	1
+4f036e8d	foreign	test	1
+a08c2ce4	foreign	train	2
+a8b2c9d6	foreign	train	1
+5f3dd5e4	foreign	val	1
+dea80b50	foreign	train	1
+c96025b0	foreign	train	1
+851838f6	foreign	train	1
+3de70a6a	foreign	train	1
+7b564635	foreign	val	1
+c5f0ed8b	foreign	train	1
+786dd554	foreign	val	1
+b0fb76fe	foreign	val	1
+1be781f9	foreign	train	1
+1bc5dfea	foreign	val	1
+82dd80f7	foreign	val	1
+50a13a7d	foreign	test	1
+9d297975	foreign	train	1
+e15164f6	foreign	val	1
+b8cc1e78	foreign	train	1
+8508628d	foreign	test	1
+d5cb6aec	foreign	test	1
+ab342f8f	foreign	train	1
+fabdc527	foreign	test	1
+716fe35d	foreign	val	1
+41d02b75	foreign	train	1
+fb859634	foreign	test	1
+a6852dd8	foreign	train	1
+4b6ad09d	foreign	train	1
+66ab82f6	foreign	train	1
+fa3d063f	foreign	test	1
+ccfd9eb0	foreign	test	1
+8125f633	foreign	train	1
+7d93787f	foreign	train	1
+6ab34d1e	foreign	val	1
+04a4fdc9	foreign	train	1
+00048b70	foreign	train	1
+eda3c6a6	foreign	val	1
+b4776cca	foreign	train	1
+5dfb3f27	foreign	train	1
+76d816d6	foreign	val	1
+29813c2c	foreign	train	1
+344dc8ba	foreign	train	1
+dc381391	foreign	val	1
+6b237d79	foreign	train	1
+db186c64	foreign	train	1
+9c61b17d	foreign	train	1
+fe01a46b	foreign	test	1
+b9d3a2a9	foreign	val	1
+331da978	foreign	val	1
+dcc7faa1	foreign	train	2
+c2d9ae06	foreign	val	1
+e784a949	foreign	train	1
+701a4369	foreign	val	1
+b1028ef5	foreign	train	1
+e6d38717	foreign	train	1
+87119420	foreign	train	1
+5b449d59	foreign	train	1
+d441a82c	foreign	val	1
+2f9cae42	foreign	test	1
+781a04b9	foreign	val	1
+c7b1a0ff	foreign	train	1
+9663800e	foreign	test	1
+436a6403	foreign	val	1
+b8627947	foreign	train	1
+f519ecd2	gender	train	1
+f5187c33	gender	train	1
+380c2a76	gender	val	1
+a022413c	gender	val	1
+ca30ef11	gender	train	1
+ba5abac3	gender	val	1
+0dd4e425	gender	val	1
+9a4b63d6	gender	train	1
+d37466bc	gender	train	1
+b6a412f2	gender	train	1
+bc6f36e3	gender	train	1
+2efb5265	gender	val	1
+c64ba4d2	gender	test	1
+61f89757	gender	test	1
+1ac57fb4	gender	train	1
+bee1a0e1	gender	train	1
+20772ac3	gender	test	1
+7f7a62cc	gender	test	1
+7ed8e152	gender	train	1
+4417850b	gender	train	1
+a6899ccc	gender	train	1
+9abed9ed	gender	train	1
+17fad488	gender	train	1
+d578175e	gender	train	1
+515a12b7	gender	train	1
+15c382ac	gender	train	1
+164d9f64	gender	train	1
+c5f6685b	gender	train	1
+c2764cf0	gender	train	1
+4176d7b6	gender	test	1
+631e1d85	gender	test	1
+f0956a03	gender	train	1
+752200f0	gender	train	1
+50cdc734	gender	train	1
+84901f2e	gender	train	1
+fdd70aa1	gender	train	1
+3548c914	gender	train	1
+cca42505	gender	train	1
+8ef4f64d	gender	train	1
+7396a2aa	gender	train	1
+d8bec185	gender	train	1
+4138c590	gender	train	1
+305dc1eb	gender	train	1
+47d13a18	gender	train	1
+50a646aa	gender	train	1
+8b3403b4	gender	train	1
+ea9dc9eb	gender	train	1
+ba698782	gender	train	1
+a1e9cbf6	gender	train	1
+682ac0ba	gender	train	1
+f8f30070	gender	train	1
+367511b3	gender	train	1
+fa35d047	gender	train	1
+eafdcd84	gender	train	1
+ac311c68	gender	train	1
+f390dbfc	gender	test	1
+b2b43f39	gender	train	1
+6804b23e	gender	test	1
+8420191a	gender	train	1
+0146ec91	gender	train	1
+fc04281a	gender	train	1
+1f408f9f	gender	train	1
+1c3b5861	gender	train	1
+4d8e3780	gender	train	1
+ab2eebec	gender	train	1
+cfe60ddd	gender	train	1
+32ab4fca	gender	test	1
+86f1227e	gender	test	1
+0d650e46	gender	train	1
+69ad3c56	gender	test	1
+cd1318ad	gender	test	1
+95d24ceb	gender	train	1
+7fd1e103	gender	train	1
+79d00312	gender	train	1
+a7c4966b	gender	train	1
+f6c870e2	gender	train	1
+8ceeb2b7	gender	train	1
+28773a15	gender	val	1
+a28ef15f	gender	val	1
+81c3edf1	gender	test	1
+1b47b2e9	gender	test	1
+e907dc3a	gender	train	1
+13c0bc13	gender	train	1
+fb4ace4d	gender	train	1
+aebc7783	gender	train	1
+a9ecb5d5	gender	train	1
+84d1bf39	gender	train	1
+a2d1ad28	gender	test	1
+f33bf0c7	gender	test	1
+6f35a6ab	gender	train	1
+1cd997a9	gender	train	1
+2c1dae74	gender	test	1
+b9382a8c	gender	test	1
+05487122	gender	val	1
+04ff29a0	gender	val	1
+caf8c7d4	gender	train	1
+2bcd8314	gender	train	1
+3e1c54e9	gender	test	1
+bee71e10	gender	test	1
+a4375685	gender	val	1
+5af3c90d	gender	val	1
+493446eb	gender	train	1
+d342018f	gender	train	1
+5b89005a	gender	test	1
+e545e67e	gender	test	1
+82aefc81	gender	train	1
+e3773ed4	gender	train	1
+67677590	gender	train	1
+320076f9	gender	train	1
+f8783dc2	gender	train	1
+75a5cb16	gender	train	1
+64723266	gender	train	1
+359c2728	gender	train	1
+aa5f387d	gender	train	1
+e220e681	gender	train	1
+667648dc	gender	test	1
+b884b2a1	gender	test	1
+45334c35	gender	train	1
+60de69d1	gender	train	1
+bc07bbcd	gender	val	1
+adf0abf1	gender	val	1
+9e769b23	gender	train	1
+e54e82cd	gender	train	1
+d3cc4752	gender	train	1
+edf30016	gender	train	1
+6574f2d6	gender	train	1
+4b168c50	gender	train	1
+8a0e51e5	gender	train	1
+e707934b	gender	train	1
+86903a29	gender	train	1
+45e56fc8	gender	train	1
+0c98ea45	gender	train	1
+19348c87	gender	train	1
+dc9b91d5	gender	train	1
+1121b833	gender	train	1
+21532ef6	gender	train	1
+e2426a3e	gender	val	1
+e4fa2066	gender	val	1
+7f53158c	gender	train	1
+17153b5a	gender	train	1
+bfb34925	gender	train	1
+697ca34e	gender	train	1
+fe22cc80	gender	val	1
+2447d428	gender	train	1
+de41d17f	gender	train	1
+ba272f0b	gender	train	1
+e1934a73	gender	val	1
+667859d5	gender	val	1
+e6555136	gender	test	1
+97a52b90	gender	test	1
+222c9203	homographs	test	2
+8c15dd1c	homographs	train	1
+cafdb8c1	homographs	val	1
+b60a536f	homographs	train	1
+f26b9b82	homographs	test	1
+950a090b	homographs	test	1
+dcf9e142	homographs	train	1
+4bba89bf	homographs	val	1
+436e38b1	homographs	test	1
+b2c452e6	homographs	train	1
+3d5fefd3	homographs	val	1
+1d1058aa	homographs	test	1
+8486e743	homographs	train	1
+8ff0589c	homographs	train	1
+2a11a6a0	homographs	train	2
+07c278ae	homographs	val	1
+48754129	homographs	val	1
+a40c704f	homographs	test	2
+f854f1fa	homographs	val	2
+49f804fb	homographs	train	2
+38e512bf	homographs	test	1
+9a27636a	homographs	train	2
+3ebc4faf	homographs	train	1
+d7d49ddd	homographs	train	1
+e11120d3	homographs	train	1
+1bb83848	homographs	test	1
+ea771cec	homographs	test	1
+9e164e28	homographs	train	1
+37e3681d	homographs	train	2
+524bdbbd	homographs	test	2
+670eb90d	homographs	train	1
+e06cde4f	homographs	test	2
+85f778a1	homographs	val	2
+1080cf89	homographs	train	1
+f0503449	homographs	train	2
+ab9eaa14	homographs	val	1
+26155f86	homographs	train	2
+2a091a5f	homographs	train	2
+754e589e	homographs	train	2
+de200882	homographs	train	1
+7ade9d40	homographs	test	1
+792dc897	homographs	train	1
+1fd79e78	homographs	val	2
+9defe9a8	homographs	val	1
+cb7e1df0	homographs	val	1
+fc91165f	homographs	train	2
+715f25c5	homographs	train	1
+79a89eb2	homographs	train	1
+e6ae4b66	homographs	val	2
+0040ddc9	homographs	train	1
+5cbaa48e	homographs	train	1
+3105e19e	homographs	test	1
+85ab93db	homographs	val	1
+48cf65e0	homographs	val	1
+0a769d2e	homographs	val	2
+baec831f	homographs	test	1
+eec9c0a7	homographs	train	2
+944f6c74	homographs	test	1
+ba6c94b6	homographs	train	1
+bad6e6e3	homographs	val	1
+4f8ac9b2	homographs	train	2
+0d91b6ad	homographs	train	1
+6a646037	homographs	test	2
+e3bc3cee	homographs	val	1
+deb39e63	homographs	train	1
+e6f9afe5	homographs	train	1
+a9bbd4b4	homographs	test	1
+2a96d96c	homographs	train	2
+360a0d50	homographs	val	2
+f4b64084	homographs	test	1
+304431d5	homographs	train	1
+47f713f8	homographs	train	1
+7cca7a3a	homographs	train	1
+52e29800	homographs	test	1
+1aab06b6	homographs	train	2
+2c6632d9	homographs	test	2
+fca69297	homographs	train	2
+00f67994	homographs	val	2
+9eb8029f	homographs	train	2
+2fc2cc1b	homographs	val	1
+0c32d71b	homographs	val	2
+f548adc7	homographs	train	2
+44197d90	homographs	train	2
+b69d8eae	homographs	val	2
+85470acd	homographs	train	1
+a274482c	homographs	train	2
+cc7537fb	homographs	val	1
+cdbedd53	homographs	test	1
+ea9ddaa1	homographs	train	1
+485d7588	homographs	val	2
+625d91ac	homographs	train	2
+5b3b1283	homographs	val	2
+7f3cc365	homographs	val	2
+e2ab6163	homographs	val	1
+b50c1a89	homographs	train	1
+4e469a2c	homographs	val	1
+3d3f5d42	homographs	val	1
+a9e72258	homographs	test	2
+46b20777	homographs	test	1
+4121732a	homographs	train	1
+599cc373	homographs	val	1
+25cfd71f	homographs	test	1
+2e399e16	homographs	train	1
+cd92bc85	homographs	val	1
+ee7aa36f	homographs	test	1
+6db6eaac	homographs	test	1
+4ab90a29	homographs	val	1
+375b5211	homographs	train	1
+2b449111	homographs	test	1
+8939b22e	homographs	train	1
+c07ac1ac	homographs	test	1
+8559c368	homographs	test	1
+fa4c77f9	homographs	val	1
+b6476cd6	homographs	val	1
+fe1fa5c0	homographs	train	1
+0315b4f9	homographs	test	1
+8525a401	homographs	test	1
+dcb7f903	homographs	train	1
+946211d0	homographs	val	1
+02f80bcd	homographs	val	1
+4d6bdb4d	homographs	test	2
+99c3e092	homographs	train	2
+d4bda1cc	homographs	train	2
+7ac77baa	homographs	test	2
+86de8e5e	homographs	test	2
+9bb5a03d	homographs	train	2
+46277d19	homographs	train	1
+736fb1c4	homographs	train	1
+623c30a4	homographs	test	1
+67fb4b76	homographs	test	1
+301679cf	homographs	train	2
+b1195b75	homographs	val	1
+40d662e7	homographs	test	2
+51961a13	homographs	train	1
+eb0b9dc0	homographs	test	2
+4e58cd6f	homographs	train	1
+5cc97baf	homographs	val	1
+6230379b	homographs	test	1
+cf07ad33	homographs	train	1
+96294c87	homographs	test	1
+5b35cf23	homographs	train	1
+b5dc75e6	homographs	train	1
+d12e7e4d	homographs	test	1
+fc3f15b9	homographs	train	1
+d37d8bf8	homographs	train	1
+db28b116	homographs	test	1
+fd65a8a7	ilspeech-v2	train	11
+a155f978	minimal stress pairs	val	1
+9c6e4b4b	minimal stress pairs	val	1
+fe177764	minimal stress pairs	val	1
+f4a858a5	minimal stress pairs	train	1
+e42bac1b	minimal stress pairs	train	1
+cd374608	minimal stress pairs	train	1
+18f70ab7	minimal stress pairs	train	1
+22b3cad0	minimal stress pairs	train	1
+9f169203	minimal stress pairs	train	1
+0d6441b2	minimal stress pairs	train	1
+cd67f793	minimal stress pairs	train	1
+5b2cd534	minimal stress pairs	train	1
+57a85cd5	minimal stress pairs	train	1
+ffd41bbb	minimal stress pairs	val	1
+ca098cf7	minimal stress pairs	train	1
+e4207503	minimal stress pairs	train	1
+825d2598	minimal stress pairs	val	1
+38e246d7	minimal stress pairs	test	1
+c47277e2	minimal stress pairs	train	1
+09732224	minimal stress pairs	train	1
+c35f8ce0	minimal stress pairs	train	1
+496b67dc	minimal stress pairs	train	1
+eebcd606	minimal stress pairs	train	1
+fa7ae13a	minimal stress pairs	val	1
+a7b5d4db	minimal stress pairs	test	1
+0c2d1aeb	minimal stress pairs	train	1
+e6b9e2ff	minimal stress pairs	train	1
+011ab0c0	minimal stress pairs	train	1
+70b9a582	minimal stress pairs	train	1
+81369595	minimal stress pairs	train	1
+c60fefe5	minimal stress pairs	train	1
+6aa46f08	minimal stress pairs	train	1
+be9f6b6f	minimal stress pairs	train	1
+c523b420	minimal stress pairs	val	1
+82d8a8bb	minimal stress pairs	test	1
+3a5c3495	minimal stress pairs	test	1
+595ca463	minimal stress pairs	train	1
+b58a8501	minimal stress pairs	train	1
+c02368fc	minimal stress pairs	test	1
+d4941a1f	minimal stress pairs	val	1
+395d3d1f	minimal stress pairs	train	1
+478b7fc6	minimal stress pairs	val	1
+8764168b	minimal stress pairs	val	1
+4ac48ecd	minimal stress pairs	train	1
+3e5f976d	minimal stress pairs	test	1
+d73b0b76	minimal stress pairs	test	1
+6f848e51	minimal stress pairs	train	1
+92edf457	minimal stress pairs	train	1
+78d0aa22	minimal stress pairs	train	1
+f13cea6f	minimal stress pairs	val	1
+c63ef6d1	minimal stress pairs	test	1
+a32ed1d6	minimal stress pairs	test	1
+0b33a870	minimal stress pairs	val	1
+86421822	minimal stress pairs	train	1
+4181b1c8	minimal stress pairs	train	1
+4eff83a5	minimal stress pairs	train	1
+979735b9	minimal stress pairs	train	1
+1cc36106	minimal stress pairs	test	1
+d47d9905	minimal stress pairs	train	1
+7b163a8c	minimal stress pairs	train	1
+43b477e5	minimal stress pairs	train	1
+5042ffd1	minimal stress pairs	test	1
+6ac05d3b	minimal stress pairs	train	1
+5ae7d5ca	minimal stress pairs	train	1
+2aa21b45	minimal stress pairs	train	1
+507bd81e	minimal stress pairs	val	1
+2194be1a	minimal stress pairs	val	1
+b1fb317d	minimal stress pairs	train	1
+320f11fd	minimal stress pairs	val	1
+3d5d400e	minimal stress pairs	train	1
+69f43c79	minimal stress pairs	val	1
+7cbd4809	minimal stress pairs	val	1
+a8eb77db	minimal stress pairs	train	1
+1a248deb	minimal stress pairs	train	1
+d1758131	minimal stress pairs	train	1
+78e166fd	minimal stress pairs	train	1
+5f993dc4	minimal stress pairs	train	1
+ac5684ea	minimal stress pairs	train	1
+90f99335	minimal stress pairs	test	1
+88eba334	minimal stress pairs	train	1
+e86a98c4	minimal stress pairs	train	1
+011cdde2	minimal stress pairs	train	1
+90610ab6	minimal stress pairs	train	1
+b0f1b25a	minimal stress pairs	test	1
+8ee8de61	minimal stress pairs	train	1
+ccc55699	minimal stress pairs	test	1
+3f443456	minimal stress pairs	train	1
+dbf21975	minimal stress pairs	val	1
+87243166	minimal stress pairs	val	1
+95bba133	minimal stress pairs	val	1
+ce5c0735	minimal stress pairs	test	1
+1a19e364	minimal stress pairs	val	1
+2a94ef3b	minimal stress pairs	train	1
+2f64b6a9	minimal stress pairs	test	1
+0999ace7	minimal stress pairs	val	1
+745bfd0b	minimal stress pairs	val	1
+0cff7e45	minimal stress pairs	test	1
+52ce7505	minimal stress pairs	train	1
+3c9406c0	minimal stress pairs	val	1
+928e4e8e	minimal stress pairs	train	1
+58ba67f0	minimal stress pairs	train	1
+87f3fdc8	minimal stress pairs	train	1
+12374a81	minimal stress pairs	train	1
+02cb63d7	minimal stress pairs	train	1
+f33c6238	minimal stress pairs	train	1
+9a5de576	minimal stress pairs	test	1
+f7fe0e91	minimal stress pairs	train	1
+dbacf749	minimal stress pairs	train	1
+7a967518	minimal stress pairs	train	1
+9d3c0202	minimal stress pairs	train	1
+32b1c268	minimal stress pairs	test	1
+fc518df8	minimal stress pairs	val	1
+166f4996	minimal stress pairs	test	1
+35726e0c	minimal stress pairs	val	1
+5dfabc45	minimal stress pairs	train	1
+64c3e737	minimal stress pairs	train	1
+7152f129	minimal stress pairs	train	1
+d308a48a	minimal stress pairs	train	1
+1faf451f	minimal stress pairs	train	1
+0d12b6b4	minimal stress pairs	train	1
+0beeb69c	minimal stress pairs	train	1
+83874335	minimal stress pairs	train	1
+ea342023	minimal stress pairs	train	1
+6aa7f9f6	minimal stress pairs	test	1
+2b18873f	minimal stress pairs	val	1
+725bc3ca	minimal stress pairs	val	1
+d5505585	minimal stress pairs	test	1
+48160e2c	minimal stress pairs	val	1
+5b681a7a	minimal stress pairs	val	1
+1b6b35cf	minimal stress pairs	train	1
+5da10370	minimal stress pairs	train	1
+6dfad7f4	minimal stress pairs	test	1
+ccbee774	minimal stress pairs	train	1
+57b01f8c	minimal stress pairs	test	1
+567e2de2	minimal stress pairs	train	1
+5f1cff0c	minimal stress pairs	train	1
+7c962084	minimal stress pairs	train	1
+5f22d0a6	minimal stress pairs	test	1
+e1107d08	minimal stress pairs	train	1
+9d8ce719	minimal stress pairs	train	1
+84d0d488	minimal stress pairs	train	1
+23c10194	minimal stress pairs	train	1
+fa5c6357	minimal stress pairs	train	1
+de9397ee	minimal stress pairs	val	1
+d68efaaf	minimal stress pairs	train	1
+e6d57e87	minimal stress pairs	val	1
+52435669	minimal stress pairs	train	1
+4467c12c	minimal stress pairs	train	1
+a29972a3	minimal stress pairs	val	1
+85bc51c0	names	val	1
+c411594f	names	train	1
+05ea6eb6	names	train	1
+7bd8eaf8	names	val	1
+56f7e98d	names	test	1
+2f14eb09	names	train	1
+b371d237	names	val	1
+6168a314	names	test	1
+833ab167	names	train	1
+0f66968c	names	train	1
+d7401a9f	names	train	1
+c3fe988f	names	test	1
+45cce6cd	names	val	1
+4d62500d	names	val	1
+0ce46f29	names	train	1
+7e7a583c	names	train	1
+7080c98f	names	val	1
+5eb49760	names	train	1
+d66427c4	names	test	1
+85b74efb	names	train	1
+391d9b9c	names	train	1
+a4194152	names	train	1
+97444747	names	train	1
+f63c2833	names	test	1
+6298c73c	names	train	1
+6fd1dfdb	names	train	1
+c4ae899d	names	test	1
+b17ef3fc	names	test	1
+beab7a9e	names	train	1
+bfed9e75	names	test	1
+6090bfe0	names	train	1
+c95c9691	names	train	1
+6b8e9877	names	train	1
+d9d3511f	names	val	1
+5e561ce4	names	test	1
+f608341e	names	test	1
+fd777090	names	test	1
+3798a3f6	names	train	1
+75044de8	names	val	1
+ec359480	names	train	1
+5ecd29f0	names	val	1
+45f531f8	names	train	1
+f009cfd8	names	val	1
+19a69063	names	train	1
+7b7d2e55	names	val	1
+f2afe66e	names	train	1
+6130579c	names	train	1
+587a1038	names	train	1
+ac265a52	names	val	1
+f955b601	names	train	1
+eb942c90	names	train	1
+663fd2fd	names	train	1
+43142d56	names	train	1
+e4923aa2	names	train	1
+4fafd5c7	names	train	1
+34a3c7e7	names	train	1
+311eb871	names	test	1
+ce59133e	names	train	1
+043e01d8	names	train	1
+8778bdf5	names	test	1
+16b015a9	names	val	1
+23e62e61	names	train	1
+8aef8b78	names	val	1
+e6ae7bfe	names	val	1
+f9ea48c8	names	train	1
+8004180b	names	train	1
+4b02c499	names	train	1
+9af67fa9	names	train	1
+32c221b3	names	test	1
+00f57b58	names	train	1
+06056400	names	train	1
+6f6f8206	names	test	1
+bebf2014	names	test	1
+86f58e96	names	test	1
+59f422cc	names	train	1
+72eb0c05	names	train	1
+0d887c82	names	test	1
+908d83af	names	test	1
+187c8df8	names	train	1
+8147f253	names	val	1
+fb34251a	names	train	1
+c20db74b	names	val	1
+9e35e733	names	train	1
+74873b1b	names	test	1
+c5990874	names	test	1
+90485e2e	names	train	1
+3928eaad	names	train	1
+fa2866fd	names	train	1
+e2d878b3	names	train	1
+7cc53d2a	names	train	1
+a1be633d	names	val	1
+697c8ca2	names	train	1
+b5f2b663	names	train	1
+838ef3ef	names	test	1
+e051a6f0	names	val	1
+7d7195e4	names	train	1
+1e7ef878	names	train	1
+bebb071b	names	test	1
+e414274d	names	train	1
+2bf342e9	names	train	1
+b4e293f6	names	train	1
+cce52bcc	names	train	1
+59315a62	names	test	1
+fe57771f	names	train	1
+fca114db	names	train	1
+247b081f	names	train	1
+f8386f1d	names	train	1
+b085ef2c	names	test	1
+df54e46f	names	train	1
+c5d0951f	names	train	1
+dc5c6935	names	val	1
+e8c93fde	names	val	1
+5b8a0b8c	names	val	1
+f5dc20e7	names	val	1
+a50f6735	names	train	1
+5f775331	names	val	1
+de084400	names	train	1
+827fc064	names	val	1
+30cc98c6	names	train	1
+ca696679	names	train	1
+345cab2a	names	train	1
+4c6e003e	names	train	1
+1c164574	names	train	1
+19f0531d	names	train	1
+ee8130d7	names	train	1
+60e4bb08	names	train	1
+e461b2c0	names	val	1
+f4efb9fd	names	train	1
+43633959	names	val	1
+1de43850	names	val	1
+d9cefa6a	names	train	1
+0216f117	names	val	1
+82a0b790	names	train	1
+7b19813c	names	train	1
+8547e8de	names	train	1
+1ff7b4b5	names	train	1
+e52c2f75	names	train	1
+66de1da6	names	train	1
+3ac52891	names	train	1
+d0be84b4	names	train	1
+454b23bd	names	train	1
+fa728333	names	train	1
+226c130b	names	train	1
+3b561f53	names	train	1
+3a280c27	names	test	1
+7f39049a	names	train	1
+40ff97e7	names	train	1
+ae2f682a	names	train	1
+f7789b66	names	train	1
+47ceae25	names	train	1
+03c11411	penultimate stress	train	1
+7ba13838	penultimate stress	test	1
+da560c20	penultimate stress	train	1
+4ab268be	penultimate stress	train	1
+46394510	penultimate stress	train	1
+aa6e1f0f	penultimate stress	val	1
+ef7200b9	penultimate stress	val	1
+40249a09	penultimate stress	test	1
+d522f325	penultimate stress	train	1
+173a6436	penultimate stress	train	1
+64c0b72b	penultimate stress	train	1
+a2b25858	penultimate stress	test	1
+24e970b2	penultimate stress	val	1
+e35e72e3	penultimate stress	test	1
+29cbbd18	penultimate stress	val	1
+f26f12a1	penultimate stress	test	1
+57500b93	penultimate stress	train	1
+cf9b2c2c	penultimate stress	train	1
+e1dce83b	penultimate stress	train	1
+6afafee4	penultimate stress	train	1
+aa145cba	penultimate stress	train	1
+d8d366b8	penultimate stress	test	1
+68663975	penultimate stress	val	1
+ddbcdf64	penultimate stress	train	1
+fc0aeae2	penultimate stress	val	1
+0424c83b	penultimate stress	test	1
+723fee9a	penultimate stress	test	1
+aec4ac6b	penultimate stress	train	1
+357052bb	penultimate stress	train	1
+98e61ae0	penultimate stress	val	1
+4e1b6a15	penultimate stress	train	1
+02ca2fb9	penultimate stress	train	1
+910ee4ef	penultimate stress	test	1
+3b9a3c46	penultimate stress	val	1
+379cedc7	penultimate stress	train	1
+6a1cdbad	penultimate stress	test	1
+36d1db2f	penultimate stress	test	1
+d9e37d52	penultimate stress	test	1
+d0e1fe9c	penultimate stress	train	1
+834ab741	penultimate stress	train	1
+01d6ed4e	penultimate stress	train	1
+90ce5fb9	penultimate stress	train	1
+fec28258	penultimate stress	test	1
+238b4931	penultimate stress	train	1
+877afb49	penultimate stress	train	1
+6489c020	penultimate stress	test	1
+609bdc4e	penultimate stress	val	1
+2a824107	penultimate stress	val	1
+c6697055	penultimate stress	train	1
+b6534d71	penultimate stress	test	1
+eebd6ad4	penultimate stress	train	1
+658e09f0	penultimate stress	train	1
+6b4589c4	penultimate stress	train	1
+212f1db9	penultimate stress	train	1
+03877645	penultimate stress	val	1
+7217a4e7	penultimate stress	test	1
+e25f9813	penultimate stress	train	1
+56cff568	penultimate stress	train	1
+46c77a1f	penultimate stress	train	1
+7db91e87	penultimate stress	train	1
+2373b418	penultimate stress	test	1
+e3527e51	penultimate stress	train	1
+ba403a90	penultimate stress	train	1
+c5f21649	penultimate stress	train	1
+e3806ba6	penultimate stress	train	1
+90151e5f	penultimate stress	train	1
+7f498a06	penultimate stress	train	1
+cca935bb	penultimate stress	train	1
+42746014	penultimate stress	train	1
+76dc81f7	penultimate stress	train	1
+153c1636	penultimate stress	val	1
+8566e0e6	penultimate stress	val	1
+c8fb44fd	penultimate stress	train	1
+3cdaee0b	penultimate stress	train	1
+a991a31b	penultimate stress	train	1
+e1258e38	penultimate stress	val	1
+3005b39c	penultimate stress	test	1
+858788af	penultimate stress	val	1
+1015fbdf	penultimate stress	train	1
+1c1e8152	penultimate stress	train	1
+05ee5588	penultimate stress	val	1
+6f57a403	penultimate stress	train	1
+a28e658b	penultimate stress	train	1
+5a0360f5	penultimate stress	test	1
+4a57ba6b	penultimate stress	val	1
+9c1ec706	penultimate stress	train	1
+f9b3ffdc	penultimate stress	train	1
+079fa066	penultimate stress	train	1
+57f7932a	penultimate stress	train	1
+1ba013e6	penultimate stress	train	1
+ed057f38	penultimate stress	train	1
+bca133e9	penultimate stress	train	1
+9f74f43d	penultimate stress	val	1
+8806ab30	penultimate stress	train	1
+1d24a7c2	penultimate stress	train	1
+89664b10	penultimate stress	train	1
+a8f8b0ca	penultimate stress	train	1
+bd1aa0bc	penultimate stress	train	1
+747d548a	penultimate stress	test	1
+e85a98ee	penultimate stress	train	1
+9f6676e1	penultimate stress	val	1
+2cd2607e	penultimate stress	train	1
+7025672b	penultimate stress	train	1
+e615abdf	penultimate stress	train	1
+1f70fe1f	penultimate stress	train	1
+597dab85	penultimate stress	train	1
+925971d0	penultimate stress	train	1
+68a46204	penultimate stress	train	1
+60c105c0	penultimate stress	train	1
+5ce2a1a4	penultimate stress	val	1
+1dd16289	penultimate stress	train	1
+9f0366ce	penultimate stress	test	1
+3599afe5	penultimate stress	train	1
+e18d250d	penultimate stress	test	1
+db0d2bfd	penultimate stress	train	1
+95bc90e1	penultimate stress	train	1
+ff4fc147	penultimate stress	train	1
+09b65bce	penultimate stress	val	1
+a8d799ed	penultimate stress	train	1
+94052bb7	penultimate stress	test	1
+c6ce9fc1	penultimate stress	val	1
+daaf82d6	penultimate stress	train	1
+c22d28d1	penultimate stress	train	1
+bba9cdb9	penultimate stress	val	1
+24fe3f08	penultimate stress	train	1
+2be8a44b	penultimate stress	train	1
+16b22113	penultimate stress	test	1
+20396ba7	penultimate stress	train	1
+427b73c6	penultimate stress	train	1
+7193fc89	penultimate stress	val	1
+647fd033	penultimate stress	train	1
+ca484649	penultimate stress	val	1
+ae7cd297	penultimate stress	train	1
+5637190e	penultimate stress	train	1
+75ef7128	penultimate stress	test	1
+2d5b680d	penultimate stress	train	1
+3139698a	penultimate stress	val	1
+af7362f1	penultimate stress	test	1
+2b5ae434	penultimate stress	train	1
+5a3e0962	penultimate stress	train	1
+ae3123d3	penultimate stress	test	1
+426038c0	penultimate stress	train	1
+27c19663	penultimate stress	test	1
+f81aeff3	penultimate stress	val	1
+abc78460	penultimate stress	test	1
+7bad9b11	penultimate stress	test	1
+9023b15b	penultimate stress	train	1
+f82b8981	penultimate stress	train	1
+4411a74e	penultimate stress	test	1
+0e400790	rare phonemes	test	1
+554c5b71	rare phonemes	train	1
+9c7fc233	rare phonemes	train	1
+9cadde41	rare phonemes	train	1
+129eeb78	rare phonemes	test	1
+57a82327	rare phonemes	train	1
+64790d49	rare phonemes	test	1
+bf80dcf3	rare phonemes	test	1
+85a07215	rare phonemes	train	1
+e15d5023	rare phonemes	train	1
+8b5d993f	rare phonemes	train	1
+a4072699	rare phonemes	val	1
+7eb58554	rare phonemes	val	1
+b97ecc39	rare phonemes	train	1
+da26d7fe	rare phonemes	test	1
+d435424e	rare phonemes	train	1
+17d0e42e	rare phonemes	test	1
+66332f28	rare phonemes	val	1
+a7a74c08	rare phonemes	train	1
+9def7e97	rare phonemes	train	1
+beb6a341	rare phonemes	train	1
+80c4ca56	rare phonemes	train	1
+999509c4	rare phonemes	test	1
+5b408341	rare phonemes	train	1
+089af9e5	rare phonemes	train	1
+c233a66c	rare phonemes	val	1
+0ffe3508	rare phonemes	train	1
+84a3191a	rare phonemes	train	1
+367191ee	rare phonemes	val	1
+7fd53eda	rare phonemes	test	1
+96d9f2ce	rare phonemes	train	1
+d9475aa7	rare phonemes	val	1
+02192481	rare phonemes	val	1
+3da9ae0f	rare phonemes	train	1
+ea98fcf7	rare phonemes	val	1
+26aed505	rare phonemes	train	1
+70e43e57	rare phonemes	train	1
+2f01ef09	rare phonemes	train	1
+76401ee1	rare phonemes	train	1
+ed3b9d64	rare phonemes	test	1
+6e9a57cb	rare phonemes	train	1
+a97040b0	rare phonemes	train	1
+bf38db9c	rare phonemes	train	1
+b6285803	rare phonemes	train	1
+3d41c345	rare phonemes	train	1
+efd3d0e3	rare phonemes	train	1
+ed40b012	rare phonemes	val	1
+d7fdf1ec	rare phonemes	train	1
+ab677b67	rare phonemes	val	1
+186c32b7	rare phonemes	test	1
+1e5b28bc	rare phonemes	val	1
+444982ba	rare phonemes	train	1
+e70439c2	rare phonemes	val	1
+21d4d350	rare phonemes	val	1
+34f448fd	rare phonemes	train	1
+622136b7	rare phonemes	val	1
+7b945969	rare phonemes	train	1
+5274c4e4	rare phonemes	test	1
+7dcb866e	rare phonemes	test	1
+35c18442	rare phonemes	val	1
+2cf0126d	rare phonemes	train	1
+3efeede0	rare phonemes	train	1
+1420ff48	rare phonemes	train	1
+6ce025e9	rare phonemes	test	1
+980eb583	rare phonemes	train	1
+40a76b45	rare phonemes	train	1
+8c58c325	rare phonemes	train	1
+7066b94e	rare phonemes	val	1
+5e3750bf	rare phonemes	train	1
+dad6f679	rare phonemes	val	1
+fa184765	rare phonemes	train	1
+fcc481f4	rare phonemes	train	1
+fdb5c331	rare phonemes	train	1
+f665f73c	rare phonemes	train	1
+1af5695d	rare phonemes	train	1
+1283a4df	rare phonemes	test	1
+5f181bc0	rare phonemes	train	1
+62d7f30c	rare phonemes	test	1
+eaaf849b	rare phonemes	train	1
+fc3c65a4	rare phonemes	train	1
+d84b1907	rare phonemes	val	1
+28fb1ef3	rare phonemes	train	1
+eab49698	rare phonemes	train	1
+e03605c9	rare phonemes	train	1
+2e8a8e5a	rare phonemes	train	1
+6e851db9	rare phonemes	train	1
+3542e3e3	rare phonemes	val	1
+1db20417	rare phonemes	train	1
+cbfef11e	rare phonemes	train	1
+c08a58ea	rare phonemes	train	1
+c560504e	rare phonemes	train	1
+216b3e29	rare phonemes	test	1
+450ca8ed	rare phonemes	test	1
+8613dee0	rare phonemes	test	1
+a29199fb	rare phonemes	train	1
+cecc444e	rare phonemes	train	1
+ef3114ac	rare phonemes	val	1
+45dedd29	rare phonemes	train	1
+3453b4be	rare phonemes	val	1
+d1f9db71	rare phonemes	train	1
+a9e66410	rare phonemes	train	1
+7375a713	rare phonemes	train	1
+517369e9	rare phonemes	test	1
+ba139fc7	rare phonemes	test	1
+c25ca243	rare phonemes	train	1
+704f4dfa	rare phonemes	train	1
+1bd07fa8	rare phonemes	val	1
+79c41d4c	rare phonemes	train	1
+6b5f8500	rare phonemes	train	1
+1b35868e	rare phonemes	train	1
+5ea04eb5	rare phonemes	train	1
+33f9e0e9	rare phonemes	train	1
+b4c37588	rare phonemes	train	1
+50c1b7ba	rare phonemes	train	1
+44fc0ea9	rare phonemes	train	1
+6d27dfc3	rare phonemes	train	1
+4ede223d	rare phonemes	test	1
+11a944eb	rare phonemes	val	1
+4db1ae38	rare phonemes	train	1
+5c2e015e	rare phonemes	train	1
+d56d4cb8	rare phonemes	train	1
+0e944413	rare phonemes	train	1
+fe34ee63	rare phonemes	train	1
+e4bd74b4	rare phonemes	val	1
+ccf31921	rare phonemes	train	1
+428f98f0	rare phonemes	test	1
+14e13d61	rare phonemes	train	1
+78590d3b	rare phonemes	train	1
+b5ed521b	rare phonemes	train	1
+babf2877	rare phonemes	test	1
+65fa0bad	rare phonemes	train	1
+2e48ca04	rare phonemes	train	1
+6a1bc017	rare phonemes	test	1
+f3880443	rare phonemes	val	1
+7c64e88e	rare phonemes	train	1
+eba0ecc0	rare phonemes	train	1
+4bf0aa0c	rare phonemes	train	1
+b1903937	rare phonemes	train	1
+49df051a	rare phonemes	test	1
+d7536bb8	rare phonemes	val	1
+2495e312	rare phonemes	train	1
+5013d098	rare phonemes	train	1
+f80ab3e2	rare phonemes	train	1
+685f2e0d	rare phonemes	train	1
+1679077e	rare phonemes	test	1
+61ae0bb8	rare phonemes	train	1
+74bbd8a8	rare phonemes	test	1
+e12d9c33	rare phonemes	train	1
+56af0a83	rare phonemes	train	1
+9674bf4e	slang	train	1
+2508e14d	slang	train	1
+d113b326	slang	train	1
+c19fb892	slang	train	1
+f12c0e9b	slang	train	1
+70cef9e4	slang	test	1
+1322ffc4	slang	train	1
+026051d3	slang	val	1
+084c8920	slang	test	1
+cb27ee30	slang	train	1
+da991c62	slang	test	1
+7d1fa9fb	slang	train	1
+2c42966e	slang	val	1
+89fd0207	slang	train	1
+23f570d2	slang	train	1
+f0dcc756	slang	val	1
+c10e2ca3	slang	train	1
+afe22346	slang	val	1
+240a0cb3	slang	val	1
+0dca2066	slang	val	1
+64636dd3	slang	train	1
+6d54e3be	slang	train	1
+41309d2b	slang	val	1
+48f97a6a	slang	test	1
+3d094c17	slang	train	1
+9ba968c6	slang	train	1
+88f42563	slang	train	1
+3b48d4ec	slang	train	1
+fd6631d6	slang	val	1
+acb2ed14	slang	train	1
+606036a7	slang	train	1
+403af99a	slang	val	1
+e28ed886	slang	val	1
+c6ebdcc1	slang	test	1
+ae0d5d98	slang	train	1
+14760011	slang	train	1
+01bcfe9a	slang	train	1
+6addcaf6	slang	val	1
+a1a0ba60	slang	train	1
+7e516754	slang	test	1
+38cab912	slang	val	1
+0daab350	slang	test	1
+19b35552	slang	train	1
+a6ee4517	slang	val	1
+502c63ab	slang	train	1
+9f9aa152	slang	val	1
+a6725d93	slang	val	1
+174d50c7	slang	test	1
+c661da23	slang	train	1
+832ea845	slang	train	1
+b6df6ad7	slang	train	1
+d0fd69c6	slang	train	1
+28d8b6da	slang	val	1
+6e1b4557	slang	test	1
+a4fe2a20	slang	train	1
+97cba7e9	slang	train	1
+9008c726	slang	train	1
+d3370309	slang	val	1
+47990d21	slang	train	1
+d71fd2d1	slang	train	1
+4fdd92a8	slang	train	1
+f464ee12	slang	val	1
+a18e19ff	slang	train	1
+2dc43fa5	slang	train	1
+4e239d29	slang	val	1
+f4c51f98	slang	train	1
+096a55ab	slang	test	1
+1ed2fa01	slang	train	1
+4ed1eaab	slang	val	1
+1efca9bd	slang	val	1
+e779e2a4	slang	train	1
+4995f8ce	slang	train	1
+1ab7379a	slang	test	1
+44b1a38b	slang	val	1
+7ec8ad7e	slang	train	1
+32782781	slang	train	1
+b2020387	slang	train	1
+b93d2694	slang	train	1
+9ba15986	slang	val	1
+6909a77a	slang	train	1
+4a2690de	slang	train	1
+51fbd6a6	slang	val	1
+05417aba	slang	train	1
+9580c139	slang	test	1
+708d099d	slang	test	1
+e9f0ef54	slang	train	1
+6e8bd209	slang	train	1
+7da5ec12	slang	train	1
+d7d9bc8c	slang	train	1
+2c1bb1ab	slang	train	1
+a827f0e2	slang	val	1
+fee09d5c	slang	test	1
+36eb5ea0	slang	val	1
+6e1d810e	slang	train	1
+a856a5d4	slang	train	1
+b8152ee1	slang	train	1
+e70ec234	slang	val	2
+e55e443d	slang	train	2
+29cfb575	slang	train	1
+633685a7	slang	train	1
+63e41d1e	slang	train	1
+d28db13b	slang	test	1
+d90ba735	slang	train	1
+3c1feeba	slang	test	1
+c194e4bc	slang	train	1
+2f2d80d3	slang	test	1
+3fc419b9	slang	train	1
+b7250a6b	slang	train	1
+2d73ea74	slang	train	1
+27e34f24	slang	train	1
+6dd65eb8	slang	train	1
+0962514a	slang	train	1
+2b2a4d94	slang	val	1
+e67c8f6c	slang	val	1
+7c7c8743	slang	test	1
+925f8817	slang	train	1
+61a0c1b1	slang	train	1
+fc9e5dac	slang	train	1
+552837e1	slang	test	1
+ea60c0f1	slang	val	1
+6cb2cd58	slang	val	1
+ab8ff072	slang	train	1
+1cdfa7a5	slang	train	1
+32d73162	slang	train	1
+7c3790e1	slang	train	1
+54e5e45d	slang	train	1
+90694769	slang	test	1
+12a04465	slang	train	1
+64be5541	slang	test	1
+0d304199	slang	train	1
+ac0d3bb0	slang	train	1
+b5089634	slang	test	1
+a2b1d3f5	slang	train	1
+f87aa04a	slang	val	1
+37cdbbcb	slang	val	1
+9aa2a6e1	slang	train	1
+9d43c403	slang	test	1
+ebcdd9b9	slang	val	1
+9af8c156	slang	train	1
+748ffbac	slang	test	1
+8541c8bd	slang	train	1
+0cfe8727	slang	val	1
+a6b665c7	slang	val	1
+ad67dc5f	slang	train	1
+6be6ad0c	slang	val	1
+373e47bd	slang	val	1
+36715188	slang	val	1
+59b1fa5e	slang	test	1
