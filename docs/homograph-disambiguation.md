@@ -135,3 +135,55 @@ is the cheap one: twenty sentences per sense, held out properly, and the same pr
 seven homographs rather than `ספר` alone.
 
 Rerun with `hebrew_training/probe_sense.py`.
+
+---
+
+# Two encoders at the front: how often do they disagree?
+
+Measured 2026-11-05 with `hebrew_training/sense_disagreement.py` over
+`hebrew_training/sense_anchors_he.json` — 42 anchor decisions scored leave-one-out plus the
+9 eval-set sentences, 51 word-sense decisions in all, each a two-way choice.
+
+The architecture question behind it: with two semantic encoders feeding the model, a learned
+gate only earns its parameters if the two disagree *and* neither is uniformly right. If they
+agree everywhere there is nothing to gate. If one wins every disagreement, the gate learns a
+constant and you should have dropped the other model.
+
+    A = dicta-il/dictabert-large        (wordpiece)
+    B = dicta-il/dictabert-large-char   (character)
+
+                       anchors (42)   tests (9)   all (51)
+      A correct           41            8           49  (96%)
+      B correct           23            6           29  (57%)
+      agree               24 (57%)      7 (78%)     31  (61%)
+      DISAGREE            18 (43%)      2 (22%)     20  (39%)
+        A right              18            2           20
+        B right               0            0            0
+      oracle gate         41            8           49  (96%)
+
+## There is nothing to gate
+
+They disagree on **39%** of decisions, far more than the 10% the question assumed. But the
+split is **20–0**: on every single disagreement the wordpiece model is right and the
+character model is wrong. B scores 57% on a two-way choice, which is a coin flip with a
+limp.
+
+The oracle row is the point. A gate that resolved every disagreement perfectly would score
+49 of 51 — exactly what A scores alone. **The headroom is zero.** Any gate trained on this
+signal converges to "always A", which is a constant, which is not a gate.
+
+## What this does not say
+
+It does not say drop the character model. It says the character model carries no word-sense
+signal, which is unsurprising: it was trained to place nikud, not to tell a barber from a
+book. The case for keeping two encoders rests on a task where B wins, and this measurement
+found none — because it only asked one kind of question.
+
+So the next measurement is the one that would justify the architecture: a decision where the
+character model should dominate — vocalized spelling, a word the wordpiece vocabulary has to
+break into pieces, a name. If B never wins anywhere, one encoder is the answer and the
+residual should carry A alone.
+
+Two limits worth keeping in view: 51 decisions is small, and the anchor sentences are mine,
+so they are clean in a way real text is not. And if the two encoders actually wired into the
+model are a different pair, rerun with `--models` — nothing here is specific to these two.
