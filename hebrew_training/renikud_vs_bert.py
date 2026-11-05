@@ -32,6 +32,9 @@ RULES = {
     "boker": [("bˈoke", "morning"), ("bokˈe", "cowboy")],
     "dover": [("dub", "discussed"), ("dovˈe", "spokesman")],
     "melech": [("malˈa", "reigned"), ("mˈele", "king")],
+    "sefer_bare": [("sap", "barber"), ("ef", "book")],
+    "lamore": [("ʁˈa", "feminine"), ("ʁˈe", "masculine")],
+    "boker_bare": [("bˈoke", "morning"), ("bokˈe", "cowboy")],
 }
 
 folder, anchors_path, out_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
@@ -142,6 +145,17 @@ for word in data:
         f"  {word:8s} {sum(r['bert'] == r['truth'] for r in group)}/{len(group)}"
         f"   {sum(r['renikud'] == r['truth'] for r in group)}/{len(group)}"
     )
+
+lines.append("\nPER WORD on the validation sentences:")
+for r in rows:
+    if r["kind"] != "test":
+        continue
+    a_ok = "   " if r["bert"] == r["truth"] else " X "
+    b_ok = "   " if r["renikud"] == r["truth"] else " X "
+    lines.append(
+        f"  truth={r['truth']:11s} dictabert={r['bert']:11s}{a_ok}renikud={r['renikud']:11s}{b_ok}"
+    )
+    lines.append(f"      {r['text']}")
 
 lines.append("\ndisagreements:")
 for r in rows:
