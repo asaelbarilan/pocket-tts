@@ -253,3 +253,53 @@ fifty, the residual should carry DictaBERT alone.
 Rerunning needs `renikud_onnx.py` and `model.onnx`, which are not in this repo: take the
 helper from `niobures/ReNikud` (`models/renikud-plus/renikud_onnx.py`) and the model from
 `renikud/renikud`, put both in one folder, and pass that folder as the first argument.
+
+---
+
+# ReNikud over the whole validation set, not just the homographs
+
+The comparison above used seven sentences. This is all forty, `hebrew_training/renikud_eval_set.py`.
+There is no gold IPA for the other six categories, so these are not scored — they are read,
+and three of the categories say something without needing a score.
+
+      plain                   6/6   clean
+      nikud                   0/6   BROKEN -- raw Hebrew survives into the IPA
+      latin_in_hebrew         6/6   Latin passes through untouched
+      english                 4/4   passes through untouched, nothing is phonemized
+      loanword_hebrew_script  5/5   clean
+      numbers                 6/6   expanded correctly, and well
+      homograph               7/7   clean, scored above
+
+## It cannot take vocalized Hebrew
+
+Every one of the six nikud sentences comes back with the diacritics still embedded in the
+output string:
+
+    in   אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה.
+    ipa  ʔaֲnִˈi ʁoֹtsָa leָlֶχֶt haַbeַּiְtָˈa, tּuֹdָa ʁeַbaָּa.
+
+The nikud characters pass through as raw combining marks between the phonemes. This is not
+a wrong pronunciation, it is a broken string, and it would reach the TTS as one. The model
+card does say *unvocalized* Hebrew, so this is documented rather than surprising — but it
+is a hard constraint on where ReNikud can sit in the pipeline. Anything upstream that adds
+nikud, including the DictaBERT diacritizer, must not feed it.
+
+Strip the nikud before calling it, and the sentence is handled normally.
+
+## Numbers are its strongest category
+
+    בשנת 1948, בשעה 14:30, עלה השיעור ב-2.5 אחוזים.
+    beʃnˈat ʔˈelef tʃˈa meʔˈot ʔaʁbaʔˈim veʃmˈone, beʃaʔˈa ʃtˈajim vaχˈetsi, ʔalˈa haʃiʔˈuʁ
+    beʃnˈajim vaχˈetsi ʔaχuzˈim
+
+1948 read as a year, 14:30 as half past two, 2.5 as two and a half, and a phone number read
+digit by digit. That is a hand-written Hebrew number front end inside `renikud_onnx.py`
+(`expand_year`, `expand_time`, `cardinal`, `noun_gender`), not the neural model — and it is
+reusable on its own, whatever is decided about ReNikud.
+
+## English is left alone
+
+`The quick brown fox jumps over the lazy dog.` comes back identical, and `ב-Microsoft`
+becomes `be-Microsoft`. ReNikud phonemizes Hebrew and passes everything else through, so
+English reaches the TTS as Latin text. Whether that is right depends on what the model is
+trained to read, but it is not ReNikud's problem to solve and it will not solve it.
