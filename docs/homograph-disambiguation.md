@@ -187,3 +187,69 @@ residual should carry A alone.
 Two limits worth keeping in view: 51 decisions is small, and the anchor sentences are mine,
 so they are clean in a way real text is not. And if the two encoders actually wired into the
 model are a different pair, rerun with `--models` — nothing here is specific to these two.
+
+---
+
+# ReNikud against DictaBERT-large
+
+Measured 2026-11-05, `hebrew_training/renikud_vs_bert.py`, same 51 decisions.
+
+`renikud/renikud` is grapheme-to-phoneme, not an encoder: it emits IPA, so the
+pronunciation it gives the ambiguous word *is* the reading it chose. It needs no anchors and
+gets none, while the DictaBERT probe is handed three labelled sentences per sense. ReNikud
+is therefore playing on harder terms.
+
+                       anchors (42)   tests (9)   all (51)
+      A  dictabert-large   41           8          49  (96%)
+      B  renikud           33           8          41  (80%)
+      agree                32 (76%)     7 (78%)    39  (76%)
+      DISAGREE             10 (24%)     2 (22%)    12  (24%)
+        A right             9           1          10
+        B right             1           1           2
+        neither             0           0           0
+      oracle gate          42/42       9/9         51  (100%)
+
+## This is a different answer from the character model
+
+The char model lost every disagreement 20–0 and left no headroom. ReNikud wins two, and an
+oracle gate reaches **51/51 against DictaBERT's 49** — so a combiner has something to buy
+here, which it did not before. The disagreement rate, 24%, is also near the 10% the question
+assumed rather than the char model's 39%.
+
+Both of ReNikud's wins are worth looking at individually, because they are not the same kind
+of event:
+
+- `המורה שלי אמר שהמבחן נדחה` — masculine, and DictaBERT said feminine. This is a real win:
+  the sentence differs from its feminine twin by one letter, `אמר` against `אמרה`, and
+  ReNikud read it.
+- `בוקר טוב, אמר הבוקר לפרות שלו ברפת` — cowboy, and DictaBERT said morning. **This one is
+  luck.** ReNikud answers `habokˈeʁ` for every single `הבוקר` in the set, including all three
+  sentences that mean *this morning*. It was right here by having one fixed answer that
+  happened to match.
+
+## Where ReNikud fails, it fails flatly
+
+Per homograph, correct out of all its decisions:
+
+      sefer 6/7   rotze 7/8   ochel 7/7   more 6/7   dover 8/8   boker 4/7   melech 3/7
+
+`dover` is perfect, including *dover* against *dubar* four words apart. But `melech` returns
+`mˈeleχ` for all seven sentences and never once produces the verb `malˈaχ`, and `boker`
+returns `habokˈeʁ` for all seven. Those are not mistakes of context — the word has one
+answer and context cannot move it. Two of seven homographs are simply fixed.
+
+## What to do with it
+
+The honest size of the prize is two decisions out of fifty-one, and one of those is a
+coin that landed well. That is real but far too thin to justify a gate on, and far too thin
+to train one: a gate has to learn *when* ReNikud is right, and there is one genuine example
+of that in the whole set.
+
+So the next step is not architecture, it is more decisions — the same probe over enough
+homographs that "B wins" has a shape a gate could fit. If ReNikud's wins stay concentrated
+in cases DictaBERT misses for a reason, the gate is worth building; if they stay at one in
+fifty, the residual should carry DictaBERT alone.
+
+Rerunning needs `renikud_onnx.py` and `model.onnx`, which are not in this repo: take the
+helper from `niobures/ReNikud` (`models/renikud-plus/renikud_onnx.py`) and the model from
+`renikud/renikud`, put both in one folder, and pass that folder as the first argument.
