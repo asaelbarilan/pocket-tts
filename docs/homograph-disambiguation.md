@@ -327,3 +327,27 @@ So the rule is not "strip and proceed". It is: **keep the unvocalized ktiv-male 
 send ReNikud that**. Nikud is for the models that want it; ReNikud wants the ordinary
 spelling, and anything that has been through a diacritizer is the wrong input even after
 the marks come off.
+
+## Correction: vocalized sentences are out of the comparison
+
+The two sections above are kept because they are the reason for this one, not because they
+are results. Running ReNikud on vocalized text was the wrong test and the strip-then-run
+advice was wrong with it.
+
+ReNikud's job is to work out vowels that are not written. A sentence that already carries
+nikud has them written down, so there is nothing to work out and stripping them throws away
+the answer — which is exactly why the stripped sentences read worse.
+
+`renikud_eval_set.py` now drops the `nikud` category and does not touch `text_nikud`. The
+comparison is **34 sentences, 0 failures**.
+
+The pipeline rule that follows is a router, not a cleaner:
+
+    no nikud   -> ReNikud
+    has nikud  -> nikud-to-IPA directly; ReNikud has nothing to add
+
+with one gap worth naming: nikud does not mark stress, so `בֹּקֶר` cannot tell you *bóker*
+from *bokér* on its own. That is the only part of the vocalized path that still wants a
+model, and it is what Phonikud is for. `renikud_frontend.phonemize` keeps the strip as a
+crash guard for text that reaches ReNikud by mistake; it is not the route anything should
+take on purpose.
