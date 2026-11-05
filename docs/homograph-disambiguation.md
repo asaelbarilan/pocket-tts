@@ -303,3 +303,27 @@ reusable on its own, whatever is decided about ReNikud.
 becomes `be-Microsoft`. ReNikud phonemizes Hebrew and passes everything else through, so
 English reaches the TTS as Latin text. Whether that is right depends on what the model is
 trained to read, but it is not ReNikud's problem to solve and it will not solve it.
+
+## The strip works, and does not make vocalized input usable
+
+`hebrew_training/renikud_frontend.py` removes the points before calling ReNikud and raises
+if a Hebrew letter survives anyway. With it the forty sentences come back **0 failures**,
+down from 6.
+
+But the guard only stops the broken string. It does not make a vocalized sentence come out
+right, and the homograph twins show why: stripping nikud from properly vocalized Hebrew
+leaves *ktiv chaser*, the defective spelling, and ReNikud was trained on ktiv male.
+
+    ktiv male   הספר סיפר לי שהוא קרא ספר על תספורות.
+                hasapˈaʁ sipˈeʁ lˈi ʃehˈu kaʁˈa sˈefeʁ ʔˈal tispoʁˈot.      correct
+
+    stripped    הספר ספר לי שהוא קרא ספר על תספרות.
+                hasapˈaʁ sapˈaʁ lˈi ʃehˈu kaʁˈa sˈefeʁ ʔˈal tesapʁˈut.      סיפר -> "barber"
+
+    ktiv male   בוקר טוב, אמר הבוקר...     bokˈeʁ tˈov
+    stripped    בקר טוב, אמר הבוקר...      bakˈaʁ tˈov                      "cattle"
+
+So the rule is not "strip and proceed". It is: **keep the unvocalized ktiv-male text and
+send ReNikud that**. Nikud is for the models that want it; ReNikud wants the ordinary
+spelling, and anything that has been through a diacritizer is the wrong input even after
+the marks come off.

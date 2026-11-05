@@ -25,6 +25,8 @@ import re
 import sys
 from pathlib import Path
 
+from hebrew_training.renikud_frontend import phonemize
+
 HEBREW = re.compile(r"[֐-׿]")
 LATIN = re.compile(r"[A-Za-z]")
 DIGIT = re.compile(r"[0-9]")
@@ -44,7 +46,9 @@ def main() -> None:
 
     out, failures = [], 0
     for row in rows:
-        ipa = g2p.phonemize(row["text"])
+        # Through the front end, so this measures the pipeline as it would actually run.
+        # strict=False because the point here is to count failures, not stop at the first.
+        ipa = phonemize(g2p, row["text"], strict=False)
         flags = []
         if HEBREW.search(ipa):
             flags.append("HEBREW-LEFT")
@@ -58,7 +62,7 @@ def main() -> None:
         out.append(f"   ipa {ipa}")
         if row.get("text_nikud"):
             # The vocalized twin of a homograph, which is the case that breaks it.
-            out.append(f"   nik {g2p.phonemize(row['text_nikud'])}")
+            out.append(f"   nik {phonemize(g2p, row['text_nikud'], strict=False)}")
 
     out.append(f"\n{failures} of {len(rows)} sentences came back with Hebrew or digits left in.")
     text = "\n".join(out)
