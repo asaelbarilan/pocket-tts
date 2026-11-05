@@ -1,4 +1,4 @@
-# Optional semantic conditioning (DictaBERT or RenikudPlus)
+# Optional semantic conditioning (DictaBERT, RenikudPlus or both)
 
 An experimental, opt-in extension for Hebrew. It is not part of Kyutai's released models or
 training recipe. It is off unless a config turns it on, and with it off, training and
@@ -10,13 +10,14 @@ both directions. Its contextual states are added to the text prefix through a le
 zero-initialized gate. The niqqud, number and `alt_words` augmentations are unchanged (see
 [hebrew_training/NIQQUD.md](hebrew_training/NIQQUD.md)).
 
-Config selects one of three modes:
+Config selects one of four modes:
 
 | mode | config | encoder |
 |---|---|---|
 | 1. off (the default) | no `semantic_conditioner` section | none. Nothing is imported or loaded; the path is bit-identical to before |
 | 2. DictaBERT | `semantic_conditioner: {}` or `encoder: dictabert` | [DictaBERT-large](https://huggingface.co/dicta-il/dictabert-large), frozen, pinned revision. Unchanged in behavior |
 | 3. RenikudPlus | `encoder: renikud_plus` | the encoder of [RenikudPlus](https://huggingface.co/notmax123/RenikudPlus) (Apache-2.0), frozen, fp32, in ONNX Runtime, hidden states tapped from inside |
+| 4. Combined | `semantic_conditioners:` a list of two encoders | both, each with its own layer mix and projection, weighed by one learned gate per encoder, see "Combined mode" |
 
 A missing `encoder` key means DictaBERT, so every existing YAML and checkpoint keeps working
 without edits.
@@ -108,6 +109,69 @@ x_i = es_i + g_i * W p_i                         # W: Linear(1024 -> d_model, no
 - The gate's last layer also starts at zero (g = 0.5) and receives gradient once W moves.
 - The fusion is identical for both encoders (`flow_lm.semantic_fusion.*`, hidden size 1024).
   Its tensors are tied to the encoder that trained them, see "Checkpoints".
+
+## Combined mode (two encoders)
+
+`flow_lm.semantic_conditioners` (plural) takes a list of encoder entries. Two entries select the
+combined fusion; the singular `semantic_conditioner` stays valid for one encoder and nothing about
+it changes. Setting both keys is an error. A list of one entry is normalized to the singular form,
+so its tensors and checkpoints are the single-encoder ones.
+
+```yaml
+flow_lm:
+  semantic_conditioners:        # order matters: it is the order of the fusion's branches
+    - encoder: dictabert
+      revision: a972ffb612c03bcfb128f10f5ef4462f7adb9844
+    - encoder: renikud_plus
+      revision: 679c56ca449d41873fb8ff7711ddf7563d28198f
+```
+
+Each entry is a full `semantic_conditioner` mapping (its own encoder, model, revision, file, layer
+band, `hidden_size`, limits and defaults). `gate` and `gate_hidden` describe the one fusion, so
+all entries must agree on them (they default alike); other keys are per encoder. Two entries
+naming the same encoder files, or more than two entries, are rejected. In training configs the
+same key is `semantic_conditioners` (it replaces the model config's section; with
+`semantic_conditioner` it is an error).
+
+**The fusion.** The alignment is unchanged: each encoder is voted onto the SentencePiece tokens
+on its own (its own tokenizer, spans, null vector and cover). Then:
+
+```
+p^k_i = pooled latent of encoder k for token i      # mix_k over its layer band, then voting
+g_i   = sigmoid(MLP([es_i ; p^1_i ; p^2_i ; cover^1_i ; cover^2_i]))     # one output per encoder
+x_i   = es_i + g^1_i * W1 p^1_i + g^2_i * W2 p^2_i                       # W1, W2 zero-initialized
+```
+
+- The gate network is shared, so it sees the embedding and both readings and can prefer one
+  encoder for a token (for example RenikudPlus for digits, DictaBERT for plain Hebrew words).
+  With `gate: vector` each encoder gets one gate per model channel.
+- The embedding path is ungated, as in the single-encoder fusion. With every `W_k` = 0, step 0
+  equals the base model exactly (tested bit for bit), so warm-starting from a plain model is safe.
+- Tensors: `flow_lm.semantic_fusion.branches.<k>.{mix_logits,out_norm.*,null,proj.weight}` per
+  encoder, and the shared `flow_lm.semantic_fusion.gate.*`. The single-encoder keys are untouched.
+  The optimizer's fusion group (`semantic_lr_scale`) holds all of them.
+- **Metrics.** The single-encoder metrics are kept (`semantic_gate*` is the mean over encoders,
+  `semantic_cover` the mean cover). Per encoder, named by its `encoder` (`dictabert0` /
+  `dictabert1` if two share a name): `semantic_gate_<name>` with its `_latin`, `_other` and
+  `_class_*` splits, `semantic_cover_<name>`, and `semantic_contrib_<name>`, the norm of that
+  encoder's addition `g W p` divided by the embedding's norm. The contribution is the number to
+  watch: it starts at 0 and shows how much each encoder ends up mattering. A gate stuck near 0.5
+  with a contribution near 0 means the encoder is not used.
+- **Cost.** Both encoders run per row (about the sum of the two CPU costs below, per chunk) and
+  both are loaded at startup: ~1.7 GB (DictaBERT, fp32) plus ~1.9 GB (RenikudPlus).
+- **Checkpoints.** The record holds both encoders: `{"encoder": "combined", "encoders":
+  [<identity>, <identity>]}`. A combined checkpoint loads only into a combined model with the same
+  two encoders (name, revision, file) in the same order; it is refused by a single-encoder
+  model and the reverse, with the usual encoder-mismatch error. A plain checkpoint starts a
+  combined model from its zero init. Warm-starting a combined model from a single-encoder
+  checkpoint is not supported.
+- **Example configs.** [`pocket_tts/config/hebrew_semantic_combined.yaml`](pocket_tts/config/hebrew_semantic_combined.yaml)
+  and [`training/configs/finetune_hebrew_semantic_combined.yaml`](training/configs/finetune_hebrew_semantic_combined.yaml).
+- **Inference and deployment.** `TTSModel.load_model(semantic_encoder_dir=[dir_1, dir_2])` takes
+  one directory per encoder in config order (`None` for an encoder that loads from the Hub). The
+  deploy server finds both encoders in the encoder store, copies and verifies both, and `/health`
+  reports `semantic_encoder: {"encoders": [...]}`. `SEMANTIC_ENCODER_SHA256` takes one hash per
+  encoder, comma-separated, in config order (an empty entry finds that one by identity).
 
 ## RenikudPlus
 
@@ -225,6 +289,7 @@ The trainer takes one YAML file, so the switches are keys rather than command-li
 | key | default | |
 |---|---|---|
 | `semantic_conditioner` | `null` (off) | a mapping (`{}` for all defaults), merged into the model config's section |
+| `semantic_conditioners` | `null` | the combined mode: a list of two such mappings, replacing the model config's section; not with `semantic_conditioner` |
 | `semantic_lr_scale` | `3.0` | the fusion's learning rate relative to `optim.lr` |
 
 - **Choosing the encoder.** `encoder` goes in this mapping like any other key. If it names a

@@ -178,6 +178,10 @@ class TrainArgs:
     # trainer unchanged. A mapping (`{}` for every default) is merged into the model config's
     # flow_lm.semantic_conditioner section, which a model config may also carry itself.
     semantic_conditioner: dict[str, tp.Any] | None = None
+    # The combined mode: a list of two such mappings (one per encoder), which *replaces* the
+    # model config's semantic section instead of merging into it. A list of one is the same as
+    # `semantic_conditioner`. Not together with `semantic_conditioner`.
+    semantic_conditioners: list[dict[str, tp.Any]] | None = None
     # Learning rate of the new fusion parameters relative to optim.lr. Modest on purpose:
     # Adam moves every element by about lr per step whatever its size, so a zero-initialized
     # layer needs no large boost to start learning.
@@ -206,6 +210,11 @@ class TrainArgs:
             )
         if self.distill_teacher_config and not self.distill_teacher_weights:
             raise ValueError("distill_teacher_config is set but distill_teacher_weights is not")
+        if self.semantic_conditioner is not None and self.semantic_conditioners is not None:
+            raise ValueError(
+                "set either semantic_conditioner (one encoder) or semantic_conditioners "
+                "(a list of encoders), not both"
+            )
         if self.semantic_lr_scale <= 0:
             raise ValueError(f"semantic_lr_scale must be > 0, got {self.semantic_lr_scale}")
 

@@ -180,6 +180,11 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
   with (loading across encoders raises). RenikudPlus uses the fp32 ONNX file only and reads the
   same final string as SentencePiece through a character-level view (no normalizer at inference).
   `onnx`/`onnxruntime` are imported only on that path.
+- Combined semantic mode: `flow_lm.semantic_conditioners` (plural, two entries) builds
+  `CombinedSemanticFusion` (one learned gate per encoder, tensors under
+  `flow_lm.semantic_fusion.branches.<k>.*` plus a shared `gate`); the singular
+  `semantic_conditioner` is the legacy form, and setting both is an error. Its checkpoints record
+  both encoders in order and load only into the same pair (SEMANTIC_CONDITIONING.md).
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation

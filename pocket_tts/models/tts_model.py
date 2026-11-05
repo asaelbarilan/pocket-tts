@@ -6,6 +6,7 @@ import queue
 import statistics
 import threading
 import time
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 
@@ -288,7 +289,7 @@ class TTSModel(nn.Module):
         quantize: bool = False,
         checkpoint: str | Path | None = None,
         lsd_decode_steps: int | None = None,
-        semantic_encoder_dir: str | Path | None = None,
+        semantic_encoder_dir: str | Path | Sequence[str | Path | None] | None = None,
     ) -> Self:
         """Load a pre-trained TTS model with specified configuration.
 
@@ -320,7 +321,9 @@ class TTSModel(nn.Module):
             semantic_encoder_dir: Only for a config with a `flow_lm.semantic_conditioner`
                 section: a local directory with the files of the encoder it pins (what its
                 `model_name`/`revision` would download from Hugging Face), loaded instead of
-                the Hub. The caller vouches that they are the pinned files.
+                the Hub. The caller vouches that they are the pinned files. With
+                `flow_lm.semantic_conditioners` naming two encoders: a list with one such
+                directory (or None for the Hub) per encoder, in the config's order.
             quantize: If True, apply dynamic int8 quantization to the transformer's
                 attention and FFN layers. Reduces runtime memory by ~48% and improves
                 inference speed by ~27% on x86 (FBGEMM).

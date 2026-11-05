@@ -44,7 +44,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from deploy.downloads import CODE_ZIP, GUIDE, Downloads
-from deploy.encoder_store import EncoderStore, describe, semantic_config_of
+from deploy.encoder_store import EncoderStore, EncoderStoreSet, describe, semantic_configs_of
 from deploy.milim_bench import DEFAULT_DIR as DEFAULT_MILIM_DIR
 from deploy.milim_bench import MAX_BATCH, MilimBench
 from deploy.model_store import ModelStore
@@ -82,41 +82,49 @@ DEFAULTS = {
 }
 
 
-def open_encoder_store(config: Path, model_store_dir: str | None) -> EncoderStore | None:
-    """The store of the frozen semantic encoder the model's config names, or None when it needs
-    none or no store is configured (then the encoder comes from the Hugging Face cache).
+def open_encoder_store(
+    config: Path, model_store_dir: str | None
+) -> EncoderStore | EncoderStoreSet | None:
+    """The store of the frozen semantic encoder the model's config names (an EncoderStoreSet,
+    one per encoder, for a combined model), or None when it needs none or no store is
+    configured (then the encoders come from the Hugging Face cache).
 
     Env SEMANTIC_ENCODER_STORE says where encoders are copied from, default
     `<MODEL_STORE>/encoders`; SEMANTIC_ENCODER_SHA256 pins one by hash (it must still be the
-    encoder the config names). A missing or mismatching encoder is a startup error, like a
-    missing model.
+    encoder the config names; comma-separated, one per encoder, for a combined model). A
+    missing or mismatching encoder is a startup error, like a missing model.
     """
     encoders_dir = os.environ.get("SEMANTIC_ENCODER_STORE") or (
         str(Path(model_store_dir) / "encoders") if model_store_dir else None
     )
     pin = os.environ.get("SEMANTIC_ENCODER_SHA256") or None
     try:
-        semantic = semantic_config_of(config)
+        semantic = semantic_configs_of(config)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"{config}: {exc}") from exc
-    if semantic is None:
+    if not semantic:
         if pin:
             logger.warning("SEMANTIC_ENCODER_SHA256 is set but the model has no semantic encoder")
         logger.info("semantic conditioning: off (the config has no semantic_conditioner)")
         return None
+    described = " + ".join(describe(c) for c in semantic)
     if encoders_dir is None:
         logger.info(
             "semantic conditioning: %s, from the Hugging Face cache (no encoder store set)",
-            describe(semantic),
+            described,
         )
         return None
     try:
-        encoder_store = EncoderStore(Path(encoders_dir), semantic, REPO_ROOT, pin)
+        if len(semantic) == 1:
+            encoder_store = EncoderStore(Path(encoders_dir), semantic[0], REPO_ROOT, pin)
+        else:
+            pins = [p.strip() or None for p in pin.split(",")] if pin else None
+            encoder_store = EncoderStoreSet(Path(encoders_dir), semantic, REPO_ROOT, pins)
     except (OSError, ValueError, KeyError) as exc:
         raise SystemExit(f"encoder store: {exc}") from exc
     logger.info(
         "semantic conditioning: %s, encoder store %s, encoder %s",
-        describe(semantic),
+        described,
         encoders_dir,
         encoder_store.sha256,
     )
@@ -151,7 +159,7 @@ class Engine:
         config: Path,
         voices_dir: Path,
         device: torch.device,
-        semantic_encoder_dir: Path | None = None,
+        semantic_encoder_dir: Path | list[Path] | None = None,
     ):
         self.config = config
         self.voices_dir = voices_dir
@@ -299,7 +307,7 @@ class EngineLoader:
         voices_dir: Path,
         device: torch.device,
         store: ModelStore | None = None,
-        encoder_store: EncoderStore | None = None,
+        encoder_store: EncoderStore | EncoderStoreSet | None = None,
     ):
         self.config = config
         self.voices_dir = voices_dir
@@ -324,13 +332,17 @@ class EngineLoader:
             return None
         if self.encoder_store is not None:
             return self.encoder_store.info()
-        config = fusion.config
-        return {
-            "encoder": config.encoder,
-            "model_name": config.model_name,
-            "revision": config.revision,
-            "sha256": None,
-        }
+        configs = getattr(fusion, "configs", None) or [fusion.config]
+        infos = [
+            {
+                "encoder": c.encoder,
+                "model_name": c.model_name,
+                "revision": c.revision,
+                "sha256": None,
+            }
+            for c in configs
+        ]
+        return infos[0] if len(infos) == 1 else {"encoders": infos}
 
     def cache_key(self) -> str | None:
         """Names the validation cache: model weights + device kind (CPU and GPU audio differ)."""

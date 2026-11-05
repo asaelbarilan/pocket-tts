@@ -16,8 +16,10 @@ from deploy.encoder_store import (
     LOCAL_DIR,
     MANIFEST,
     EncoderStore,
+    EncoderStoreSet,
     describe,
     semantic_config_of,
+    semantic_configs_of,
 )
 from pocket_tts.utils.config import (
     DICTABERT_LARGE,
@@ -295,3 +297,125 @@ def test_loader_copies_the_encoder_and_passes_its_directory(tmp_path, monkeypatc
     assert not encoder.local_dir.exists()  # freed once loaded
     info = loader.semantic_encoder_info()
     assert info["encoder"] == "dictabert" and info["sha256"] == encoder.sha256
+
+
+# ------------------------------------------------------------------ the combined mode
+
+
+def write_plural(path, entries):
+    path.write_text(json.dumps({"flow_lm": {"semantic_conditioners": entries}}))
+    return path
+
+
+COMBINED = [{"encoder": "dictabert"}, {"encoder": "renikud_plus"}]
+
+
+def test_semantic_configs_of_reads_every_form(tmp_path):
+    assert semantic_configs_of(write_config(tmp_path / "a.yaml", None)) == []
+    assert semantic_configs_of(write_config(tmp_path / "b.yaml", {})) == [DICTA]
+    assert semantic_configs_of(write_plural(tmp_path / "c.yaml", COMBINED)) == [DICTA, RENIKUD]
+    # A list of one is the singular form.
+    assert semantic_configs_of(write_plural(tmp_path / "d.yaml", [COMBINED[1]])) == [RENIKUD]
+    assert semantic_config_of(write_plural(tmp_path / "d.yaml", [COMBINED[1]])) == RENIKUD
+    with pytest.raises(ValueError, match="semantic_configs_of"):
+        semantic_config_of(write_plural(tmp_path / "c.yaml", COMBINED))
+    both = tmp_path / "e.yaml"
+    both.write_text(
+        json.dumps({"flow_lm": {"semantic_conditioner": {}, "semantic_conditioners": COMBINED}})
+    )
+    with pytest.raises(ValueError, match="not both"):
+        semantic_configs_of(both)
+
+
+def test_store_set_finds_both_encoders_in_the_configs_order(tmp_path):
+    store = tmp_path / "store"
+    dicta, renikud = publish(store, DICTA), publish(store, RENIKUD)
+    both = EncoderStoreSet(store / ENCODERS_DIR, [DICTA, RENIKUD], tmp_path / "root")
+    assert [s.sha256 for s in both.stores] == [dicta, renikud]
+    assert both.sha256 == f"{dicta},{renikud}"
+    swapped = EncoderStoreSet(store / ENCODERS_DIR, [RENIKUD, DICTA], tmp_path / "root")
+    assert [s.sha256 for s in swapped.stores] == [renikud, dicta]
+    assert [i["encoder"] for i in both.info()["encoders"]] == ["dictabert", "renikud_plus"]
+
+
+def test_store_set_fetches_one_directory_per_encoder_and_discards_them(tmp_path):
+    store = tmp_path / "store"
+    publish(store, DICTA), publish(store, RENIKUD)
+    both = EncoderStoreSet(store / ENCODERS_DIR, [DICTA, RENIKUD], tmp_path / "root")
+    dirs = both.fetch()
+    assert dirs == [s.local_dir for s in both.stores]
+    assert sorted(p.name for p in dirs[0].iterdir()) == sorted(DICTABERT_FILES)
+    assert [p.name for p in dirs[1].iterdir()] == ["model.onnx"]
+    both.discard()
+    assert not any(d.exists() for d in dirs)
+
+
+def test_store_set_needs_every_encoder_published(tmp_path):
+    store = tmp_path / "store"
+    publish(store, DICTA)
+    with pytest.raises(FileNotFoundError, match="publish_encoder.sh renikud_plus"):
+        EncoderStoreSet(store / ENCODERS_DIR, [DICTA, RENIKUD], tmp_path / "root")
+
+
+def test_store_set_pins_are_per_encoder(tmp_path):
+    store = tmp_path / "store"
+    first, second = publish(store, DICTA), publish(store, DICTA, salt=b"-2")
+    renikud = publish(store, RENIKUD)
+    root = store / ENCODERS_DIR
+    with pytest.raises(ValueError, match="one per encoder"):
+        EncoderStoreSet(root, [DICTA, RENIKUD], tmp_path / "root", [second])
+    both = EncoderStoreSet(root, [DICTA, RENIKUD], tmp_path / "root", [second, None])
+    assert both.sha256 == f"{second},{renikud}"
+    with pytest.raises(ValueError, match="not another encoder"):
+        EncoderStoreSet(root, [DICTA, RENIKUD], tmp_path / "root", [first, first])
+    assert first != second
+
+
+def test_server_opens_a_store_set_for_a_combined_model(tmp_path, server_env):
+    store = tmp_path / "store"
+    dicta, renikud = publish(store, DICTA), publish(store, RENIKUD)
+    config = write_plural(tmp_path / "m.yaml", COMBINED)
+    found = hebrew_tts_server.open_encoder_store(config, str(store))
+    assert isinstance(found, EncoderStoreSet) and found.sha256 == f"{dicta},{renikud}"
+    server_env.setenv("SEMANTIC_ENCODER_SHA256", f" ,{renikud}")
+    assert hebrew_tts_server.open_encoder_store(config, str(store)).sha256 == f"{dicta},{renikud}"
+    server_env.setenv("SEMANTIC_ENCODER_SHA256", renikud)  # one hash for two encoders
+    with pytest.raises(SystemExit, match="one per encoder"):
+        hebrew_tts_server.open_encoder_store(config, str(store))
+    # A list of one is the single-encoder path, unchanged.
+    server_env.delenv("SEMANTIC_ENCODER_SHA256")
+    single = write_plural(tmp_path / "s.yaml", [COMBINED[1]])
+    assert isinstance(hebrew_tts_server.open_encoder_store(single, str(store)), EncoderStore)
+
+
+def test_loader_passes_one_directory_per_encoder(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    publish(store, DICTA), publish(store, RENIKUD)
+    encoders = EncoderStoreSet(store / ENCODERS_DIR, [DICTA, RENIKUD], tmp_path / "root")
+    seen = {}
+
+    class FakeEngine:
+        def __init__(self, config, voices_dir, device, semantic_encoder_dir=None):
+            seen["dirs"] = semantic_encoder_dir
+            fusion = type("S", (), {"configs": [DICTA, RENIKUD]})()
+            self.model = type("M", (), {"flow_lm": type("F", (), {"semantic_fusion": fusion})()})()
+
+    monkeypatch.setattr(hebrew_tts_server, "Engine", FakeEngine)
+    config = tmp_path / "m.yaml"
+    (tmp_path / "w.safetensors").write_bytes(b"w")
+    config.write_text(json.dumps({"weights_path": str(tmp_path / "w.safetensors")}))
+    loader = hebrew_tts_server.EngineLoader(
+        config, tmp_path, hebrew_tts_server.torch.device("cpu"), None, encoders
+    )
+    loader._load()
+    assert loader.stage == "ready", loader.error
+    assert seen["dirs"] == [s.local_dir for s in encoders.stores]
+    assert not any(s.local_dir.exists() for s in encoders.stores)
+    info = loader.semantic_encoder_info()
+    assert [i["encoder"] for i in info["encoders"]] == ["dictabert", "renikud_plus"]
+    # Without a store, the health report is built from the fusion's own configs.
+    bare = hebrew_tts_server.EngineLoader(
+        config, tmp_path, hebrew_tts_server.torch.device("cpu"), None, None
+    )
+    bare.engine = loader.engine
+    assert [i["sha256"] for i in bare.semantic_encoder_info()["encoders"]] == [None, None]

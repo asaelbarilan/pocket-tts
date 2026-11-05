@@ -6,6 +6,7 @@ stands in for DictaBERT.
 
 import copy
 import io
+import json
 import queue
 from types import SimpleNamespace
 
@@ -16,10 +17,14 @@ from torch import nn
 
 from pocket_tts.conditioners.base import TokenizedText
 from pocket_tts.conditioners.semantic import (
+    CombinedSemanticFusion,
     SemanticEncoder,
     SemanticFusion,
+    build_semantic_fusion,
     byte_to_char_spans,
     char_owner,
+    check_encoder_record,
+    encoder_record,
     extend_over_marks,
     fuse_rows,
     load_state_dict_allowing_semantic,
@@ -31,7 +36,13 @@ from pocket_tts.models.flow_lm import FlowLMModel
 from pocket_tts.models.tts_model import TTSModel
 from pocket_tts.modules.mlp import SimpleMLPAdaLN
 from pocket_tts.modules.transformer import StreamingTransformer
-from pocket_tts.utils.config import CONFIGS_DIR, SemanticConditionerConfig, load_config
+from pocket_tts.utils.config import (
+    CONFIGS_DIR,
+    FlowLMConfig,
+    SemanticConditionerConfig,
+    SemanticSections,
+    load_config,
+)
 
 HIDDEN, DIM, LDIM = 16, 32, 8
 
@@ -69,11 +80,11 @@ class FakeEncoder(SemanticEncoder):
     """Whitespace words, trailing combining marks left uncovered like DictaBERT's offsets.
     Hidden states are a fixed function of (token id, position, layer)."""
 
-    hidden_size = HIDDEN
     num_layers = 4
 
-    def __init__(self):
+    def __init__(self, salt: int = 0, hidden: int = HIDDEN):
         self.calls = 0
+        self.salt, self.hidden_size = salt, hidden
 
     def tokenize(self, text):
         ids, spans, i = [], [], 0
@@ -94,11 +105,11 @@ class FakeEncoder(SemanticEncoder):
 
     def encode(self, ids, layers, device):
         self.calls += 1
-        out = torch.zeros(len(layers), len(ids), HIDDEN, device=device)
+        out = torch.zeros(len(layers), len(ids), self.hidden_size, device=device)
         for li, layer in enumerate(layers):
             for pos, token in enumerate(ids):
-                g = torch.Generator().manual_seed(token * 131 + pos * 7 + layer)
-                out[li, pos] = torch.randn(HIDDEN, generator=g)
+                g = torch.Generator().manual_seed(token * 131 + pos * 7 + layer + self.salt)
+                out[li, pos] = torch.randn(self.hidden_size, generator=g)
         return out
 
 
@@ -122,10 +133,24 @@ class SPConditioner(LUTConditioner):
         return TokenizedText(torch.tensor(self.tokenizer.sp.encode(x))[None])
 
 
-def flow_lm(sp, semantic: SemanticConditionerConfig | None) -> FlowLMModel:
+def combined_configs() -> list[SemanticConditionerConfig]:
+    """DictaBERT-like and RenikudPlus-like entries; the second has another width and band."""
+    return [
+        small_config(),
+        small_config(encoder="renikud_plus", hidden_size=HIDDEN + 8, first_layer=1, last_layer=4),
+    ]
+
+
+def flow_lm(sp, semantic: SemanticConditionerConfig | list | None) -> FlowLMModel:
+    """`semantic`: None (plain), one config (SemanticFusion) or a list of two (combined)."""
     torch.manual_seed(0)
     fusion = None
-    if semantic is not None:
+    if isinstance(semantic, list):
+        fusion = build_semantic_fusion(semantic, DIM)
+        fusion.set_encoders(
+            [FakeEncoder(salt=100 * k, hidden=c.hidden_size) for k, c in enumerate(semantic)]
+        )
+    elif semantic is not None:
         fusion = SemanticFusion(semantic, DIM)
         fusion.set_encoder(FakeEncoder())
     torch.manual_seed(1)
@@ -366,8 +391,14 @@ def test_shipped_configs_have_no_semantic_section_except_its_own():
             assert config.flow_lm.semantic_conditioner == SemanticConditionerConfig(
                 encoder="renikud_plus"
             )
+        elif path.name == "hebrew_semantic_combined.yaml":
+            assert config.flow_lm.semantic_conditioner is None
+            assert config.flow_lm.semantic_encoders == [
+                SemanticConditionerConfig(),
+                SemanticConditionerConfig(encoder="renikud_plus"),
+            ]
         else:
-            assert config.flow_lm.semantic_conditioner is None, path.name
+            assert config.flow_lm.semantic_encoders == [], path.name
 
 
 def test_plain_model_has_no_semantic_state(sp):
@@ -434,3 +465,311 @@ def test_tts_run_flow_lm_fuses_the_prompt_text(sp):
         TTSModel._run_flow_lm(tts, {}, tokens, latents, empty_audio)
     # Audio steps carry no text tokens and need no text.
     TTSModel._run_flow_lm(tts, {}, tokens[:, :0], latents, empty_audio)
+
+
+# ------------------------------------------------------------------------- the combined mode
+
+
+def _text_inputs(model, sp, text=CORPUS[4]):
+    tokens = model.conditioner.prepare(text).tokens
+    return text, tokens, model.conditioner(TokenizedText(tokens))
+
+
+def test_config_forms():
+    one, two = {"encoder": "dictabert"}, {"encoder": "renikud_plus"}
+    assert SemanticSections().semantic_encoders == []
+    legacy = SemanticSections(semantic_conditioner=one)
+    assert [c.encoder for c in legacy.semantic_encoders] == ["dictabert"]
+    both = SemanticSections(semantic_conditioners=[one, two])
+    assert [c.encoder for c in both.semantic_encoders] == ["dictabert", "renikud_plus"]
+    assert both.semantic_conditioner is None
+    # A list of one is the singular form, so its tensors and checkpoints are the legacy ones.
+    single = SemanticSections(semantic_conditioners=[two])
+    assert single.semantic_conditioners is None
+    assert single.semantic_conditioner == SemanticConditionerConfig(encoder="renikud_plus")
+
+
+def test_config_rejects_bad_combinations():
+    one, two = {"encoder": "dictabert"}, {"encoder": "renikud_plus"}
+    with pytest.raises(ValueError, match="not both"):
+        SemanticSections(semantic_conditioner=one, semantic_conditioners=[one, two])
+    with pytest.raises(ValueError, match="1 to 2"):
+        SemanticSections(semantic_conditioners=[])
+    with pytest.raises(ValueError, match="1 to 2"):
+        SemanticSections(semantic_conditioners=[one, two, one])
+    with pytest.raises(ValueError, match="same encoder twice"):
+        SemanticSections(semantic_conditioners=[one, one])
+    with pytest.raises(ValueError, match="`gate` belongs to the whole fusion"):
+        SemanticSections(semantic_conditioners=[{**one, "gate": "vector"}, two])
+    with pytest.raises(ValueError, match="`gate_hidden`"):
+        SemanticSections(semantic_conditioners=[one, {**two, "gate_hidden": 64}])
+    # Each entry keeps its own encoder's rules and defaults.
+    with pytest.raises(ValueError, match="only applies to encoder: renikud_plus"):
+        SemanticSections(semantic_conditioners=[{**one, "onnx_provider": "cpu"}, two])
+    with pytest.raises(ValueError):
+        SemanticSections(semantic_conditioners=[one, {"encoder": "bert"}])
+
+
+def test_two_revisions_of_one_encoder_are_two_encoders():
+    configs = SemanticSections(semantic_conditioners=[{}, {"revision": "0" * 40}]).semantic_encoders
+    assert branch_names_of(configs) == ["dictabert0", "dictabert1"]
+
+
+def branch_names_of(configs):
+    from pocket_tts.conditioners.semantic import branch_names
+
+    return branch_names(configs)
+
+
+def test_combined_yaml_section_builds_the_combined_fusion():
+    from pocket_tts.utils.config import Config  # noqa: F401  (the section lives in flow_lm)
+
+    raw = {
+        "dtype": "float32",
+        "flow": {"dim": 8, "depth": 1},
+        "transformer": {
+            "hidden_scale": 1,
+            "max_period": 10,
+            "d_model": 8,
+            "num_heads": 1,
+            "num_layers": 1,
+        },
+        "lookup_table": {
+            "dim": 8,
+            "n_bins": 8,
+            "tokenizer": "sentencepiece",
+            "tokenizer_path": "x",
+        },
+        "semantic_conditioners": [{"encoder": "dictabert"}, {"encoder": "renikud_plus"}],
+    }
+    config = FlowLMConfig(**raw)
+    fusion = build_semantic_fusion(config.semantic_encoders, 8)
+    assert isinstance(fusion, CombinedSemanticFusion) and fusion.names == [
+        "dictabert",
+        "renikud_plus",
+    ]
+    legacy = FlowLMConfig(**{k: v for k, v in raw.items() if k != "semantic_conditioners"})
+    assert build_semantic_fusion(legacy.semantic_encoders, 8) is None
+    one = FlowLMConfig(**{**raw, "semantic_conditioners": [{}]})
+    assert type(build_semantic_fusion(one.semantic_encoders, 8)) is SemanticFusion
+
+
+def test_combined_zero_init_returns_the_lookup_table_exactly(sp):
+    model = flow_lm(sp, combined_configs())
+    text, tokens, plain = _text_inputs(model, sp)
+    fused = model.semantic_fusion(text, tokens, plain, sp)
+    assert fused.shape == plain.shape and torch.equal(fused, plain)
+    # The unbatched shape too.
+    assert torch.equal(model.semantic_fusion(text, tokens, plain[0], sp), plain[0])
+
+
+def test_combined_model_loads_a_plain_checkpoint_and_agrees_with_it(sp):
+    plain, combined = flow_lm(sp, None), flow_lm(sp, combined_configs())
+    missing, unexpected = load_state_dict_allowing_semantic(combined, plain.state_dict())
+    assert not missing and not unexpected
+    text, tokens, emb = _text_inputs(plain, sp, CORPUS[1])
+    assert torch.equal(combined.semantic_fusion(text, tokens, emb, sp), emb)
+    # The reverse drops the fusion tensors with a warning.
+    load_state_dict_allowing_semantic(plain, combined.state_dict())
+
+
+def test_combined_state_dict_keys(sp):
+    keys = {
+        k for k in flow_lm(sp, combined_configs()).state_dict() if k.startswith("semantic_fusion.")
+    }
+    per_branch = {"mix_logits", "out_norm.weight", "out_norm.bias", "null", "proj.weight"}
+    assert keys == {
+        *(f"semantic_fusion.branches.{k}.{n}" for k in (0, 1) for n in per_branch),
+        "semantic_fusion.gate.0.weight",
+        "semantic_fusion.gate.0.bias",
+        "semantic_fusion.gate.2.weight",
+        "semantic_fusion.gate.2.bias",
+    }
+    # The legacy single-encoder keys are untouched.
+    single = {k for k in flow_lm(sp, small_config()).state_dict() if k.startswith("semantic_")}
+    assert (
+        "semantic_fusion.proj.weight" in single and "semantic_fusion.branches.0.null" not in single
+    )
+
+
+@pytest.mark.parametrize("gate,width", [("scalar", 1), ("vector", DIM)])
+def test_combined_gate_has_one_output_per_encoder(sp, gate, width):
+    configs = [c.model_copy(update={"gate": gate}) for c in combined_configs()]
+    model = flow_lm(sp, configs)
+    fusion = model.semantic_fusion
+    assert fusion.gate[-1].out_features == 2 * width
+    assert fusion.gate[0].in_features == DIM + HIDDEN + (HIDDEN + 8) + 2
+    for branch in fusion.branches:
+        nn.init.normal_(branch.proj.weight)
+    nn.init.normal_(fusion.gate[-1].weight)
+    text, tokens, plain = _text_inputs(model, sp, CORPUS[5])
+    fused = fusion(text, tokens, plain, sp)
+    assert fused.shape == plain.shape and not torch.equal(fused, plain)
+
+
+def test_each_encoder_contributes_through_its_own_gate(sp):
+    model = flow_lm(sp, combined_configs())
+    fusion = model.semantic_fusion
+    for branch in fusion.branches:
+        nn.init.normal_(branch.proj.weight)
+    text, tokens, plain = _text_inputs(model, sp)
+
+    def fused_with_gate_bias(first: float, second: float):
+        with torch.no_grad():
+            fusion.gate[-1].bias.copy_(torch.tensor([first, second]))
+        return fusion(text, tokens, plain, sp)
+
+    closed = fused_with_gate_bias(-40.0, -40.0)  # both gates shut: the embedding alone
+    torch.testing.assert_close(closed, plain, atol=1e-6, rtol=0)
+    only_first = fused_with_gate_bias(40.0, -40.0)
+    only_second = fused_with_gate_bias(-40.0, 40.0)
+    both = fused_with_gate_bias(40.0, 40.0)
+    assert not torch.allclose(only_first, plain) and not torch.allclose(only_second, plain)
+    assert not torch.allclose(only_first, only_second)
+    # Contributions add: x = es + g1 W1 p1 + g2 W2 p2.
+    torch.testing.assert_close(
+        both - plain, (only_first - plain) + (only_second - plain), atol=1e-5, rtol=0
+    )
+
+
+def test_combined_gradients_reach_every_parameter_and_stats_are_per_encoder(sp):
+    model = flow_lm(sp, combined_configs())
+    fusion = model.semantic_fusion
+    fusion.train()
+    text, tokens, plain = _text_inputs(model, sp, CORPUS[2])
+    fusion(text, tokens, plain, sp).square().sum().backward()
+    for name, param in fusion.named_parameters():
+        assert param.grad is not None, name  # in the graph, as DDP needs
+    for branch in fusion.branches:
+        assert branch.proj.weight.grad.abs().sum() > 0
+    stats = fusion.pop_stats()
+    assert set(stats) >= {
+        "semantic_gate",
+        "semantic_cover",
+        "semantic_gate_dictabert",
+        "semantic_gate_renikud_plus",
+        "semantic_cover_dictabert",
+        "semantic_cover_renikud_plus",
+        "semantic_contrib_dictabert",
+        "semantic_contrib_renikud_plus",
+        "semantic_gate_class_hebrew",
+        "semantic_gate_dictabert_class_hebrew",
+    }
+    assert fusion.pop_stats() == {}
+    # Evaluation records nothing.
+    fusion.eval()
+    fusion(text, tokens, plain, sp)
+    assert fusion.pop_stats() == {}
+
+
+def test_combined_rejects_tokens_that_are_not_the_texts_encoding(sp):
+    model = flow_lm(sp, combined_configs())
+    text, tokens, emb = _text_inputs(model, sp, CORPUS[0])
+    with pytest.raises(ValueError, match="exact string"):
+        model.semantic_fusion(text + "!", tokens, emb, sp)
+
+
+def test_combined_encoders_are_not_part_of_the_module_and_deepcopy_shares_them(sp):
+    model = flow_lm(sp, combined_configs())
+    assert not any("encoder" in k for k in model.state_dict() if k.startswith("semantic_fusion."))
+    clone = copy.deepcopy(model)
+    for a, b in zip(clone.semantic_fusion.encoders, model.semantic_fusion.encoders, strict=True):
+        assert a is b
+    assert (
+        clone.semantic_fusion.branches[1].proj.weight
+        is not model.semantic_fusion.branches[1].proj.weight
+    )
+
+
+def test_combined_checks_each_encoder_against_its_own_config():
+    fusion = build_semantic_fusion(combined_configs(), DIM)
+    with pytest.raises(ValueError, match="hidden size"):
+        fusion.set_encoders([FakeEncoder(), FakeEncoder()])  # the second must be HIDDEN + 8 wide
+    with pytest.raises(ValueError, match="2 encoders configured"):
+        fusion.set_encoders([FakeEncoder()])
+    with pytest.raises(ValueError, match="one directory per encoder"):
+        fusion.load_encoder("/some/dir")
+    with pytest.raises(ValueError, match="one directory per encoder"):
+        fusion.load_encoder(["/only/one"])
+
+
+def test_combined_fuse_rows_keeps_the_padded_shape(sp):
+    model = flow_lm(sp, combined_configs())
+    texts = CORPUS[:3]
+    tokens = [torch.tensor(sp.encode(t)) for t in texts]
+    padded = torch.randn(3, max(t.shape[0] for t in tokens), DIM)
+    fused = fuse_rows(model.semantic_fusion, texts, tokens, padded, sp)
+    assert fused.shape == padded.shape
+
+
+def test_single_fusion_still_accepts_a_one_item_directory_list(tmp_path):
+    fusion = SemanticFusion(small_config(), DIM)
+    fusion.set_encoder(FakeEncoder())
+    fusion.load_encoder([tmp_path])  # already loaded: nothing to build
+    with pytest.raises(ValueError, match="one directory"):
+        SemanticFusion(small_config(), DIM).load_encoder([tmp_path, tmp_path])
+
+
+# ---------------------------------------------------------- combined: checkpoint identity
+
+
+def _identity(*configs):
+    return build_semantic_fusion(list(configs), DIM).identity()
+
+
+def test_identities():
+    dicta, renikud = combined_configs()
+    assert _identity(dicta) == dicta.identity()
+    combined = _identity(dicta, renikud)
+    assert combined["encoder"] == "combined"
+    assert combined["encoders"] == [dicta.identity(), renikud.identity()]
+    json.dumps(combined)  # recorded as safetensors metadata
+
+
+def test_combined_record_is_found_by_encoder_record(sp):
+    model = flow_lm(sp, combined_configs())
+    assert encoder_record(model)["encoder"] == "combined"
+
+
+def test_combined_checkpoints_load_only_into_the_same_combination():
+    dicta, renikud = combined_configs()
+    both = _identity(dicta, renikud)
+    check_encoder_record(both, both)  # the same pair, same order
+    check_encoder_record(both, json.loads(json.dumps(both)))  # as read back from metadata
+    with pytest.raises(ValueError, match="combined fusion and a single-encoder fusion"):
+        check_encoder_record(both, dicta.identity())
+    with pytest.raises(ValueError, match="combined fusion and a single-encoder fusion"):
+        check_encoder_record(dicta.identity(), both)
+    with pytest.raises(ValueError, match="combined fusion and a single-encoder fusion"):
+        check_encoder_record(both, None)  # legacy files are DictaBERT's alone
+    swapped = _identity(renikud, dicta)
+    with pytest.raises(ValueError, match=r"encoder #1 encoder.*differ"):
+        check_encoder_record(both, swapped)
+    other_revision = _identity(dicta, renikud.model_copy(update={"revision": "f" * 40}))
+    with pytest.raises(ValueError, match=r"encoder #2 revision differ"):
+        check_encoder_record(both, other_revision)
+    # The error says what each side holds.
+    with pytest.raises(ValueError, match=r"combined: dictabert .* \+ renikud_plus"):
+        check_encoder_record(dicta.identity(), both)
+
+
+def test_combined_layer_band_change_only_warns(caplog):
+    dicta, renikud = combined_configs()
+    both = _identity(dicta, renikud)
+    moved = _identity(dicta, renikud.model_copy(update={"first_layer": 2}))
+    with caplog.at_level("WARNING"):
+        check_encoder_record(moved, both)
+    assert "trained on encoder layers" in caplog.text
+
+
+def test_combined_checkpoint_does_not_load_into_a_single_model(sp):
+    combined, single = flow_lm(sp, combined_configs()), flow_lm(sp, small_config())
+    record = encoder_record(combined)
+    with pytest.raises(ValueError, match="trained with encoder combined"):
+        load_state_dict_allowing_semantic(single, combined.state_dict(), recorded_encoder=record)
+    with pytest.raises(ValueError, match="trained with encoder dictabert"):
+        load_state_dict_allowing_semantic(
+            combined, single.state_dict(), recorded_encoder=encoder_record(single)
+        )
+    other = flow_lm(sp, combined_configs())
+    load_state_dict_allowing_semantic(other, combined.state_dict(), recorded_encoder=record)

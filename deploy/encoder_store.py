@@ -19,12 +19,18 @@ are tied to exactly that encoder. So the server needs no extra setting: it finds
 encoder that matches the config, copies its files to local disk hashing every byte, and loads
 the encoder from there. A model without a `semantic_conditioner` section needs none.
 
+A combined model (`flow_lm.semantic_conditioners`, two entries) needs both: `EncoderStoreSet`
+holds one `EncoderStore` per entry, in the config's order, and hands the model one directory
+per encoder.
+
 Environment (both optional):
 
     SEMANTIC_ENCODER_STORE   where encoders are copied from; default `<MODEL_STORE>/encoders`
     SEMANTIC_ENCODER_SHA256  pin one encoder by hash instead of finding it by identity. It must
                              still be the encoder the model's config names: a pin cannot make a
-                             model run with another encoder.
+                             model run with another encoder. For a combined model, one hash
+                             per encoder in the config's order, comma-separated (an empty
+                             entry leaves that encoder to be found by identity).
 
 `deploy/publish_encoder.sh` writes the layout; a directory is never overwritten.
 
@@ -41,7 +47,7 @@ from pathlib import Path
 import yaml
 
 from deploy.model_store import copy_verified, normalize_sha
-from pocket_tts.utils.config import SemanticConditionerConfig
+from pocket_tts.utils.config import SemanticConditionerConfig, SemanticSections
 
 logger = logging.getLogger("encoder_store")
 
@@ -72,15 +78,26 @@ def required_files(config: SemanticConditionerConfig) -> tuple[str, ...]:
     return DICTABERT_FILES
 
 
-def semantic_config_of(config_path: Path) -> SemanticConditionerConfig | None:
-    """The `flow_lm.semantic_conditioner` section of a model config, None when it has none
-    (the model runs without semantic conditioning). Reads the YAML only: the weights and the
-    other sections are not touched."""
+def semantic_configs_of(config_path: Path) -> list[SemanticConditionerConfig]:
+    """The encoders a model config names, in order: none (the model runs without semantic
+    conditioning), one (`flow_lm.semantic_conditioner`, or a list of one) or two
+    (`flow_lm.semantic_conditioners`, the combined mode). Reads the YAML only: the weights and
+    the other sections are not touched."""
     raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
-    section = (raw.get("flow_lm") or {}).get("semantic_conditioner")
-    if section is None:
-        return None
-    return SemanticConditionerConfig(**section)
+    flow_lm = raw.get("flow_lm") or {}
+    keys = ("semantic_conditioner", "semantic_conditioners")
+    return SemanticSections(
+        **{k: flow_lm[k] for k in keys if flow_lm.get(k) is not None}
+    ).semantic_encoders
+
+
+def semantic_config_of(config_path: Path) -> SemanticConditionerConfig | None:
+    """The single encoder of a model config, None when it has none. A combined config has
+    several: use `semantic_configs_of`."""
+    configs = semantic_configs_of(config_path)
+    if len(configs) > 1:
+        raise ValueError(f"{config_path} names {len(configs)} encoders; use semantic_configs_of")
+    return configs[0] if configs else None
 
 
 def describe(config: SemanticConditionerConfig) -> str:
@@ -193,3 +210,40 @@ class EncoderStore:
             "revision": self.config.revision,
             "sha256": self.sha256,
         }
+
+
+class EncoderStoreSet:
+    """The published encoders a combined model's config needs: one EncoderStore per encoder,
+    in the config's order. Offers what the server uses of a single EncoderStore."""
+
+    def __init__(
+        self,
+        store: Path,
+        configs: list[SemanticConditionerConfig],
+        root: Path,
+        pins: list[str | None] | None = None,
+    ):
+        pins = pins or [None] * len(configs)
+        if len(pins) != len(configs):
+            raise ValueError(
+                f"{len(pins)} encoder hashes pinned for {len(configs)} encoders: give one per "
+                "encoder in the config's order (an empty one to find that encoder by identity)"
+            )
+        self.stores = [EncoderStore(store, c, root, p) for c, p in zip(configs, pins, strict=True)]
+        if len({s.sha256 for s in self.stores}) < len(self.stores):
+            raise ValueError("the combined model's encoders resolve to the same published files")
+
+    @property
+    def sha256(self) -> str:
+        return ",".join(s.sha256 for s in self.stores)
+
+    def fetch(self) -> list[Path]:
+        """What `TTSModel.load_model(semantic_encoder_dir=...)` takes: one directory per encoder."""
+        return [s.fetch() for s in self.stores]
+
+    def discard(self) -> None:
+        for s in self.stores:
+            s.discard()
+
+    def info(self) -> dict:
+        return {"encoders": [s.info() for s in self.stores]}

@@ -143,8 +143,71 @@ class SemanticConditionerConfig(StrictModel):
         return out
 
 
+# The most encoders one fusion combines.
+MAX_SEMANTIC_ENCODERS = 2
+
+
+class SemanticSections(StrictModel):
+    """The two ways a config names its semantic encoders, and what they mean together.
+
+    - `semantic_conditioner`: one encoder (the legacy, singular form).
+    - `semantic_conditioners`: a list of encoders. Two entries select the combined fusion, in
+      which one learned gate per encoder weighs each encoder's contribution (CombinedSemanticFusion).
+      A list of one is the singular form: it is normalized to `semantic_conditioner`, so its
+      tensors and checkpoints are the single-encoder ones.
+
+    Setting both is an error. Each list entry is a full SemanticConditionerConfig (its own
+    encoder, model, revision, layer band, limits). `gate` and `gate_hidden` belong to the
+    fusion, not to an encoder, so every entry must agree on them (they default alike).
+    """
+
+    # Off unless one of the two is present.
+    semantic_conditioner: SemanticConditionerConfig | None = None
+    semantic_conditioners: list[SemanticConditionerConfig] | None = None
+
+    @model_validator(mode="after")
+    def _check_semantic_sections(self) -> "SemanticSections":
+        many = self.semantic_conditioners
+        if many is None:
+            return self
+        if self.semantic_conditioner is not None:
+            raise ValueError(
+                "set either semantic_conditioner (one encoder) or semantic_conditioners "
+                "(a list of encoders), not both"
+            )
+        if not 1 <= len(many) <= MAX_SEMANTIC_ENCODERS:
+            raise ValueError(
+                f"semantic_conditioners takes 1 to {MAX_SEMANTIC_ENCODERS} encoders, "
+                f"got {len(many)}"
+            )
+        if len(many) == 1:
+            self.semantic_conditioner, self.semantic_conditioners = many[0], None
+            return self
+        for key in ("gate", "gate_hidden"):
+            values = {getattr(c, key) for c in many}
+            if len(values) > 1:
+                raise ValueError(
+                    f"semantic_conditioners: `{key}` belongs to the whole fusion, so every "
+                    f"entry must agree on it (got {sorted(map(str, values))})"
+                )
+        weights = [(c.encoder, c.model_name, c.revision, c.filename) for c in many]
+        if len(set(weights)) < len(weights):
+            raise ValueError(
+                "semantic_conditioners names the same encoder twice "
+                f"({many[0].model_name}@{many[0].revision}); give two different encoders"
+            )
+        return self
+
+    @property
+    def semantic_encoders(self) -> list[SemanticConditionerConfig]:
+        """The configured encoders in order: none, one (legacy form) or the combined list."""
+        if self.semantic_conditioners is not None:
+            return list(self.semantic_conditioners)
+        return [] if self.semantic_conditioner is None else [self.semantic_conditioner]
+
+
 # Root configuration
-class FlowLMConfig(StrictModel):
+class FlowLMConfig(SemanticSections):
     """Root configuration model for YAML config files."""
 
     dtype: str
@@ -157,8 +220,6 @@ class FlowLMConfig(StrictModel):
     lookup_table: LookupTable
     weights_path: str | None = None
     insert_bos_before_voice: bool = False
-    # Off unless present. See SemanticConditionerConfig.
-    semantic_conditioner: SemanticConditionerConfig | None = None
 
 
 # SEANet configuration

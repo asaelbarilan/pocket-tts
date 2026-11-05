@@ -15,6 +15,7 @@ from pocket_tts.utils.config import SemanticConditionerConfig  # noqa: E402
 from tests.test_semantic_conditioning import (  # noqa: E402
     CORPUS,
     LDIM,
+    combined_configs,
     flow_lm,
     make_sp,
     small_config,
@@ -346,3 +347,128 @@ def test_multi_dataset_renikud_90k_config():
     assert args.stats_ema_steps == 1000 and args.ema_decay == 0.999
     assert args.sample_freq == args.valid_freq == args.ckpt_freq == 2500
     assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq
+
+
+# ------------------------------------------------------------------------- the combined mode
+
+
+def test_combined_loss_equals_plain_loss_at_init(sp):
+    plain, combined = trainable(sp, None), trainable(sp, combined_configs())
+    combined.load_state_dict(plain.state_dict(), strict=False)
+    a, _ = run_loss(plain, sp)
+    b, metrics = run_loss(combined, sp, texts=TEXTS)
+    torch.testing.assert_close(a, b)
+    assert {"semantic_gate_dictabert", "semantic_contrib_renikud_plus"} <= set(metrics)
+
+
+def test_combined_optimizer_group_holds_every_branch(sp):
+    model = trainable(sp, combined_configs())
+    opt = torch.optim.AdamW(
+        optimizer_param_groups(model, TrainArgs(semantic_lr_scale=4.0)), lr=1e-3
+    )
+    base, fusion = opt.param_groups
+    assert {id(p) for p in fusion["params"]} == set(
+        map(id, model.flow_lm.semantic_fusion.parameters())
+    )
+    assert (
+        fusion["lr_scale"] == 4.0 and len(fusion["params"]) == 2 * 5 + 4
+    )  # per encoder 5, the shared gate 4
+
+
+def test_combined_checkpoint_round_trip_and_refusals(sp, tmp_path):
+    args = TrainArgs()
+    path = _save(tmp_path / "c", trainable(sp, combined_configs()), args, sp)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert payload["semantic_encoder"]["encoder"] == "combined"
+    assert [e["encoder"] for e in payload["semantic_encoder"]["encoders"]] == [
+        "dictabert",
+        "renikud_plus",
+    ]
+    # Resumes (weights, optimizer, EMA) into the same combination.
+    again = trainable(sp, combined_configs())
+    opt = torch.optim.AdamW(optimizer_param_groups(again, args), lr=1e-3)
+    assert load_checkpoint(path, again, opt, EMA(again, 0.9)) == 7
+    assert opt.state
+    # Not into one encoder, whichever.
+    for config in (small_config(), small_config(encoder="renikud_plus")):
+        with pytest.raises(ValueError, match="trained with encoder combined"):
+            load_checkpoint(path, trainable(sp, config))
+    # A single-encoder checkpoint is not a combined one's start either.
+    single = _save(tmp_path / "s", trainable(sp, small_config()), args, sp)
+    with pytest.raises(ValueError, match="combined fusion and a single-encoder fusion"):
+        load_checkpoint(single, trainable(sp, combined_configs()))
+    # A plain model reads the weights and drops the fusion; a plain checkpoint starts a combined
+    # one from its zero init.
+    assert load_checkpoint(path, trainable(sp, None)) == 7
+    plain = _save(tmp_path / "p", trainable(sp, None), args, sp)
+    assert load_checkpoint(plain, trainable(sp, combined_configs())) == 7
+
+
+def test_combined_export_carries_the_record(sp, tmp_path):
+    from pocket_tts.conditioners.semantic import read_encoder_record
+    from training.checkpointing import export_pocket_safetensors
+
+    model = trainable(sp, combined_configs())
+    export = tmp_path / "model.safetensors"
+    export_pocket_safetensors(export, model.flow_lm, torch.nn.Linear(1, 1))
+    record = read_encoder_record(export)
+    assert record["encoder"] == "combined" and len(record["encoders"]) == 2
+
+
+def test_model_config_takes_the_plural_section():
+    english = "pocket_tts/config/english.yaml"
+    both = [{"encoder": "dictabert", "first_layer": 3}, {"encoder": "renikud_plus"}]
+    config = load_model_config(english, {}, None, both)
+    first, second = config.flow_lm.semantic_encoders
+    assert (first.encoder, first.first_layer, second.encoder) == ("dictabert", 3, "renikud_plus")
+    assert config.flow_lm.semantic_conditioner is None
+    # A list of one is the legacy section.
+    one = load_model_config(english, {}, None, [{"encoder": "renikud_plus"}])
+    assert one.flow_lm.semantic_conditioners is None
+    assert one.flow_lm.semantic_conditioner.encoder == "renikud_plus"
+    with pytest.raises(ValueError, match="not both"):
+        load_model_config(english, {}, {}, both)
+
+
+def test_plural_replaces_the_model_configs_section_and_the_reverse(tmp_path, caplog):
+    import yaml
+
+    base = yaml.safe_load(Path("pocket_tts/config/english.yaml").read_text())
+    base["flow_lm"]["semantic_conditioner"] = {}
+    path = tmp_path / "cfg.yaml"
+    path.write_text(yaml.safe_dump(base))
+    both = [{"encoder": "dictabert"}, {"encoder": "renikud_plus"}]
+    with caplog.at_level(logging.INFO):
+        config = load_model_config(str(path), {}, None, both)
+    assert len(config.flow_lm.semantic_encoders) == 2 and "replaces" in caplog.text
+    # A config that already names two encoders: the singular key replaces the list.
+    base["flow_lm"].pop("semantic_conditioner")
+    base["flow_lm"]["semantic_conditioners"] = both
+    path.write_text(yaml.safe_dump(base))
+    assert len(load_model_config(str(path), {}).flow_lm.semantic_encoders) == 2
+    config = load_model_config(str(path), {}, {"encoder": "renikud_plus"})
+    assert [c.encoder for c in config.flow_lm.semantic_encoders] == ["renikud_plus"]
+
+
+def test_trainargs_semantic_forms():
+    assert TrainArgs().semantic_conditioners is None
+    TrainArgs(semantic_conditioners=[{"encoder": "dictabert"}, {"encoder": "renikud_plus"}])
+    with pytest.raises(ValueError, match="not both"):
+        TrainArgs(semantic_conditioner={}, semantic_conditioners=[{}, {"encoder": "renikud_plus"}])
+
+
+def test_combined_finetune_config_matches_its_siblings():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    combined = load_args(configs / "finetune_hebrew_semantic_combined.yaml")
+    renikud = load_args(configs / "finetune_hebrew_semantic_renikud.yaml")
+    assert combined.semantic_conditioner is None
+    assert [e["encoder"] for e in combined.semantic_conditioners] == ["dictabert", "renikud_plus"]
+    # Only the encoders and the run directory differ from the RenikudPlus run.
+    assert combined.semantic_conditioners[1] == renikud.semantic_conditioner
+    assert combined.run_dir != renikud.run_dir
+    for field in ("model_config", "start_from_pretrained", "optim", "data", "semantic_lr_scale"):
+        assert getattr(combined, field) == getattr(renikud, field), field
+    config = load_model_config(
+        "pocket_tts/config/english.yaml", {}, None, combined.semantic_conditioners
+    )
+    assert len(config.flow_lm.semantic_encoders) == 2

@@ -6,7 +6,11 @@ from beartype.typing import Callable
 from torch import nn
 from typing_extensions import Self
 
-from pocket_tts.conditioners.semantic import SemanticFusion
+from pocket_tts.conditioners.semantic import (
+    CombinedSemanticFusion,
+    SemanticFusion,
+    build_semantic_fusion,
+)
 from pocket_tts.conditioners.text import LUTConditioner
 from pocket_tts.modules.mlp import SimpleMLPAdaLN
 from pocket_tts.modules.transformer import StreamingTransformer
@@ -81,7 +85,7 @@ class FlowLMModel(nn.Module):
         dtype=None,
         insert_bos_before_voice: bool = False,
         flow_type: str = "lsd",
-        semantic_fusion: SemanticFusion | None = None,
+        semantic_fusion: SemanticFusion | CombinedSemanticFusion | None = None,
     ):
         super().__init__()
         self.flow_type = flow_type
@@ -225,9 +229,7 @@ class FlowLMModel(nn.Module):
         )
 
         transformer = StreamingTransformer.from_pydantic_config(config.transformer)
-        semantic_fusion = None
-        if config.semantic_conditioner is not None:
-            semantic_fusion = SemanticFusion(config.semantic_conditioner, d_model)
+        semantic_fusion = build_semantic_fusion(config.semantic_encoders, d_model)
 
         return cls(
             flow_net=flow_mlp,

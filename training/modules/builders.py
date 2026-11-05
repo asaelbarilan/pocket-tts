@@ -49,7 +49,10 @@ def _local_tokenizer_vocab_size(tokenizer_path: str) -> int | None:
 
 
 def load_model_config(
-    path: str, overrides: dict[str, tp.Any], semantic: dict[str, tp.Any] | None = None
+    path: str,
+    overrides: dict[str, tp.Any],
+    semantic: dict[str, tp.Any] | None = None,
+    semantic_many: list[dict[str, tp.Any]] | None = None,
 ):
     """A pocket-tts model config with dotted-path fields replaced.
 
@@ -66,6 +69,8 @@ def load_model_config(
     `semantic` (TrainArgs.semantic_conditioner) is merged into
     flow_lm.semantic_conditioner, creating the section when the config has none. If it
     selects a different `encoder` than the config's section, it replaces that section.
+    `semantic_many` (TrainArgs.semantic_conditioners, the combined mode) always replaces the
+    config's semantic section, singular or plural.
     """
     config_file = download_if_necessary(str(path))
     if not config_file.exists():
@@ -81,7 +86,19 @@ def load_model_config(
         if leaf not in node:
             raise KeyError(f"{path} has no field {dotted!r} to override")
         node[leaf] = value
+    if semantic is not None and semantic_many is not None:
+        raise ValueError("pass semantic or semantic_many, not both")
+    if semantic_many is not None:
+        if any(
+            raw["flow_lm"].get(k) is not None
+            for k in ("semantic_conditioner", "semantic_conditioners")
+        ):
+            logger.info("semantic_conditioners replaces the model config's semantic section")
+        raw["flow_lm"].pop("semantic_conditioner", None)
+        raw["flow_lm"]["semantic_conditioners"] = [dict(entry) for entry in semantic_many]
     if semantic is not None:
+        if raw["flow_lm"].pop("semantic_conditioners", None) is not None:
+            logger.info("semantic_conditioner replaces the model config's semantic_conditioners")
         base = raw["flow_lm"].get("semantic_conditioner") or {}
         if semantic.get("encoder", "dictabert") != base.get("encoder", "dictabert"):
             # The base section's model, revision, file and limits belong to its own encoder,
@@ -189,7 +206,12 @@ def attach_distillation(model: TrainableTTS, flow_lm: nn.Module, args: TrainArgs
 
 def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
     """Build (trainable model, frozen mimi, pocket config) from a pocket-tts config."""
-    config = load_model_config(args.model_config, args.model_overrides, args.semantic_conditioner)
+    config = load_model_config(
+        args.model_config,
+        args.model_overrides,
+        args.semantic_conditioner,
+        args.semantic_conditioners,
+    )
     tts_model = TTSModel._from_pydantic_config(
         config, temp=0.7, sampler_decode_steps=1, noise_clamp=None, eos_threshold=0.0, origin=None
     )
@@ -274,15 +296,17 @@ def build_models(args: TrainArgs) -> tuple[TrainableTTS, MimiModel, tp.Any]:
     if flow_lm.semantic_fusion is not None:
         # Fail before training starts; the encoder stays frozen and outside the module tree.
         flow_lm.semantic_fusion.load_encoder()
-        logger.info(
-            "semantic conditioning on: %s %s@%s layers %d-%d, %s gate",
-            config.flow_lm.semantic_conditioner.encoder,
-            config.flow_lm.semantic_conditioner.model_name,
-            config.flow_lm.semantic_conditioner.revision,
-            config.flow_lm.semantic_conditioner.first_layer,
-            config.flow_lm.semantic_conditioner.last_layer,
-            config.flow_lm.semantic_conditioner.gate,
-        )
+        for encoder in config.flow_lm.semantic_encoders:
+            logger.info(
+                "semantic conditioning on: %s %s@%s layers %d-%d, %s gate%s",
+                encoder.encoder,
+                encoder.model_name,
+                encoder.revision,
+                encoder.first_layer,
+                encoder.last_layer,
+                encoder.gate,
+                " (combined)" if config.flow_lm.semantic_conditioners else "",
+            )
 
     model = TrainableTTS(flow_lm, flow, args)
     if args.distill_cfg_coef > 0:
