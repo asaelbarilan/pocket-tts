@@ -191,7 +191,7 @@ class TestSampleVoice:
         voice_latents = torch.ones(25, 4)
         voice_audio = torch.full((25 * 1920,), 0.25)
 
-        written = write_samples(
+        voice_path, written = write_samples(
             _DummyModel(),
             _DummyMimi(),
             lambda s: [1, 2, 3],
@@ -202,7 +202,9 @@ class TestSampleVoice:
             device=torch.device("cpu"),
             voice_audio=voice_audio,
         )
-        assert [label for label, _ in written] == ["[voice prompt]", "שלום עולם", "בדיקה"]
+        assert [label for label, _ in written] == ["שלום עולם", "בדיקה"]
+        assert [p.name for _, p in written] == ["step00002500_0.wav", "step00002500_1.wav"]
+        assert voice_path == tmp_path / "samples" / "step00002500_voice.wav"
         assert (tmp_path / "samples" / "step00002500_voice.wav").is_file()
         assert (tmp_path / "samples" / "step00002500_0.wav").is_file()
         assert (tmp_path / "samples" / "step00002500_1.wav").is_file()

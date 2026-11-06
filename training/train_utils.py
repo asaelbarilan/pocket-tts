@@ -170,14 +170,18 @@ def write_samples(
     device,
     voice_audio: torch.Tensor | None = None,
 ):
-    """Synthesize the configured sentences and return their local WAV paths."""
+    """Synthesize the configured sentences.
+
+    Returns (voice prompt WAV path or None, [(sentence, WAV path), ...]); the list holds
+    only generated sentences, one per configured sentence that produced audio.
+    """
     out_dir = run_dir / "samples"
     out_dir.mkdir(exist_ok=True)
     written = []
+    voice_path = None
     if voice_audio is not None and voice_audio.numel() > 0:
         voice_path = out_dir / f"step{step:08d}_voice.wav"
         soundfile.write(str(voice_path), voice_audio.float().cpu().numpy(), mimi.sample_rate)
-        written.append(("[voice prompt]", voice_path))
     model.eval()
     tokens = [torch.tensor(tokenize(s), dtype=torch.long) for s in args.sample_sentences]
     with torch.no_grad():
@@ -203,4 +207,4 @@ def write_samples(
             written.append((args.sample_sentences[i], out_dir / f"step{step:08d}_{i}.wav"))
     model.train()
     logger.info(f"wrote {len(tokens)} samples at step {step}")
-    return written
+    return voice_path, written

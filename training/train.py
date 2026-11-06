@@ -437,7 +437,7 @@ def main(config_path: str) -> None:
                 args.seed,
                 step + 1,
             )
-            samples = write_samples(
+            voice_path, samples = write_samples(
                 model,
                 mimi,
                 tokenize,
@@ -452,9 +452,15 @@ def main(config_path: str) -> None:
                 wandb.log(
                     {
                         "samples": wandb.Table(
-                            columns=["text", "audio"],
+                            columns=["text", "audio", "voice prompt"],
                             data=[
-                                [text, wandb.Audio(str(path), sample_rate=mimi.sample_rate)]
+                                [
+                                    text,
+                                    wandb.Audio(str(path), sample_rate=mimi.sample_rate),
+                                    wandb.Audio(str(voice_path), sample_rate=mimi.sample_rate)
+                                    if voice_path is not None
+                                    else None,
+                                ]
                                 for text, path in samples
                             ],
                         )
