@@ -8,7 +8,7 @@ from training.args import OptimArgs, TrainArgs
 from training.checkpointing import EMA
 from training.modules.samplers import LSD
 from training.scripts.shrink_checkpoint import select_layers, shrink
-from training.train_utils import lr_at
+from training.train_utils import lr_at, pick_sample_voice, write_samples
 
 
 def _args(**kw) -> TrainArgs:
@@ -130,3 +130,79 @@ class TestDistillProb:
         for _ in range(30):
             _, met, _ = m.loss(self._v, torch.randn(2, 4), torch.randn(2, 4))
             assert "flow_distill" in met
+
+
+class TestSampleVoice:
+    def test_trims_latents_and_audio_and_prefers_2_to_5_sec(self):
+        frame_rate = 12.5
+        sample_rate = 24000
+        # Row 0: 1.2s (15 frames), Row 1: 3.0s (38 frames), Row 2: 2.4s (30 frames), Row 3: 6.0s (75 frames)
+        num_frames = torch.tensor([15, 38, 30, 75])
+        max_T = 75
+        latents = torch.zeros(4, max_T, 4)
+        audio = torch.zeros(4, 1, max_T * 1920)
+        for b, n in enumerate(num_frames.tolist()):
+            latents[b, :n] = float(b + 1)
+            audio[b, 0, : n * 1920] = float(b + 1)
+
+        chosen_rows = set()
+        for step in range(1, 30):
+            v_lat, v_wav = pick_sample_voice(
+                latents, num_frames, audio, frame_rate, sample_rate, seed=42, step=step
+            )
+            row_id = int(v_lat[0, 0].item()) - 1
+            chosen_rows.add(row_id)
+            expected_frames = int(num_frames[row_id].item())
+            assert v_lat.shape == (expected_frames, 4)
+            assert torch.all(v_lat == float(row_id + 1))
+            assert v_wav.shape == (expected_frames * 1920,)
+            assert torch.all(v_wav == float(row_id + 1))
+
+        # Only rows 1 (3.04s) and 2 (2.4s) are in [2.0, 5.0]s, and both should be visited across steps.
+        assert chosen_rows == {1, 2}
+
+    def test_falls_back_to_any_row_when_none_in_2_to_5_sec(self):
+        frame_rate = 12.5
+        sample_rate = 24000
+        num_frames = torch.tensor([15, 20])  # 1.2s and 1.6s
+        latents = torch.ones(2, 40, 4)
+        audio = torch.ones(2, 1, 40 * 1920)
+        v_lat, v_wav = pick_sample_voice(
+            latents, num_frames, audio, frame_rate, sample_rate, seed=0, step=2500
+        )
+        assert v_lat.shape[0] in {15, 20}
+        assert v_wav.shape[0] == v_lat.shape[0] * 1920
+
+    def test_write_samples_stores_and_returns_trimmed_voice_prompt(self, tmp_path):
+        class _DummyModel(nn.Module):
+            def generate(self, tokens, voices, temp, cfg_coef, texts):
+                assert all(v.shape == (25, 4) for v in voices)
+                return [torch.ones(10, 4) for _ in tokens]
+
+        class _DummyMimi(nn.Module):
+            sample_rate = 24000
+            frame_rate = 12.5
+            encoder_frame_rate = 12.5
+
+            def decode_from_latent(self, latents, state):
+                return torch.full((1, 1, latents.shape[1] * 1920), 0.1)
+
+        args = _args(sample_sentences=["שלום עולם", "בדיקה"])
+        voice_latents = torch.ones(25, 4)
+        voice_audio = torch.full((25 * 1920,), 0.25)
+
+        written = write_samples(
+            _DummyModel(),
+            _DummyMimi(),
+            lambda s: [1, 2, 3],
+            args,
+            tmp_path,
+            step=2500,
+            voice_latents=voice_latents,
+            device=torch.device("cpu"),
+            voice_audio=voice_audio,
+        )
+        assert [label for label, _ in written] == ["[voice prompt]", "שלום עולם", "בדיקה"]
+        assert (tmp_path / "samples" / "step00002500_voice.wav").is_file()
+        assert (tmp_path / "samples" / "step00002500_0.wav").is_file()
+        assert (tmp_path / "samples" / "step00002500_1.wav").is_file()

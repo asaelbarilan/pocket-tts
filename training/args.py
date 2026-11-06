@@ -141,8 +141,8 @@ class TrainArgs:
     compile: bool = True
     num_valid_batches: int = 50
     # Rank 0 synthesizes these sentences every sample_freq steps into
-    # run_dir/samples/ (raw weights, first batch's voice prompt) so a run can
-    # be judged by ear while it trains. Empty list disables.
+    # run_dir/samples/ (raw weights, random 2-5s voice prompt from the batch) so a
+    # run can be judged by ear while it trains. Empty list disables.
     sample_sentences: list[str] = field(
         default_factory=lambda: [
             "The quick brown fox jumps over the lazy dog.",

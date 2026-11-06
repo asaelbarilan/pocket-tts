@@ -60,6 +60,7 @@ from training.train_utils import (
     git_commit,
     lr_at,
     optimizer_param_groups,
+    pick_sample_voice,
     setup_logging,
     write_samples,
 )
@@ -317,7 +318,6 @@ def main(config_path: str) -> None:
         logger.info("starting training loop, first step can take a few minutes (compilation etc.)")
     last_log = time.time()
     steps_since_log = 0
-    sample_voice = None
     for step in range(start_step, args.max_steps):
         first_step = step == start_step
         if rank == 0 and first_step:
@@ -422,16 +422,31 @@ def main(config_path: str) -> None:
         if rank == 0 and step - start_step == VERBOSE_STEPS - 1:
             logger.info(f"per-step logging done, logging every {args.log_freq} steps from now on")
 
-        if sample_voice is None:
-            sample_voice = voice_prompt_latents[0].detach().clone()
         if (
             rank == 0
             and args.sample_sentences
             and args.sample_freq > 0
             and (step + 1) % args.sample_freq == 0
         ):
+            sample_voice, sample_voice_audio = pick_sample_voice(
+                voice_prompt_latents,
+                num_voice_prompt_frames,
+                batch.voice_audio,
+                mimi.frame_rate,
+                mimi.sample_rate,
+                args.seed,
+                step + 1,
+            )
             samples = write_samples(
-                model, mimi, tokenize, args, args.run_dir, step + 1, sample_voice, device
+                model,
+                mimi,
+                tokenize,
+                args,
+                args.run_dir,
+                step + 1,
+                sample_voice,
+                device,
+                voice_audio=sample_voice_audio,
             )
             if samples:
                 wandb.log(

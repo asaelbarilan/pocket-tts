@@ -3,6 +3,7 @@
 import json
 import logging
 import math
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -125,12 +126,58 @@ def lr_at(step: int, args: TrainArgs) -> float:
     return lr
 
 
+SAMPLE_VOICE_MIN_SEC = 2.0
+SAMPLE_VOICE_MAX_SEC = 5.0
+
+
+def pick_sample_voice(
+    voice_prompt_latents: torch.Tensor,
+    num_voice_prompt_frames: torch.Tensor,
+    voice_audio: torch.Tensor,
+    frame_rate: float,
+    sample_rate: int,
+    seed: int,
+    step: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pick a random voice prompt from the batch (preferring 2-5s) and trim its padding."""
+    max_frames = voice_prompt_latents.shape[1]
+    frame_counts = [
+        max(1, min(int(n), max_frames)) for n in num_voice_prompt_frames.detach().cpu().tolist()
+    ]
+    preferred = [
+        i
+        for i, n in enumerate(frame_counts)
+        if SAMPLE_VOICE_MIN_SEC <= n / frame_rate <= SAMPLE_VOICE_MAX_SEC
+    ]
+    candidates = preferred or list(range(len(frame_counts)))
+    idx = random.Random(f"sample_voice:{seed}:{step}").choice(candidates)
+    n_frames = frame_counts[idx]
+    valid_samples = min(voice_audio.shape[-1], round(n_frames * sample_rate / frame_rate))
+    trimmed_latents = voice_prompt_latents[idx, :n_frames].detach().clone()
+    trimmed_audio = voice_audio[idx, 0, :valid_samples].detach().cpu().clone()
+    return trimmed_latents, trimmed_audio
+
+
 @torch.no_grad()
-def write_samples(model, mimi, tokenize, args, run_dir, step, voice_latents, device):
+def write_samples(
+    model,
+    mimi,
+    tokenize,
+    args,
+    run_dir,
+    step,
+    voice_latents,
+    device,
+    voice_audio: torch.Tensor | None = None,
+):
     """Synthesize the configured sentences and return their local WAV paths."""
     out_dir = run_dir / "samples"
     out_dir.mkdir(exist_ok=True)
     written = []
+    if voice_audio is not None and voice_audio.numel() > 0:
+        voice_path = out_dir / f"step{step:08d}_voice.wav"
+        soundfile.write(str(voice_path), voice_audio.float().cpu().numpy(), mimi.sample_rate)
+        written.append(("[voice prompt]", voice_path))
     model.eval()
     tokens = [torch.tensor(tokenize(s), dtype=torch.long) for s in args.sample_sentences]
     with torch.no_grad():
