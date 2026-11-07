@@ -261,3 +261,155 @@ def test_voice_audio_endpoint_serves_known_voices(tmp_path):
     ok = http.get("/voices/a.wav")
     assert ok.status_code == 200 and ok.content == b"RIFF-fake-wav"
     assert http.get("/voices/missing.wav").status_code == 404
+
+
+def test_model_metadata_and_preview_banner_show_run_config_and_sha(tmp_path):
+    cfg = tmp_path / "hebrew_24l.yaml"
+    cfg.write_text(
+        "# run: finetune_hebrew_semantic_both_90k\n"
+        "# run_config: training/configs/finetune_hebrew_semantic_both_90k.yaml\n"
+        "weights_path: artifacts/model.safetensors\n",
+        encoding="utf-8",
+    )
+    meta = hebrew_tts_server.extract_model_metadata(cfg, None, "4b" * 32)
+    assert meta["model_run"] == "finetune_hebrew_semantic_both_90k"
+    assert meta["model_config"] == "training/configs/finetune_hebrew_semantic_both_90k.yaml"
+    assert meta["model_sha256"] == "4b" * 32
+
+    fx = Fixture(tmp_path)
+    loader = SimpleNamespace(
+        config=cfg,
+        store=None,
+        engine=SimpleNamespace(device="cuda", n_layers=24, sample_rate=24000, config=cfg),
+        error=None,
+        stage="ready",
+        model_sha256="4b" * 32,
+        voices_dir=tmp_path,
+        semantic_encoder_info=lambda: {
+            "encoders": [{"encoder": "dictabert"}, {"encoder": "renikud_plus"}]
+        },
+    )
+    downloads = SimpleNamespace(html=lambda: "")
+    http = TestClient(hebrew_tts_server.create_app(loader, fx.set, downloads, SimpleNamespace()))
+    health = http.get("/health").json()
+    assert health["model_run"] == "finetune_hebrew_semantic_both_90k"
+    assert health["model_config"] == "training/configs/finetune_hebrew_semantic_both_90k.yaml"
+    assert health["model_sha256"] == "4b" * 32
+    page = http.get("/").text
+    assert 'id="modelCard"' in page
+    assert "finetune_hebrew_semantic_both_90k" in page
+    assert "training/configs/finetune_hebrew_semantic_both_90k.yaml" in page
+    assert "4b" * 32 in page
+
+
+def _old_run(fx, folder, *, sha="1" * 16, sentences=True, wavs=("s0", "s1"), model_run=None):
+    """A cache folder an earlier model left behind."""
+    directory = fx.set.cache_root / folder
+    directory.mkdir(parents=True)
+    items = {}
+    for i in wavs:
+        (directory / f"{i}.wav").write_bytes(f"old-{folder}-{i}".encode())
+        items[i] = {"id": i, "status": "ok", "file": f"{i}.wav", "audio_seconds": 1.0}
+    manifest = {
+        "fingerprint": fx.set.fingerprint,
+        "model_sha256": sha,
+        "voice": "b.wav",
+        "seed": 1234,
+        "settings": {"temp": 0.3},
+        "items": items,
+    }
+    if sentences:
+        manifest["sentences_sha"] = fx.set._sentences_sha
+    else:
+        manifest["fingerprint"] = fx.set.fingerprint  # legacy manifests have only this
+    if model_run:
+        manifest["model_run"] = model_run
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    return directory
+
+
+def test_past_runs_are_discovered_by_set_and_named_by_run_folder_or_date(tmp_path):
+    names = {"1" * 16: {"run": "finetune_x", "note": "n"}}
+    fx = Fixture(tmp_path)
+    fx.set._describe = lambda sha: names.get(sha, {})
+    _old_run(fx, "1111111111111111-cuda", sha="1" * 16)
+    _old_run(fx, "50k_2222222222222222-cuda", sha="2" * 16, sentences=False)
+    _old_run(fx, "3333333333333333-cpu", sha="3" * 16, model_run="stored_run")
+    other = _old_run(fx, "4444444444444444-cuda", sha="4" * 16)
+    manifest = json.loads((other / "manifest.json").read_text())
+    manifest["sentences_sha"] = "different"
+    (other / "manifest.json").write_text(json.dumps(manifest))
+    (fx.set.cache_root / "5555555555555555-cuda").mkdir()  # no manifest
+    _old_run(fx, "abcd-cpu")  # the loaded model's own key is not a past run
+    fx.set.start()
+    fx.wait()
+    _old_run(fx, "abcd-cuda", sha="a" * 16)  # same model, other device kind: a past run
+
+    runs = {r["id"]: r for r in fx.set.past_runs()}
+    assert set(runs) == {
+        "1111111111111111-cuda",
+        "50k_2222222222222222-cuda",
+        "3333333333333333-cpu",
+        "abcd-cuda",
+    }
+    assert runs["1111111111111111-cuda"]["label"] == "finetune_x"
+    assert runs["1111111111111111-cuda"]["device"] == "cuda"
+    assert runs["50k_2222222222222222-cuda"]["label"] == "50k_2222222222222222-cuda"
+    assert runs["3333333333333333-cpu"]["label"] == "stored_run"
+    assert runs["abcd-cuda"]["state"] == "partial" and runs["abcd-cuda"]["done"] == 2
+    assert runs["abcd-cuda"]["date"].endswith("UTC")
+
+
+def test_run_detail_and_audio_stay_inside_known_runs(tmp_path):
+    fx = Fixture(tmp_path)
+    _old_run(fx, "1111111111111111-cuda")
+    detail = fx.set.run_detail("1111111111111111-cuda")
+    assert [i["id"] for i in detail["items"]] == ["s0", "s1"]
+    path = fx.set.run_audio_path("1111111111111111-cuda", "s0")
+    assert path.read_bytes() == b"old-1111111111111111-cuda-s0"
+    assert fx.set.run_audio_path("1111111111111111-cuda", "s2") is None
+    assert fx.set.run_audio_path("1111111111111111-cuda", "../x") is None
+    for bad in ("..", ".", "", "../cache", "abcd-cpu", "nope"):
+        assert fx.set.run_detail(bad) is None
+        assert fx.set.run_audio_path(bad, "s0") is None
+
+
+def test_validation_runs_endpoints(tmp_path):
+    fx = Fixture(tmp_path)
+    _old_run(fx, "1111111111111111-cuda")
+    loader = SimpleNamespace(
+        config=None,
+        store=None,
+        engine=SimpleNamespace(),
+        error=None,
+        stage="ready",
+        model_sha256="a" * 64,
+        voices_dir=tmp_path,
+    )
+    downloads = SimpleNamespace(html=lambda: "")
+    http = TestClient(hebrew_tts_server.create_app(loader, fx.set, downloads, SimpleNamespace()))
+    listing = http.get("/validation/runs").json()
+    assert [s["id"] for s in listing["sentences"]] == ["s0", "s1", "s2"]
+    assert [r["id"] for r in listing["runs"]] == ["1111111111111111-cuda"]
+    assert len(http.get("/validation/runs/1111111111111111-cuda").json()["items"]) == 2
+    audio = http.get("/validation/runs/1111111111111111-cuda/audio/s1.wav")
+    assert audio.status_code == 200 and audio.content == b"old-1111111111111111-cuda-s1"
+    assert http.get("/validation/runs/nope").status_code == 404
+    assert http.get("/validation/runs/1111111111111111-cuda/audio/s2.wav").status_code == 404
+    assert 'id="valCmp"' in http.get("/").text
+
+
+def test_describe_stored_model_reads_run_from_manifest_or_note(tmp_path):
+    def publish(sha, manifest):
+        (tmp_path / sha).mkdir()
+        (tmp_path / sha / "manifest.json").write_text(json.dumps(manifest))
+
+    publish("aa" * 32, {"run": "explicit_run", "note": "x", "created": "2026-01-01T00:00:00Z"})
+    publish("bb" * 32, {"note": "finetune_hebrew_foo_90k step 90000"})
+    publish("cc" * 32, {"note": "just words"})
+    describe = hebrew_tts_server.describe_stored_model
+    assert describe(tmp_path, "aa" * 8)["run"] == "explicit_run"
+    assert describe(tmp_path, "bb" * 8)["run"] == "finetune_hebrew_foo_90k"
+    assert describe(tmp_path, "cc" * 8) == {"run": None, "note": "just words", "created": None}
+    assert describe(tmp_path, "dd" * 8, {"run": "fb"}) == {"run": "fb"}
+    assert describe(None, "aa" * 8) == {}

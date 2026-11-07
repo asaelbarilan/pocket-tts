@@ -19,10 +19,19 @@ WEIGHTS="${1:-$ROOT/artifacts/model.safetensors}"
 CONFIG="${CONFIG:-$ROOT/artifacts/hebrew_24l.yaml}"
 TOKENIZER="${TOKENIZER:-$ROOT/tokenizers/tokenizer.model}"
 NOTE="${NOTE:-}"
+RUN="${RUN:-}"
+RUN_CONFIG="${RUN_CONFIG:-}"
 
 for f in "$WEIGHTS" "$CONFIG" "$TOKENIZER"; do
   [ -s "$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
 done
+
+if [ -z "$RUN" ]; then
+  RUN="$(sed -n 's/^#[[:space:]]*run:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$CONFIG" | head -n 1)"
+fi
+if [ -z "$RUN_CONFIG" ]; then
+  RUN_CONFIG="$(sed -n 's/^#[[:space:]]*run_config:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$CONFIG" | head -n 1)"
+fi
 
 echo "hashing $WEIGHTS ..."
 SHA="$(sha256_of "$WEIGHTS")"
@@ -57,6 +66,8 @@ cat > "$STAGE/manifest.json" <<EOF
 {
   "format": 1,
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "run": "$RUN",
+  "run_config": "$RUN_CONFIG",
   "note": "$NOTE",
   "files": {
     "model.safetensors": {"sha256": "$SHA", "size": $(size "$WEIGHTS")},

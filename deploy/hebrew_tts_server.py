@@ -30,6 +30,7 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -292,6 +293,110 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+_RUN_NAME_RE = re.compile(r"\b(finetune_[A-Za-z0-9_.-]+|hebrew[-_][A-Za-z0-9_.-]+)\b")
+_CFG_RUN_RE = re.compile(r"^\s*#\s*run:\s*(\S+)", re.MULTILINE)
+_CFG_PAREN_RUN_RE = re.compile(r"\(run\s+([A-Za-z0-9_.-]+)")
+_CFG_RUN_CONFIG_RE = re.compile(r"^\s*#\s*run_config:\s*(\S+)", re.MULTILINE)
+_CFG_PATH_RE = re.compile(r"\b(training/configs/[A-Za-z0-9_./-]+\.yaml)\b")
+
+
+def describe_stored_model(
+    store_root: Path | None, sha_prefix: str, fallback: dict | None = None
+) -> dict[str, str | None]:
+    """Run name, note and publish date of the published model whose weights hash starts with
+    `sha_prefix` (the validation cache folders only carry 16 characters), read from its store
+    manifest. The run is the manifest's `run`, else a run name found in its note. `fallback` is
+    used when the model is not in the store (a local run without one)."""
+    manifest: dict = {}
+    if store_root is not None and len(sha_prefix) >= 8:
+        try:
+            for folder in store_root.iterdir():
+                if (
+                    folder.name.startswith(sha_prefix.lower())
+                    and (folder / "manifest.json").is_file()
+                ):
+                    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+                    break
+        except (OSError, ValueError):
+            manifest = {}
+    if not manifest:
+        return dict(fallback or {})
+    note = (manifest.get("note") or "").strip() or None
+    run = (manifest.get("run") or "").strip() or None
+    if not run and note:
+        m = _RUN_NAME_RE.search(note)
+        run = m.group(1) if m else None
+    return {"run": run, "note": note, "created": (manifest.get("created") or "").strip() or None}
+
+
+def extract_model_metadata(
+    config: Path | None, store: ModelStore | None, model_sha256: str | None = None
+) -> dict[str, str | None]:
+    """Identify the currently served model: its weights sha256, output run folder name,
+    training/inference config name, and store note/timestamp when available."""
+    manifest = store.manifest if store is not None else {}
+    sha = model_sha256 or (store.sha256 if store is not None else None)
+    note = (manifest.get("note") or "").strip() or None
+    created = (manifest.get("created") or "").strip() or None
+    run = (manifest.get("run") or "").strip() or None
+    run_config = (manifest.get("run_config") or "").strip() or None
+
+    cfg_text = ""
+    if config is not None and config.is_file():
+        try:
+            cfg_text = config.read_text(encoding="utf-8")
+        except OSError:
+            cfg_text = ""
+
+    # 1. Explicit `# run:` / `# run_config:` headers in the config YAML, or run name in store note.
+    if not run and note:
+        m = _RUN_NAME_RE.search(note)
+        if m:
+            run = m.group(1)
+    if not run and cfg_text:
+        m = _CFG_RUN_RE.search(cfg_text) or _CFG_PAREN_RUN_RE.search(cfg_text)
+        if m:
+            run = m.group(1).rstrip(",;)")
+    if not run_config and cfg_text:
+        m = _CFG_RUN_CONFIG_RE.search(cfg_text) or _CFG_PATH_RE.search(cfg_text)
+        if m:
+            run_config = m.group(1).rstrip(",;)")
+
+    # 2. If weights_path points inside a run directory with args.yaml, read run_dir from it.
+    if (not run or not run_config) and cfg_text and config is not None:
+        try:
+            parsed = yaml.safe_load(cfg_text) or {}
+            wp = parsed.get("weights_path")
+            if wp:
+                wpath = Path(wp) if Path(wp).is_absolute() else config.parent.parent / wp
+                args_yaml = wpath.parent / "args.yaml"
+                if args_yaml.is_file():
+                    args_data = yaml.safe_load(args_yaml.read_text(encoding="utf-8")) or {}
+                    run_dir = args_data.get("run_dir")
+                    if not run and run_dir:
+                        run = Path(str(run_dir)).name
+                if not run and wpath.parent.name not in ("", "artifacts", "."):
+                    run = wpath.parent.name
+        except (OSError, yaml.YAMLError, TypeError, AttributeError) as exc:
+            logger.debug("could not inspect weights_path metadata: %s", exc)
+
+    if not run:
+        run = note or (config.stem if config is not None else None)
+    if not run_config:
+        if run and run.startswith("finetune_"):
+            run_config = f"training/configs/{run}.yaml"
+        elif config is not None:
+            run_config = config.name
+
+    return {
+        "model_sha256": sha,
+        "model_run": run,
+        "model_config": run_config,
+        "model_note": note,
+        "model_created": created,
+    }
+
+
 class EngineLoader:
     """Loads the Engine in a background thread so the HTTP port can open immediately.
 
@@ -350,6 +455,9 @@ class EngineLoader:
             return None
         return f"{self.model_sha256[:16]}-{self.device.type}"
 
+    def model_metadata(self) -> dict[str, str | None]:
+        return extract_model_metadata(self.config, self.store, self.model_sha256)
+
     def _load(self) -> None:
         try:
             started = time.perf_counter()
@@ -395,6 +503,16 @@ def wav_bytes(samples: torch.Tensor, sample_rate: int) -> bytes:
 
 
 def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) -> ValidationSet:
+    def describe(sha_prefix: str) -> dict:
+        store = getattr(loader, "store", None)
+        fallback = None
+        if (loader.model_sha256 or "").startswith(sha_prefix):
+            meta = loader.model_metadata()
+            fallback = {"run": meta["model_run"], "note": meta["model_note"]}
+        return describe_stored_model(
+            store.dir.parent if store is not None else None, sha_prefix, fallback
+        )
+
     def generate(
         text: str, voice: str, seed: int, settings: dict | None = None
     ) -> tuple[bytes | None, float, bool]:
@@ -411,6 +529,7 @@ def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) 
         voices=lambda: list(list_voice_files(loader.voices_dir)),
         generate=generate,
         cache_key=loader.cache_key,
+        describe=describe,
     )
 
 
@@ -598,40 +717,69 @@ def create_app(
             raise HTTPException(status_code=404, detail="no such validation audio")
         return FileResponse(path, media_type="audio/wav")
 
+    @app.get("/validation/runs")
+    def validation_runs():
+        """Cached sets of other models for the same sentences (the page's compare list), plus
+        the sentences, so the table can be laid out before any run is chosen."""
+        return {"sentences": validation.sentence_rows(), "runs": validation.past_runs()}
+
+    @app.get("/validation/runs/{run_id}")
+    def validation_run(run_id: str):
+        run = validation.run_detail(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="no such validation run")
+        return run
+
+    @app.get("/validation/runs/{run_id}/audio/{item_id}.wav")
+    def validation_run_audio(run_id: str, item_id: str):
+        path = validation.run_audio_path(run_id, item_id)
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="no such validation audio")
+        return FileResponse(path, media_type="audio/wav")
+
+    def _meta() -> dict[str, str | None]:
+        if hasattr(loader, "model_metadata"):
+            return loader.model_metadata()
+        return extract_model_metadata(
+            getattr(loader, "config", None),
+            getattr(loader, "store", None),
+            getattr(loader, "model_sha256", None),
+        )
+
     @app.get("/ready")
     def ready():
         """200 only once the model is loaded: the Cloud Run startup probe, so a revision whose
         model cannot be loaded never takes traffic."""
+        meta = _meta()
         if loader.engine is None:
             return JSONResponse(
                 status_code=503,
-                content={"ready": False, "stage": loader.stage, "error": loader.error},
+                content={"ready": False, "stage": loader.stage, "error": loader.error, **meta},
             )
-        return {
-            "ready": True,
-            "model_sha256": loader.model_sha256,
-            "semantic_encoder": loader.semantic_encoder_info(),
-        }
+        return {"ready": True, **meta, "semantic_encoder": loader.semantic_encoder_info()}
 
     @app.get("/health")
     def health():
         engine = loader.engine
         voices = list_voice_files(loader.voices_dir)
+        meta = _meta()
         if engine is None:
             if loader.error:
                 return JSONResponse(
-                    status_code=500, content={"status": "load failed", "error": loader.error}
+                    status_code=500,
+                    content={"status": "load failed", "error": loader.error, **meta},
                 )
             return {
                 "status": "warming up...",
                 "ready": False,
                 "stage": loader.stage,
                 "voices": len(voices),
+                **meta,
             }
         return {
             "status": "ok",
             "ready": True,
-            "model_sha256": loader.model_sha256,
+            **meta,
             "model_store": str(loader.store.dir) if loader.store else None,
             "semantic_encoder": loader.semantic_encoder_info(),
             "device": str(engine.device),
@@ -655,8 +803,11 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return INDEX_HTML.replace("__DEFAULTS__", repr(DEFAULTS).replace("'", '"')).replace(
-            "__DOWNLOADS__", downloads.html()
+        meta = _meta()
+        return (
+            INDEX_HTML.replace("__DEFAULTS__", repr(DEFAULTS).replace("'", '"'))
+            .replace("__MODEL_META__", json.dumps(meta, ensure_ascii=False))
+            .replace("__DOWNLOADS__", downloads.html())
         )
 
     @app.post("/tts")
@@ -750,6 +901,8 @@ INDEX_HTML = """<!doctype html>
  #status{color:#555;white-space:pre-wrap} #status.err{color:#b00020}
  .dl{background:#f4f6f8;border-radius:6px;padding:.6rem 1rem;margin-bottom:1rem}
  .dl ul{margin:.4rem 0 0;padding-left:1.2rem} .dl li{margin:.2rem 0} .meta{color:#777;font-size:.85rem}
+ .mcard{border:1px solid #d0d7de;border-radius:6px;padding:.6rem .9rem;margin-bottom:.85rem;background:#f8fafc;font-size:.9rem;line-height:1.5}
+ .mcard code{background:#e8eef5;padding:.08rem .35rem;border-radius:4px;font-size:.84rem;word-break:break-all}
  .vbox{border:1px solid #ddd;border-radius:6px;padding:.55rem .75rem;margin-top:.5rem;background:#fafbfc}
  .vhead{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.35rem}
  .vhead button{margin:0;padding:.25rem .7rem;font-size:.85rem}
@@ -762,6 +915,23 @@ INDEX_HTML = """<!doctype html>
  .vrow{border:1px solid #ddd;border-radius:6px;padding:.5rem .7rem;margin:.4rem 0}
  .vtext{direction:rtl;font-size:1.2rem;margin-bottom:.3rem}
  .vmeta{color:#777;font-size:.85rem} .vrow.bad{border-color:#b00020}
+ .vcmp{width:min(96vw,1500px);position:relative;left:50%;transform:translateX(-50%);margin:.6rem 0;box-sizing:border-box}
+ .vcmp .pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:.4rem .8rem;margin:.4rem 0}
+ .vcmp .pick label{display:flex;gap:.45rem;align-items:flex-start;margin:0;font-weight:400;border:1px solid #ddd;border-radius:6px;padding:.35rem .55rem;background:#fff;cursor:pointer}
+ .vcmp .pick label.on{border-color:#1a73e8;background:#eef4ff}
+ .vcmp .pick label>div{min-width:0;overflow-wrap:anywhere}
+ .vcmp .pick .nm{font-weight:600} .vcmp .pick .sub{color:#777;font-size:.8rem;line-height:1.35}
+ .vcmp .scroll{overflow:auto;max-height:80vh;border:1px solid #ddd;border-radius:6px;background:#fff}
+ .vcmp table{border-collapse:separate;border-spacing:0;min-width:100%}
+ .vcmp th,.vcmp td{padding:.4rem .55rem;border-bottom:1px solid #eee;border-right:1px solid #eee;vertical-align:top;text-align:left;min-width:230px;max-width:300px;background:#fff}
+ .vcmp thead th{position:sticky;top:0;z-index:3;background:#f4f6f8}
+ .vcmp th.txt,.vcmp td.txt{position:sticky;left:0;z-index:2;min-width:220px;max-width:280px;background:#f8fafc}
+ .vcmp thead th.txt{z-index:4}
+ .vcmp td.txt .vtext{font-size:1.05rem;margin-bottom:.2rem}
+ .vcmp tr.cat td{background:#eef1f4;font-weight:700;text-transform:capitalize;min-width:0;max-width:none}
+ .vcmp td.bad{color:#b00020;font-size:.85rem}
+ .vcmp .cur{color:#1a73e8;font-size:.78rem;font-weight:700}
+ .vcmp .warn{color:#a15c00;font-size:.78rem}
  .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
  #milimDlg{width:min(720px,94vw);max-height:88vh;border:1px solid #bbb;border-radius:8px;padding:0;color:#222;background:#fff}
  #milimDlg::backdrop{background:rgba(0,0,0,.4)}
@@ -781,6 +951,11 @@ INDEX_HTML = """<!doctype html>
  #mres .vmeta{direction:ltr;text-align:right}
 </style></head><body>
 <h2>Hebrew TTS test</h2>
+<div class="mcard" id="modelCard">
+ <div><b>Model run:</b> <code id="mRun">…</code> &nbsp; <b>Run config:</b> <code id="mCfg">…</code></div>
+ <div><b>Weights SHA-256:</b> <code id="mSha">…</code></div>
+ <div id="mExtra" class="meta"></div>
+</div>
 <div class="dl"><b>Download for local inference</b>__DOWNLOADS__</div>
 <label for="text">Text</label>
 <textarea id="text" dir="rtl">שלום, זהו מבחן קצר של המודל.</textarea>
@@ -833,10 +1008,36 @@ INDEX_HTML = """<!doctype html>
 <hr style="margin:1.5rem 0">
 <button id="val" dir="rtl" disabled>הצג סט ולידציה</button>
 <button id="valRedo" dir="rtl" disabled title="deletes the cached set of this model and renders it again with the voice selected above">צור מחדש עם הקול הנבחר</button>
+<button id="valCmp" dir="rtl" title="put the validation audio of earlier models next to this one's, sample by sample">השווה לריצות קודמות</button>
 <div id="vstatus"></div>
+<div id="vcmp" class="vcmp vbox" hidden>
+ <div class="vhead"><b>Compare with past runs</b><span class="meta" id="vcmpInfo"></span></div>
+ <div class="pick" id="vcmpPick"></div>
+ <div class="scroll" id="vcmpScroll" hidden><table id="vcmpTable"></table></div>
+</div>
 <div id="vlist"></div>
 <script>
 const D = __DEFAULTS__;
+let M_META = __MODEL_META__;
+const renderModelMeta = (m) => {
+  if (!m) return;
+  M_META = {...M_META, ...m};
+  document.getElementById("mRun").textContent = M_META.model_run || "(unknown run)";
+  document.getElementById("mCfg").textContent = M_META.model_config || "hebrew_24l.yaml";
+  document.getElementById("mSha").textContent = M_META.model_sha256 || "computing…";
+  const parts = [];
+  if (M_META.layers) parts.push(`${M_META.layers} layers`);
+  if (M_META.device) parts.push(`device: ${M_META.device}`);
+  const se = M_META.semantic_encoder;
+  if (se) {
+    const encs = se.encoders ? se.encoders.map(e => e.encoder).join(" + ") : se.encoder;
+    if (encs) parts.push(`semantic: ${encs}`);
+  }
+  if (M_META.model_note && M_META.model_note !== M_META.model_run) parts.push(`note: ${M_META.model_note}`);
+  if (M_META.model_created) parts.push(`published: ${M_META.model_created}`);
+  document.getElementById("mExtra").textContent = parts.join(" · ");
+};
+renderModelMeta(M_META);
 const names = {temp:"temperature", cfg:"cfg (guidance)", n_steps:"decode steps",
   eos_threshold:"eos threshold", eos_countdown:"eos countdown", max_seconds:"max seconds",
   prompt_seconds:"prompt seconds", seed:"seed"};
@@ -1056,10 +1257,147 @@ const formatValSettings = st => {
   }
   return parts.length ? " (" + parts.join(", ") + ")" : "";
 };
+
+// -- compare with past runs: one row per sample, one wav column per run -------------------
+const cmpBtn = document.getElementById("valCmp");
+const cmpBox = document.getElementById("vcmp");
+const cmpPick = document.getElementById("vcmpPick");
+const cmpInfo = document.getElementById("vcmpInfo");
+const cmpScroll = document.getElementById("vcmpScroll");
+const cmpTable = document.getElementById("vcmpTable");
+let cmpData = null;            // {sentences, runs} from /validation/runs
+const cmpPicked = new Set();   // ids of the past runs in the table
+const cmpDetail = {};          // id -> run with items, fetched once
+let cmpCurrent = null;         // the latest /validation status
+let cmpDrawn = "";
+const settingsText = st => st ? Object.keys(st).sort().map(k => k + "=" + st[k]).join(", ") : "";
+const cmpCurrentCol = () => {
+  const s = cmpCurrent || {};
+  const run = M_META && M_META.model_run;
+  return {
+    id: "", current: true, label: run || (s.model_sha256 || "current model"),
+    sub: [(s.model_sha256 || ""), s.voice, s.seed !== undefined && s.seed !== null ? "seed " + s.seed : null,
+      s.done !== undefined ? s.done + "/" + s.total : null].filter(Boolean).join(" · "),
+    voice: s.voice, settings: s.settings, items: s.items || [],
+  };
+};
+const cmpPastCol = r => ({
+  id: r.id, current: false, label: r.label,
+  sub: [r.model_sha256, r.device, r.voice, r.seed !== undefined && r.seed !== null ? "seed " + r.seed : null,
+    r.date, r.state === "partial" ? r.done + "/" + r.total : null].filter(Boolean).join(" · "),
+  voice: r.voice, settings: r.settings, note: r.note, run: r, items: (cmpDetail[r.id] || {}).items || [],
+});
+const renderCmpPick = () => {
+  cmpPick.replaceChildren();
+  for (const r of cmpData.runs) {
+    const lab = el("label", cmpPicked.has(r.id) ? "on" : "");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = cmpPicked.has(r.id);
+    cb.onchange = async () => {
+      if (cb.checked) {
+        cmpPicked.add(r.id);
+        if (!cmpDetail[r.id]) {
+          cmpInfo.textContent = "loading " + r.label + "…";
+          try {
+            const resp = await fetch("/validation/runs/" + encodeURIComponent(r.id));
+            if (!resp.ok) throw new Error(resp.status + " " + await resp.text());
+            cmpDetail[r.id] = await resp.json();
+          } catch (e) { cmpPicked.delete(r.id); cb.checked = false; cmpInfo.textContent = "failed to load " + r.label + ": " + e.message; return; }
+          cmpInfo.textContent = "";
+        }
+      } else cmpPicked.delete(r.id);
+      lab.classList.toggle("on", cb.checked);
+      renderCmpTable(true);
+    };
+    const box = el("div");
+    box.appendChild(el("div", "nm", r.label));
+    box.appendChild(el("div", "sub", cmpPastCol(r).sub));
+    if (r.note && r.note !== r.label) box.appendChild(el("div", "sub", r.note));
+    lab.append(cb, box);
+    cmpPick.appendChild(lab);
+  }
+  if (!cmpData.runs.length) cmpInfo.textContent = "no other cached runs of this validation set";
+};
+const renderCmpTable = (force) => {
+  const cols = [cmpCurrentCol(), ...cmpData.runs.filter(r => cmpPicked.has(r.id)).map(cmpPastCol)];
+  const sig = JSON.stringify([cols.map(c => [c.id, c.items.map(i => i.id + i.status).join()]), cmpCurrent && cmpCurrent.voice]);
+  if (!force && sig === cmpDrawn) return;   // do not rebuild (and stop playing audio) when nothing changed
+  cmpDrawn = sig;
+  cmpScroll.hidden = cols.length < 2;
+  cmpTable.replaceChildren();
+  if (cols.length < 2) return;
+  const base = settingsText(cols[0].settings);
+  const head = el("tr");
+  head.appendChild(el("th", "txt", "sample"));
+  for (const c of cols) {
+    const th = el("th");
+    if (c.current) th.appendChild(el("div", "cur", "CURRENT MODEL"));
+    th.appendChild(el("div", "nm", c.label));
+    th.appendChild(el("div", "vmeta", c.sub));
+    if (c.note && c.note !== c.label) th.appendChild(el("div", "vmeta", c.note));
+    if (!c.current && cols[0].voice && c.voice && c.voice !== cols[0].voice)
+      th.appendChild(el("div", "warn", "different voice prompt from the current model's"));
+    if (!c.current && base && c.settings && settingsText(c.settings) !== base)
+      th.appendChild(el("div", "warn", "sampling settings differ: " + settingsText(c.settings)));
+    head.appendChild(th);
+  }
+  const thead = el("thead"); thead.appendChild(head); cmpTable.appendChild(thead);
+  const body = el("tbody");
+  const byId = cols.map(c => Object.fromEntries(c.items.map(i => [i.id, i])));
+  let lastCat = null;
+  for (const sn of cmpData.sentences) {
+    if (sn.category !== lastCat) {
+      lastCat = sn.category;
+      const tr = el("tr", "cat"), td = el("td", "", sn.category.replace(/_/g, " "));
+      td.colSpan = cols.length + 1; tr.appendChild(td); body.appendChild(tr);
+    }
+    const tr = el("tr");
+    const first = el("td", "txt");
+    first.appendChild(el("div", "vtext", sn.text)); first.firstChild.dir = "rtl";
+    first.appendChild(el("div", "vmeta", sn.id + (sn.note ? " - " + sn.note : "")));
+    tr.appendChild(first);
+    cols.forEach((c, idx) => {
+      const it = byId[idx][sn.id];
+      const td = el("td");
+      if (!it) td.appendChild(el("span", "vmeta", "-"));
+      else if (it.status === "ok") {
+        const a = el("audio"); a.controls = true; a.preload = "none";
+        a.src = c.current ? "/validation/audio/" + sn.id + ".wav?t=" + Date.now()
+          : "/validation/runs/" + encodeURIComponent(c.id) + "/audio/" + sn.id + ".wav?v=" + c.run.mtime;
+        td.appendChild(a);
+        td.appendChild(el("div", "vmeta", it.audio_seconds + "s audio" + (it.hit_max_length ? " - hit max length" : "")));
+      } else {
+        td.className = "bad";
+        td.textContent = it.status === "eos" ? "the model ended speech immediately" : (it.error || it.status);
+      }
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  }
+  cmpTable.appendChild(body);
+};
+const openCompare = async () => {
+  cmpBox.hidden = !cmpBox.hidden;
+  if (cmpBox.hidden) return;
+  if (!cmpData) {
+    cmpInfo.textContent = "looking for cached runs…";
+    try {
+      const resp = await fetch("/validation/runs");
+      if (!resp.ok) throw new Error(resp.status + " " + await resp.text());
+      cmpData = await resp.json();
+      if (!cmpCurrent) cmpCurrent = await (await fetch("/validation")).json();
+    } catch (e) { cmpInfo.textContent = "failed: " + e.message; return; }
+    cmpInfo.textContent = "";
+    renderCmpPick();
+  }
+  renderCmpTable(true);
+};
+cmpBtn.onclick = openCompare;
 const pollValidation = async () => {
   let s;
   try { s = await (await fetch("/validation")).json(); }
   catch (e) { setTimeout(pollValidation, 5000); return; }
+  cmpCurrent = s;
+  if (cmpData && !cmpBox.hidden) renderCmpTable(false);
   renderItems(s.items);
   vstatus.className = "";
   const head = "voice " + (s.voice || "?") + formatValSettings(s.settings) + ", " + s.done + "/" + s.total;
@@ -1068,8 +1406,9 @@ const pollValidation = async () => {
     valBtn.disabled = true; redoBtn.disabled = true; setTimeout(pollValidation, 5000); return;
   }
   valBtn.disabled = false; redoBtn.disabled = false;
+  const runLbl = (M_META && M_META.model_run) ? `${M_META.model_run} (${s.model_sha256})` : s.model_sha256;
   if (s.state === "done") vstatus.textContent = head + (s.failed ? " (" + s.failed + " failed)" : "") +
-    " - cached for model " + s.model_sha256;
+    " - cached for model " + runLbl;
   else if (s.state === "warming") { vstatus.textContent = "warming up…"; setTimeout(pollValidation, 5000); }
   else { vstatus.className = "err"; vstatus.textContent = (s.error || "stopped") + " - " + head; }
 };
@@ -1113,6 +1452,7 @@ const waitReady = async () => {
   for (;;) {
     try {
       const h = await (await fetch("/health")).json();
+      renderModelMeta(h);
       if (h.ready) { ready = true; status.textContent = "ready"; go.disabled = false; valBtn.disabled = false; redoBtn.disabled = false; syncMilim(); return; }
       if (h.error) { status.className = "err"; status.textContent = "model failed to load: " + h.error; return; }
     } catch (e) {}

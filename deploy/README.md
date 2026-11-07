@@ -158,6 +158,17 @@ and shows them with players. The page polls `GET /validation` every 5 s while it
   is in progress; without the fields it behaves as before).
 - The weights hash is the model store's `MODEL_SHA256` pin (verified while the weights are
   copied); without a store the server hashes the weights file at startup.
+- **השווה לריצות קודמות** ("compare with past runs") opens a panel listing the other cached sets
+  of the same sentences, and a table with a row per sample and a wav player per run (the loaded
+  model first, then each run ticked). Past runs are *discovered*, not registered: every other
+  folder under the cache root whose manifest has the same `sentences_sha` (older manifests: the
+  same `fingerprint`) is listed, so the image never needs the hashes of earlier models. A run is
+  named by its model's run name (store manifest `run`, else a `finetune_...` name in its `note`),
+  else by its cache folder, else by the date its manifest was last written; hash, device, voice,
+  seed, date and note are shown under the name. Runs rendered with another voice prompt or other
+  sampling settings are flagged, since the audio then differs for more than the model.
+  API: `GET /validation/runs` (sentences + runs), `GET /validation/runs/<folder>` (items),
+  `GET /validation/runs/<folder>/audio/<id>.wav`.
 - On Cloud Run the cache is a Cloud Storage bucket (`<project>-hebrew-tts-cache`) mounted at
   `/cache`; `deploy.sh` creates it and grants the service account access. Cloud Run cannot attach
   disks.

@@ -10,6 +10,12 @@ stopped, with the same voice. A finished cache is returned as is.
 `start(force=True, voice=...)` throws the cached audio of the loaded model away and renders the
 whole set again with the named voice instead of a random one (the preview page's "regenerate"
 button). The new set replaces the old one as the model's cache.
+
+Past runs: every other folder under the cache root whose manifest is for the same sentences
+(`past_runs`) is a validation set an earlier model rendered, so the preview page can put their
+audio next to the loaded model's. Nothing is registered anywhere: the cache folders are the list.
+A run is named by its model's run name when the model store knows it, else by its cache folder,
+else by the date its manifest was last written.
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ class ValidationSet:
         voices: Callable[[], list[str]],
         generate: GenerateFn,
         cache_key: Callable[[], str | None],
+        describe: Callable[[str], dict] | None = None,
     ):
         self.sentences, self._sentences_sha = load_sentences(sentences_path)
         self.cache_root = cache_root
@@ -61,6 +68,8 @@ class ValidationSet:
         self._generate = generate
         self._gen_takes_settings = len(inspect.signature(generate).parameters) >= 4
         self._cache_key = cache_key
+        # model sha256 prefix -> {"run", "note", "created"} from the model store, when known
+        self._describe = describe
         self.fingerprint = hashlib.sha256(
             json.dumps(
                 {"sentences": self._sentences_sha, "settings": settings, "seed": SEED},
@@ -95,14 +104,17 @@ class ValidationSet:
         except (OSError, ValueError) as exc:
             logger.warning("ignoring unreadable validation manifest %s: %s", path, exc)
             return
-        if "sentences_sha" in data:
-            if data["sentences_sha"] != self._sentences_sha:
-                logger.info("validation manifest is for other sentences; regenerating")
-                return
-        elif data.get("fingerprint") != self.fingerprint:
+        if not self._same_set(data):
             logger.info("validation manifest is for other sentences/settings; regenerating")
             return
         self._manifest = data
+
+    def _same_set(self, data: dict) -> bool:
+        """Whether a manifest was rendered from these sentences (older manifests have only the
+        fingerprint, which also covers the sampling defaults of their time)."""
+        if "sentences_sha" in data:
+            return data["sentences_sha"] == self._sentences_sha
+        return data.get("fingerprint") == self.fingerprint
 
     def _save(self, key: str, manifest: dict) -> None:
         directory = self._dir(key)
@@ -152,6 +164,98 @@ class ValidationSet:
                 "error": self._error,
                 "items": ordered,
             }
+
+    # -- past runs ----------------------------------------------------------------------
+
+    def _read_run(self, run_id: str) -> tuple[dict, float] | None:
+        """(manifest, last write time) of another cache folder of the same sentences, or None."""
+        if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
+            return None
+        path = self._dir(run_id) / MANIFEST
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            mtime = path.stat().st_mtime
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not self._same_set(data):
+            return None
+        return data, mtime
+
+    def _summarize(self, run_id: str, data: dict, mtime: float) -> dict:
+        sha = str(data.get("model_sha256") or run_id.split("-")[0])
+        meta = {}
+        if self._describe is not None:
+            try:
+                meta = self._describe(sha) or {}
+            except Exception:
+                logger.exception("could not describe model %s", sha)
+        run = data.get("model_run") or meta.get("run")
+        date = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(mtime))
+        items = data.get("items", {})
+        done = sum(1 for i in items.values() if i.get("status") != "error")
+        return {
+            "id": run_id,
+            "label": run or run_id or date,
+            "run": run,
+            "folder": run_id,
+            "date": date,
+            "mtime": int(mtime),
+            "model_sha256": sha,
+            "device": run_id.rsplit("-", 1)[1] if "-" in run_id else None,
+            "note": meta.get("note"),
+            "voice": data.get("voice"),
+            "seed": data.get("seed"),
+            "settings": data.get("settings"),
+            "done": done,
+            "total": len(self.sentences),
+            "state": "done" if done >= len(self.sentences) else "partial",
+        }
+
+    def past_runs(self) -> list[dict]:
+        """The cached sets of other models (and device kinds) for these sentences, newest first."""
+        current = self._cache_key()
+        try:
+            folders = [p.name for p in self.cache_root.iterdir() if p.is_dir()]
+        except OSError:
+            return []
+        runs = []
+        for name in folders:
+            if name == current:
+                continue
+            found = self._read_run(name)
+            if found is not None:
+                runs.append(self._summarize(name, *found))
+        runs.sort(key=lambda r: r["mtime"], reverse=True)
+        return runs
+
+    def run_detail(self, run_id: str) -> dict | None:
+        """A past run with its items in sentence order, or None when there is no such run."""
+        if run_id == self._cache_key():
+            return None
+        found = self._read_run(run_id)
+        if found is None:
+            return None
+        data, mtime = found
+        items = data.get("items", {})
+        return {
+            **self._summarize(run_id, data, mtime),
+            "items": [items[s["id"]] for s in self.sentences if s["id"] in items],
+        }
+
+    def run_audio_path(self, run_id: str, item_id: str) -> Path | None:
+        found = None if run_id == self._cache_key() else self._read_run(run_id)
+        if found is None:
+            return None
+        item = found[0].get("items", {}).get(item_id)
+        name = item.get("file") if item else None
+        if not name or Path(name).name != name:
+            return None
+        return self._dir(run_id) / name
+
+    def sentence_rows(self) -> list[dict]:
+        return [
+            {k: s[k] for k in ("id", "category", "text", "note") if k in s} for s in self.sentences
+        ]
 
     def _discard(self, key: str) -> None:
         """Delete the cached audio and manifest of `key` (caller holds the lock, nothing runs)."""
