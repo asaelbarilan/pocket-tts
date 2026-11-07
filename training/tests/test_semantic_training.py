@@ -352,6 +352,60 @@ def test_multi_dataset_renikud_90k_config():
 # ------------------------------------------------------------------------- the combined mode
 
 
+def test_combined_90k_curriculum_config():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    args = load_args(configs / "finetune_hebrew_semantic_both_90k.yaml")
+    assert args.semantic_conditioner is None
+    assert [SemanticConditionerConfig(**c) for c in args.semantic_conditioners] == [
+        SemanticConditionerConfig(encoder="dictabert"),
+        SemanticConditionerConfig(encoder="renikud_plus"),
+    ]
+    assert args.semantic_lr_scale == 3.0
+    assert args.model_config == "pocket_tts/config/english_2026-04_24l.yaml"
+    assert args.start_from_pretrained and args.reset_text_embedding
+    assert args.model_overrides == {
+        "flow_lm.lookup_table.tokenizer_path": (
+            "artifacts/tokenizer-he-en-niqqud/selected/tokenizer.model"
+        )
+    }
+    assert args.max_steps == 90000
+    phase_steps = [5000, 20000, 5000, 5000, 10000, 5000, 40000]
+    assert [p["steps"] for p in args.data.curriculum] == phase_steps
+    names = ("committee", "plenum", "recital", "crowd", "hifitts2", "libritts_r")
+    assert tuple(args.data.datasets) == names
+    assert [tuple(p["mix"][n] for n in names) for p in args.data.curriculum] == [
+        (0.30, 0.30, 0.10, 0.10, 0.15, 0.05),
+        (0.55, 0.35, 0.0, 0.05, 0.04, 0.01),
+        (0.45, 0.30, 0.10, 0.05, 0.05, 0.05),
+        (0.30, 0.20, 0.10, 0.10, 0.15, 0.15),
+        (0.60, 0.35, 0.0, 0.02, 0.02, 0.01),
+        (0.40, 0.35, 0.10, 0.05, 0.05, 0.05),
+        (0.53, 0.40, 0.05, 0.07, 0.03, 0.01),
+    ]
+    valid_weights = [0.45, 0.25, 0.08, 0.10, 0.07, 0.05]
+    assert [args.data.datasets[n]["valid_weight"] for n in names] == valid_weights
+    assert args.data.datasets["crowd"]["train_jsonl"] == (
+        "/mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/train_aligned.jsonl"
+    )
+    assert args.data.datasets["crowd"]["valid_jsonl"] == (
+        "/mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/valid_aligned.jsonl"
+    )
+    assert args.data.curriculum_checkpoint_at_phase_end
+    assert (args.data.max_duration_sec, args.data.max_voice_prompt_sec) == (30.0, 5.0)
+    assert (
+        args.data.alt_words_sample_prob,
+        args.data.alt_word_swap_prob,
+        args.data.nikud_word_prob,
+    ) == (1.0, 0.7, 0.3)
+    assert args.batch_size * args.grad_accum_steps * 8 == 64
+    assert args.run_dir == Path("runs/finetune_hebrew_semantic_both_90k")
+    assert not args.compile
+    assert args.optim.schedule == "cosine" and args.optim.warmup_steps == 1000
+    assert args.stats_ema_steps == 1000 and args.ema_decay == 0.999
+    assert args.sample_freq == args.valid_freq == args.ckpt_freq == 2500
+    assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq
+
+
 def test_combined_loss_equals_plain_loss_at_init(sp):
     plain, combined = trainable(sp, None), trainable(sp, combined_configs())
     combined.load_state_dict(plain.state_dict(), strict=False)

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+import ctypes.util
 import itertools
 import json
 import math
@@ -36,8 +38,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
+import wave
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -62,6 +67,15 @@ DEFAULT_VITER_ENV = Path("/home/yoadsnapir/time-align/viter-env")
 _WS = re.compile(r"\s+")
 _PUNCT = re.compile(r"[^\w֐-׿']+", re.UNICODE)
 _FINAL_LETTERS = str.maketrans("םןץףך", "מנצפכ")
+# Viter 0.5.1's dictionary normalization; retain aliases/variant pronunciations when
+# selecting a batch's entries, not just the exact source headword.
+_VITER_PUNCTUATION = (
+    '、。।，？！!@<>→"”()“„–,.:;—¿?¡：）|؟\\&%#*،~【】，…‥「」『』〝〟″⟨⟩♪・‚‘‹›«»～′$+=‘۔―'
+)
+_VITER_VARIANT = re.compile(r"\([0-9]+\)$")
+_SWRESAMPLE: Any = None
+_SWRESAMPLE_CHECKED = False
+_SWRESAMPLE_LOCK = threading.Lock()
 
 _PROCESSOR: Any = None
 _MODEL: Any = None
@@ -72,6 +86,8 @@ _DELIMITER: int | None = None
 _DEVICE = ""
 _VITER: Any = None
 _VITER_WORDS: set[str] = set()
+_VITER_DICTIONARY: dict[str, str] = {}
+_VITER_DICTIONARY_PATH: Path | None = None
 
 
 def clean(text: str) -> str:
@@ -113,7 +129,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated CUDA indices, 'all', or 'cpu' (default: all)",
     )
     parser.add_argument(
-        "--decode-workers", type=int, default=4, help="ffmpeg threads per GPU worker"
+        "--decode-workers", type=int, default=4, help="Concurrent audio decoders per GPU worker"
     )
     parser.add_argument("--dtype", choices=("float16", "float32"), default="float16")
     parser.add_argument("--aligner", choices=("viter", "mms"), default="viter")
@@ -267,22 +283,160 @@ def blank_id(tokenizer: Any) -> int:
     return tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
 
-def decode_audio(row: dict[str, Any]) -> tuple[Any, float]:
-    """Decode only the padded source span to mono float32 at 16 kHz."""
+def swresample_library() -> Any:
+    """Bind FFmpeg's optional legacy resampler API once per process, or use ffmpeg.
+
+    The integer-layout API has a stable signature and is available through FFmpeg 6.
+    Newer libraries without those symbols (or hosts without the shared library) simply
+    use the subprocess decoder. Never pass guessed structures across a native ABI.
+    """
+    global _SWRESAMPLE, _SWRESAMPLE_CHECKED
+    if not _SWRESAMPLE_CHECKED:
+        with _SWRESAMPLE_LOCK:
+            if not _SWRESAMPLE_CHECKED:
+                try:
+                    name = ctypes.util.find_library("swresample")
+                    if not name:
+                        raise OSError("libswresample not found")
+                    library = ctypes.CDLL(name)
+                    library.swr_alloc_set_opts.argtypes = [
+                        ctypes.c_void_p,
+                        ctypes.c_int64,
+                        ctypes.c_int,
+                        ctypes.c_int,
+                        ctypes.c_int64,
+                        ctypes.c_int,
+                        ctypes.c_int,
+                        ctypes.c_int,
+                        ctypes.c_void_p,
+                    ]
+                    library.swr_alloc_set_opts.restype = ctypes.c_void_p
+                    library.swr_init.argtypes = [ctypes.c_void_p]
+                    library.swr_init.restype = ctypes.c_int
+                    library.swr_get_out_samples.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                    library.swr_get_out_samples.restype = ctypes.c_int
+                    library.swr_convert.argtypes = [
+                        ctypes.c_void_p,
+                        ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.c_int,
+                        ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.c_int,
+                    ]
+                    library.swr_convert.restype = ctypes.c_int
+                    library.swr_free.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+                    library.swr_free.restype = None
+                    _SWRESAMPLE = library
+                except (OSError, AttributeError):
+                    _SWRESAMPLE = None
+                _SWRESAMPLE_CHECKED = True
+    return _SWRESAMPLE
+
+
+def decode_pcm_wav(source: Path, origin: float, padded_duration: float) -> Any:
+    """Seek/read mono PCM16 WAV in-process; return None for the ffmpeg fallback.
+
+    Use the same libswresample defaults, seek rounding and duration rounding as the
+    subprocess decoder. Each call owns its resampler, so concurrent decodes share no state.
+    """
+    if source.suffix.lower() != ".wav" or sys.byteorder != "little":
+        return None
     import numpy as np
+
+    with source.open("rb") as stream:
+        header = stream.read(22)
+        # Only plain RIFF/PCM with a leading fmt chunk. In particular, extensible WAV
+        # can carry a channel mask/valid-bit count that wave's public API does not expose.
+        # Let ffmpeg interpret those layouts (and RF64/RIFX/nonstandard chunk ordering).
+        if header[:4] != b"RIFF" or header[8:16] != b"WAVEfmt " or header[20:22] != b"\x01\x00":
+            return None
+        stream.seek(0)
+        with wave.open(stream, "rb") as handle:
+            if (
+                handle.getnchannels() != 1
+                or handle.getsampwidth() != 2
+                or handle.getcomptype() != "NONE"
+            ):
+                return None
+            library = swresample_library()
+            if library is None:
+                return None
+            rate = handle.getframerate()
+            first = math.floor(float(f"{origin:.6f}") * rate + 0.5)
+            duration = float(f"{padded_duration:.6f}")
+            handle.setpos(first)
+            # Read past the output boundary for the resampling filter's lookahead.
+            # A fixed 128 samples is insufficient for high-rate input WAV files.
+            lookahead = max(128, math.ceil(32 * rate / SAMPLE_RATE))
+            raw = handle.readframes(math.ceil(duration * rate) + lookahead)
+    if not raw:
+        return None
+    count = len(raw) // 2
+    if count > 2**31 - 1:
+        return None  # swr_convert's counts are C ints
+    # AV_CH_LAYOUT_MONO=4, AV_SAMPLE_FMT_FLT=3, AV_SAMPLE_FMT_S16=1.
+    context = ctypes.c_void_p(
+        library.swr_alloc_set_opts(None, 4, 3, SAMPLE_RATE, 4, 1, rate, 0, None)
+    )
+    if not context:
+        raise RuntimeError("swr_alloc_set_opts failed")
+    try:
+        if library.swr_init(context) < 0:
+            raise RuntimeError("swr_init failed")
+        capacity = library.swr_get_out_samples(context, count)
+        if capacity < 0 or capacity > 2**31 - 129:
+            raise RuntimeError("invalid resampler output size")
+        capacity += 128
+        audio = np.empty(capacity, dtype=np.float32)
+        inputs = (ctypes.c_void_p * 1)(ctypes.cast(ctypes.c_char_p(raw), ctypes.c_void_p))
+        outputs = (ctypes.c_void_p * 1)(audio.ctypes.data)
+        produced = library.swr_convert(context, outputs, capacity, inputs, count)
+        if produced < 0:
+            raise RuntimeError("swr_convert failed")
+        outputs[0] = audio.ctypes.data + produced * audio.itemsize
+        tail = library.swr_convert(context, outputs, capacity - produced, None, 0)
+        if tail < 0:
+            raise RuntimeError("swr_convert flush failed")
+        wanted = math.floor(duration * SAMPLE_RATE + 0.5)
+        return audio[: min(produced + tail, wanted)].copy()
+    finally:
+        library.swr_free(ctypes.byref(context))
+
+
+def decode_audio(row: dict[str, Any]) -> tuple[Any, float]:
+    """Decode the padded span; unsupported WAV formats/native libraries use ffmpeg."""
 
     source = Path(row["path"])
     if not source.is_file():
         raise FileNotFoundError(source)
     start = float(row["start"])
     duration = float(row["duration"])
-    if start < 0 or duration <= 0:
+    if not math.isfinite(start) or not math.isfinite(duration) or start < 0 or duration <= 0:
         raise ValueError(f"invalid span start={start}, duration={duration}")
     origin = max(0.0, start - PRE_PADDING)
     padded_duration = start + duration + POST_PADDING - origin
+    try:
+        audio = decode_pcm_wav(source, origin, padded_duration)
+        if audio is not None and len(audio):
+            return audio, origin
+    except (OSError, EOFError, wave.Error, ValueError, RuntimeError, OverflowError):
+        # Compressed/malformed WAV, missing symbols, unsupported layout, etc.: retain
+        # ffmpeg's format support and error reporting rather than failing a valid row.
+        pass
+    return decode_audio_ffmpeg(source, origin, padded_duration), origin
+
+
+def decode_audio_ffmpeg(source: Path, origin: float, padded_duration: float) -> Any:
+    import numpy as np
+
     command = [
         "ffmpeg",
         "-nostdin",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
         "-loglevel",
         "error",
         "-ss",
@@ -311,7 +465,7 @@ def decode_audio(row: dict[str, Any]) -> tuple[Any, float]:
     audio = np.frombuffer(completed.stdout, dtype="<f4").copy()
     if not len(audio):
         raise ValueError("ffmpeg decoded no audio")
-    return audio, origin
+    return audio
 
 
 def word_targets(row: dict[str, Any]) -> tuple[list[str], list[list[int]], list[int]]:
@@ -454,9 +608,21 @@ def has_eligible_cut(row: dict[str, Any]) -> bool:
     return False
 
 
+def limit_auxiliary_threads() -> None:
+    """Keep NumPy/BLAS pools from multiplying the explicitly budgeted worker threads."""
+    for name in (
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[name] = "1"
+
+
 def initialize_worker(device: str, model_name: str, dtype_name: str) -> None:
     global _BLANK, _DELIMITER, _DEVICE, _MODEL, _PROCESSOR, _ROMANIZER, _VOCAB
 
+    limit_auxiliary_threads()
     import torch
     import uroman
     from transformers import AutoProcessor, Wav2Vec2ForCTC
@@ -573,6 +739,37 @@ def prepare_viter_dictionary(args: argparse.Namespace, destination: Path) -> Non
         "".join(f"{word}\t{phones}\n" for word, phones in sorted(entries.items())), encoding="utf-8"
     )
     print(f"Viter dictionary: {len(entries)} entries ({added} added in scratch copy)", flush=True)
+
+
+def viter_dictionary_key(word: str) -> str:
+    """Viter 0.5.1 lookup key, including its numbered-pronunciation convention."""
+    key = _VITER_VARIANT.sub("", word).lower().strip(_VITER_PUNCTUATION)
+    return "" if key and all(character in "'’‘" for character in key) else key
+
+
+def load_viter_dictionary(path: Path) -> tuple[set[str], dict[str, str]]:
+    """Cache the full eligibility vocabulary and all pronunciation aliases per lookup key."""
+    words = set()
+    entries: dict[str, list[str]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            word = line.split("\t", 1)[0]
+            words.add(word)
+            entries.setdefault(viter_dictionary_key(word), []).append(line)
+    return words, {key: "".join(lines) for key, lines in entries.items()}
+
+
+def write_viter_batch_dictionary(words: Iterable[str]) -> None:
+    """Viter reparses its dictionary on every call; supply only this batch's entries.
+
+    Only the worker-private scratch file changes. Eligibility still uses the complete
+    vocabulary, and normalized aliases/alternate pronunciations retain their original order.
+    """
+    if _VITER_DICTIONARY_PATH is not None:
+        needed = sorted({viter_dictionary_key(word) for word in words})
+        _VITER_DICTIONARY_PATH.write_text(
+            "".join(_VITER_DICTIONARY[key] for key in needed), encoding="utf-8"
+        )
 
 
 def configure_viter_gpu(device: str) -> None:
@@ -698,6 +895,9 @@ def align_viter_batch(
                 valid.append((candidate, value))
         if valid:
             try:
+                write_viter_batch_dictionary(
+                    word for candidate, _ in valid for word in candidate[2]
+                )
                 alignments = _VITER.align_many(
                     [
                         (audio, " ".join(candidate[2]), SAMPLE_RATE)
@@ -765,11 +965,13 @@ def align_viter_batch(
 def worker_main(
     device: str, worker_id: str, args: argparse.Namespace, tasks: Any, results: Any
 ) -> None:
-    global _VITER, _VITER_WORDS
+    global _VITER, _VITER_WORDS, _VITER_DICTIONARY, _VITER_DICTIONARY_PATH
     fallback = MMSFallback(args, device)
+    worker_dictionary = None
     # Let finally close the MMS child when the coordinator terminates this worker.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     try:
+        limit_auxiliary_threads()
         if args.aligner == "mms":
             initialize_worker(device, args.model, args.dtype)
         else:
@@ -777,16 +979,23 @@ def worker_main(
             os.environ["RAYON_NUM_THREADS"] = str(args.viter_threads)
             import viter
 
+            _VITER_WORDS, _VITER_DICTIONARY = load_viter_dictionary(args.merged_dictionary)
+            with tempfile.NamedTemporaryFile(
+                dir=args.merged_dictionary.parent,
+                prefix=f"dictionary-{os.getpid()}-",
+                suffix=".tsv",
+                delete=False,
+            ) as handle:
+                worker_dictionary = Path(handle.name)
+            _VITER_DICTIONARY_PATH = worker_dictionary
             _VITER = viter.Model(
-                str(args.viter_model), dict=str(args.merged_dictionary), cpu=device == "cpu"
+                str(args.viter_model), dict=str(worker_dictionary), cpu=device == "cpu"
             )
             allowed = set("אבגדהוזחטיכלמנסעפצקרשת") | {"ג'", "ז'", "צ'", "ת'", "sil", "spn"}
             if not set(_VITER.phones) <= allowed or not set(_VITER.phones) & set(
                 "אבגדהוזחטיכלמנסעפצקרשת"
             ):
                 raise ValueError("--viter-model must be a Hebrew grapheme model")
-            with args.merged_dictionary.open(encoding="utf-8") as handle:
-                _VITER_WORDS = {line.split("\t", 1)[0] for line in handle}
         results.put(("ready", worker_id))
         while True:
             task = tasks.get()
@@ -808,6 +1017,9 @@ def worker_main(
         results.put(("fatal", worker_id, f"{type(exc).__name__}: {exc}"))
     finally:
         fallback.close()
+        if worker_dictionary is not None:
+            _VITER_DICTIONARY_PATH = None
+            worker_dictionary.unlink(missing_ok=True)
 
 
 def resolve_devices(spec: str, environment: Path) -> list[str]:

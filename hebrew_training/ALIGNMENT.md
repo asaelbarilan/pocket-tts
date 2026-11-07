@@ -173,3 +173,42 @@ are preserved. Changing only worker count retains the same source batch grouping
 To resume an existing migration, stop the current process with Ctrl-C, wait for
 its workers to exit, then use the recommended command **without `--overwrite`**.
 The last durable checkpoint is reused; rows written after it are safely replayed.
+
+### Native WAV decoding and per-batch dictionaries
+
+Both fast paths are automatic; no new command-line options or Python dependencies are
+needed. Batch size, speaker grouping, beams, refinement, fallback policy, output schema and
+resume configuration are unchanged. The batch-64 command above remains recommended when
+preserving the same alignment decisions matters.
+
+- Plain RIFF mono PCM16 `.wav` files are read and seeked in-process, then converted to
+  float32/16 kHz with FFmpeg's shared `libswresample`, using the same seek/duration rounding and filter
+  defaults as the subprocess decoder. Every decode owns its resampling context. Unsupported
+  formats/layouts (including extensible WAV, RF64 and nonstandard chunk ordering), big-endian
+  hosts, unavailable libraries and native conversion errors fall back to ffmpeg. The legacy
+  integer-layout API is available through FFmpeg 6; newer libraries missing its symbols
+  also fall back, rather than guessing a native structure layout.
+- ffmpeg fallback processes use one decoder/filter thread. Workers cap auxiliary
+  NumPy/BLAS pools at one thread; `--viter-threads` still independently controls Viter's
+  compute pool. `--decode-workers` controls concurrent decodes, not threads inside ffmpeg.
+- Each Viter worker reads the full merged dictionary once into memory. Full-vocabulary
+  eligibility checks are unchanged, but before `align_many` it writes only that batch's
+  required entries to its own temporary dictionary. Normalized aliases and numbered
+  pronunciations retain their original order. Neither the downloaded dictionary nor the
+  full merged dictionary is rewritten. Worker dictionaries are cleaned up at shutdown.
+- Full-corpus vocabulary preparation is still required once before processing; there is
+  no extra preliminary-batch warm-up for the per-batch dictionary path.
+
+An eight-A40 sweep used 16,384 unique training rows from 16 windows across Plenum, repeated
+four times per long run (65,536 rows), with the real full-corpus 322,617-entry dictionary.
+At batch 64 / four workers per GPU / four Viter threads / four decode workers, the original
+code measured 224-225 rows/s including startup and shutdown; native WAV decoding plus
+per-batch dictionaries measured 333 rows/s (48% higher throughput, 33% less elapsed time).
+Every output JSON object matched the original batch-64 baseline exactly. These are
+warm-cache sample measurements, not a cold-NFS or full-corpus runtime guarantee; one-time
+full-corpus dictionary preparation is excluded from both rates. Larger batches modestly
+improved throughput but changed many word boundaries through batch-local speaker adaptation.
+
+The decoder regression tests compare samples bit-for-bit with ffmpeg at eight sample rates,
+including fractional seeks, padding and EOF. They skip native parity checks when ffmpeg or
+the optional shared-library API is unavailable; fallback and dictionary tests still run.

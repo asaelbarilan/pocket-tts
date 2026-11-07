@@ -1,0 +1,125 @@
+# EXPERIMENTAL: 90,000-step five-dataset curriculum with RenikudPlus conditioning.
+# Local extension, not Kyutai's released training recipe (SEMANTIC_CONDITIONING.md).
+# Same curriculum, augmentation and optimization as finetune_hebrew_semantic_dicta_90k.yaml.
+# Starts from English pretrained weights with a fresh Hebrew text embedding and fusion,
+# NOT from a DictaBERT checkpoint (semantic fusion weights are encoder-specific).
+#
+# Setup: uv sync --locked (includes onnx and onnxruntime in the default dev group).
+# Run: NCCL_P2P_DISABLE=1 uv run torchrun --standalone --nproc-per-node 8 -m training.train training/configs/finetune_hebrew_semantic_renikud_90k.yaml
+# The frozen encoder runs on CPU, one ONNX thread per rank; first use downloads ~1.2 GB.
+model_config: pocket_tts/config/english_2026-04_24l.yaml
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: artifacts/tokenizer-he-en-niqqud/selected/tokenizer.model
+start_from_pretrained: true
+reset_text_embedding: true
+
+# RenikudPlus stays frozen; the backbone and semantic fusion are trainable.
+semantic_conditioner:
+  encoder: renikud_plus
+  model_name: notmax123/RenikudPlus
+  revision: 679c56ca449d41873fb8ff7711ddf7563d28198f
+  filename: model.onnx
+  hidden_size: 1024
+  first_layer: 8
+  last_layer: 20
+  gate: scalar
+  gate_hidden: 256
+  max_tokens: 2048
+  onnx_threads: 1
+semantic_lr_scale: 3.0
+
+data:
+  datasets:
+    committee:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/committee/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/committee/valid_aligned.jsonl
+      valid_weight: 0.45
+    plenum:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
+      valid_weight: 0.25
+    recital:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/recital/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/recital/valid_aligned.jsonl
+      valid_weight: 0.08
+    crowd:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/valid_aligned.jsonl
+      valid_weight: 0.1
+    hifitts2:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/valid.jsonl
+      valid_weight: 0.07
+    libritts_r:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/valid.jsonl
+      valid_weight: 0.05
+  # Phase lengths: 5K + 20K + 5K + 5K + 10K + 5K + 40K = 90K optimizer steps.
+  # Mix values are relative weights, normalized by the trainer (last phase sums to 1.09).
+  curriculum:
+    - steps: 5000
+      mix: {committee: 0.30, plenum: 0.30, recital: 0.10, crowd: 0.1, hifitts2: 0.15, libritts_r: 0.05}
+    - steps: 20000
+      mix: {committee: 0.55, plenum: 0.35, recital: 0.0, crowd: 0.05, hifitts2: 0.04, libritts_r: 0.01}
+    - steps: 5000
+      mix: {committee: 0.45, plenum: 0.30, recital: 0.10, crowd: 0.05, hifitts2: 0.05, libritts_r: 0.05}
+    - steps: 5000
+      mix: {committee: 0.30, plenum: 0.20, recital: 0.1, crowd: 0.1, hifitts2: 0.15, libritts_r: 0.15}
+    - steps: 10000
+      mix: {committee: 0.6, plenum: 0.35, recital: 0.0, crowd: 0.02, hifitts2: 0.02, libritts_r: 0.01}
+    - steps: 5000
+      mix: {committee: 0.4, plenum: 0.35, recital: 0.1, crowd: 0.05, hifitts2: 0.05, libritts_r: 0.05}
+    - steps: 40000
+      mix: {committee: 0.53, plenum: 0.4, recital: 0.05, crowd: 0.07, hifitts2: 0.03, libritts_r: 0.01}
+  curriculum_checkpoint_at_phase_end: true
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 5.0
+  alt_words_sample_prob: 1
+  alt_word_swap_prob: 0.7
+  nikud_word_prob: 0.3
+
+flow:
+  type: lsd
+  kwargs: {}
+
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+
+optim:
+  lr: 2e-4
+  schedule: cosine
+  warmup_steps: 1000
+  lr_min_ratio: 0.1
+
+compile: false
+
+run_dir: runs/finetune_hebrew_semantic_renikud_90k_2
+# 8 GPUs x 8 samples = effective batch 64.
+batch_size: 8
+grad_accum_steps: 1
+# Inferred from the curriculum; pin it to catch an accidental phase edit.
+max_steps: 90000
+stats_ema_steps: 1000
+ema_decay: 0.999
+log_freq: 50
+valid_freq: 2500
+ckpt_freq: 2500
+# Retain all periodic snapshots for intermediate quality comparisons.
+num_ckpt_keep: 50
+sample_freq: 2500
+sample_cfg_coef: 2.0
+
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את 200 הנושאים לסדר היום."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "אֲנִי רוֹצָה לָלֶכֶת הַבַּיְתָה, תּוֹדָה רַבָּה."
+  - "הוא טעם מההמבורגר והתקשר להזמין עוד אחד ב 09-7244451"
+  - "היא מוכרת אקססוריז בחנות שלה בת״א."
+  - "למה בעצם אנחנו צריכים ללמוד היסטוריה אם בסוף אנחנו חוזרים על אותן טעויות שוב ושוב?"
+  - "הילדה רצה הביתה כי התחיל לרדת גשם."
+  - "הוא רצה ללכת הביתה אבל נשאר עד הסוף."
+  - "הספר מונח על השולחן בספרייה."
+  - "הספר של השכונה פתח מספרה חדשה."
+  - "The quick brown fox jumps over the lazy dog."

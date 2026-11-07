@@ -403,6 +403,52 @@ the fusion projection moves from zero, the encoder output stays unchanged, and t
 Mimi weights match the frozen pretrained codec. This is a startup smoke test, not a quality
 evaluation or a full 90K training run. Smoke artifacts live outside the production run directory.
 
+## Starting the 90K combined-encoder curriculum
+
+`training/configs/finetune_hebrew_semantic_both_90k.yaml` uses DictaBERT-large and
+RenikudPlus together, in that branch order, with the same six datasets, seven curriculum
+phases, augmentation, objective and optimizer as `finetune_hebrew_semantic_renikud_90k_2.yaml`.
+This includes both Recital and CrowdTranscribe v5 (`crowd`). Both encoders run frozen on the local
+rank's GPU; Mimi stays frozen. It starts from the released English 24-layer weights with
+fresh Hebrew embeddings and zero-initialized fusion projections, not a single-encoder export.
+The per-GPU batch is 8, giving effective batch 64 on eight GPUs.
+
+Run from the repository root after the usual dependency setup and W&B login:
+
+```bash
+NCCL_P2P_DISABLE=1 uv run torchrun --standalone --nproc-per-node 8 -m training.train \
+    training/configs/finetune_hebrew_semantic_both_90k.yaml
+```
+
+Set `WANDB_MODE=disabled` to train without W&B. Its separate production directory is
+`runs/finetune_hebrew_semantic_both_90k`; a checkpoint there automatically resumes that run.
+Smoke configs must shorten their own curriculum and `max_steps` together and use a different
+run directory, never edit the production config to run a probe.
+
+The six-dataset CrowdTranscribe curriculum passed a separate four-step eight-A40 smoke test
+at batch 8 per GPU, including training batches from all six datasets, validation on all six
+datasets on all ranks, and checkpoint/export saving. Both encoder branches update; encoder
+outputs and Mimi remain unchanged. Evidence:
+`/tmp/opencode/semantic-both-90k-crowd-smoke/verification.json`. This short check does not
+establish a new steady-state throughput estimate.
+
+The earlier five-dataset version was validated on this host's eight A40s with 120 optimizer
+steps at batch 8 per GPU, all seven phases compressed, validation on all five datasets, sample
+generation and checkpoint/export saving. Steady training median: 2.29 seconds/step (0.44 steps/s); maximum sampled whole-device
+VRAM: 16.52 GiB of 44.99 GiB, including ONNX Runtime. Both fusion branches update, encoder
+probe outputs remain unchanged, and the exported Mimi tensors match the frozen base codec.
+An additional eight-GPU resume probe restored step 120 with optimizer/EMA and completed four
+updates. With real long-text batches synthetically padded to 30-second targets and 5-second
+prompts (all frames valid), peak sampled whole-device VRAM was 20.97 GiB, leaving about 24 GiB.
+This is a setup/throughput check, not a speech-quality evaluation. Evidence and the separate
+resume/capacity probe are under `/tmp/opencode/semantic-both-90k-smoke/REPORT.md`.
+
+Data caveat discovered during that probe: 12 plenum WAVs exceed RIFF's 4 GiB limit. Their
+`0xffffffff` size headers make the current decoder report an early EOF, so 18,100 training
+rows (1.16% of plenum) start beyond that point and are skipped; five more cross it. Review
+the report's read-only audit before a clean full-corpus run. The source files and manifests
+were not modified.
+
 ## Checkpoints
 
 The fusion's tensors live under `flow_lm.semantic_fusion.*` in training checkpoints and in the
