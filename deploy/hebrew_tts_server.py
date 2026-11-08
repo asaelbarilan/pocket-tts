@@ -42,7 +42,14 @@ import torch
 import uvicorn
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 
 from deploy.downloads import CODE_ZIP, GUIDE, Downloads
 from deploy.encoder_store import EncoderStore, EncoderStoreSet, describe, semantic_configs_of
@@ -177,6 +184,10 @@ class Engine:
         self.sample_rate: int = tts.sample_rate
         self.mimi = tts.mimi.to(device).eval()
         flow_lm = tts.flow_lm.to(device).eval()
+        if flow_lm.semantic_fusion is not None:
+            for enc in getattr(flow_lm.semantic_fusion, "_encoders", ()):
+                if getattr(enc, "model", None) is not None:
+                    enc.model.to(device)
         # The LSD sampler has no weights of its own at decode time; the wrapper only provides
         # the training-time `generate` (CFG, right-aligned batching, EOS countdown).
         self.model = TrainableTTS(flow_lm, LSD(normalize=False), TrainArgs()).eval()
@@ -430,13 +441,13 @@ class EngineLoader:
     def semantic_encoder_info(self) -> dict | None:
         """The frozen encoder this model runs with, None for a model without semantic
         conditioning. With an encoder store it includes the hash of the copied file."""
+        if self.encoder_store is not None:
+            return self.encoder_store.info()
         if self.engine is None:
             return None
         fusion = self.engine.model.flow_lm.semantic_fusion
         if fusion is None:
             return None
-        if self.encoder_store is not None:
-            return self.encoder_store.info()
         configs = getattr(fusion, "configs", None) or [fusion.config]
         infos = [
             {
@@ -642,8 +653,9 @@ def create_app(
 
     @app.get("/download/{name}")
     def download(name: str):
-        # Weights, tokenizer, config and sentences stream from disk (Range requests work, so a
-        # dropped 1.4 GB download can resume); the guide and code zip are generated.
+        # On Cloud Run `model.safetensors` redirects (302) to a 30-minute signed GCS URL so the
+        # 1.4 GB weights download straight from the bucket; small files stream from disk, and
+        # the guide and code zip are generated.
         if name in (GUIDE, CODE_ZIP):
             guide = downloads.guide()
             if guide is None:
@@ -661,6 +673,9 @@ def create_app(
                 media_type="application/zip",
                 headers={"Content-Disposition": f'attachment; filename="{CODE_ZIP}"'},
             )
+        signed = downloads.signed_url(name)
+        if signed is not None:
+            return RedirectResponse(signed, status_code=302)
         found = downloads.file(name)
         if found is None:
             raise HTTPException(status_code=404, detail="no such download")
@@ -1690,7 +1705,15 @@ def main() -> None:
     loader = EngineLoader(config, voices_dir, device, store, encoder_store)
     loader.start()
     validation = make_validation_set(loader, sentences, cache_dir)
-    downloads = Downloads(REPO_ROOT, config, sentences, DEFAULTS, lambda: loader.model_sha256)
+    downloads = Downloads(
+        REPO_ROOT,
+        config,
+        sentences,
+        DEFAULTS,
+        lambda: loader.model_sha256 or (store.sha256 if store is not None else None),
+        encoder_info=loader.semantic_encoder_info,
+        weights_size=store.files["model.safetensors"]["size"] if store is not None else None,
+    )
     logger.info("validation cache: %s", cache_dir)
     milim = MilimBench(milim_dir)
     uvicorn.run(

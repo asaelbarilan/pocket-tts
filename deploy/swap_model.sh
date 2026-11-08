@@ -18,7 +18,7 @@ SHA="${1:-$(sha256_of "$ROOT/artifacts/model.safetensors")}"
 require_published "$SHA"
 
 gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" \
-  --update-env-vars "MODEL_SHA256=$SHA"
+  --update-env-vars "MODEL_SHA256=$SHA,MODELS_BUCKET=$MODELS_BUCKET"
 
 gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
   --format 'value(status.url)'

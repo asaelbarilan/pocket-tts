@@ -27,7 +27,7 @@ else
 fi
 
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com --project "$PROJECT"
+  artifactregistry.googleapis.com iamcredentials.googleapis.com --project "$PROJECT"
 
 # Persistent storage for the validation-set audio. Cloud Run has no attachable disks; a Cloud
 # Storage bucket mounted at /cache is the persistent option (a few GB at most, cents per month).
@@ -35,8 +35,12 @@ if ! gcloud storage buckets describe "gs://$BUCKET" --project "$PROJECT" >/dev/n
   gcloud storage buckets create "gs://$BUCKET" --project "$PROJECT" --location "$REGION" \
     --uniform-bucket-level-access
 fi
+SA="$(run_service_account)"
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --project "$PROJECT" \
-  --member "serviceAccount:$(run_service_account)" --role roles/storage.objectUser >/dev/null
+  --member "serviceAccount:$SA" --role roles/storage.objectUser >/dev/null
+# Needed so /download/model.safetensors can sign a 30-minute GCS V4 download link via signBlob.
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
+  --member "serviceAccount:$SA" --role roles/iam.serviceAccountTokenCreator >/dev/null
 
 # The model store is mounted read-only; deploy/publish_model.sh creates it and grants access.
 require_published "$MODEL_SHA256"
@@ -86,7 +90,7 @@ gcloud run deploy "$SERVICE" \
   --add-volume-mount "volume=cache,mount-path=/cache" \
   --add-volume "name=models,type=cloud-storage,bucket=$MODELS_BUCKET,readonly=true" \
   --add-volume-mount "volume=models,mount-path=/models" \
-  --set-env-vars "MODEL_SHA256=$MODEL_SHA256" \
+  --set-env-vars "MODEL_SHA256=$MODEL_SHA256,MODELS_BUCKET=$MODELS_BUCKET" \
   --startup-probe "httpGet.path=/ready,periodSeconds=5,timeoutSeconds=3,failureThreshold=48" \
   --port 8080 --no-allow-unauthenticated
 

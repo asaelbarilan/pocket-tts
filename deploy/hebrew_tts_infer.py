@@ -1,16 +1,26 @@
 """Standalone local inference for the Hebrew 24-layer model: text + voice prompt -> WAV.
 
 This is the same pipeline as `deploy/hebrew_tts_server.py` (see inference_guide.md), without
-the HTTP layer. Run it from the project root (the directory holding `artifacts/`,
-`tokenizers/`, `pocket_tts/` and `training/`), because the paths inside
-`artifacts/hebrew_24l.yaml` are relative to it:
+the HTTP layer. Supports plain models, single-encoder semantic conditioning (`dictabert` or
+`renikud_plus`), and combined two-encoder semantic conditioning (`dictabert` + `renikud_plus`).
+By default, any frozen semantic encoder(s) pinned in `artifacts/hebrew_24l.yaml` are downloaded
+from Hugging Face on first load into `~/.cache/huggingface`; pass `--semantic-encoder-dir` (or
+`semantic_encoder_dir=` in Python) to load them from local directories instead.
+
+Run it from the project root (the directory holding `artifacts/`, `tokenizers/`, `pocket_tts/`
+and `training/`), because the paths inside `artifacts/hebrew_24l.yaml` are relative to it:
 
     python hebrew_tts_infer.py --text "שלום, מה שלומך?" --voice my_voice.wav --out out.wav
+
+or with local semantic encoder directories (one per encoder in the config's order):
+
+    python hebrew_tts_infer.py --semantic-encoder-dir semantic-encoders/dictabert semantic-encoders/renikud_plus \\
+        --text "שלום, מה שלומך?" --voice my_voice.wav --out out.wav
 
 or from Python:
 
     from hebrew_tts_infer import HebrewTTS, write_wav
-    tts = HebrewTTS()                              # loads artifacts/hebrew_24l.yaml
+    tts = HebrewTTS()                              # loads artifacts/hebrew_24l.yaml + semantic encoders
     voice = tts.encode_voice("my_voice.wav")       # any speaker, >= 0.5 s, first 5 s are used
     wave = tts.synthesize("שלום", voice, seed=1)   # float32 tensor [samples], or None
     write_wav("out.wav", wave, tts.sample_rate)
@@ -22,6 +32,7 @@ import argparse
 import logging
 import os
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import soundfile
@@ -65,24 +76,65 @@ def pick_device(requested: str = "auto") -> torch.device:
     return torch.device("cpu")
 
 
+def _resolve_encoder_dir(
+    source: Path | str | Sequence[Path | str | None] | None,
+) -> Path | list[Path | None] | None:
+    if source is None:
+        return None
+    if isinstance(source, str | Path):
+        return Path(source).resolve()
+    resolved = [Path(d).resolve() if d is not None else None for d in source]
+    return resolved[0] if len(resolved) == 1 and resolved[0] is not None else resolved
+
+
 class HebrewTTS:
-    def __init__(self, config: Path | str = "artifacts/hebrew_24l.yaml", device: str = "auto"):
+    def __init__(
+        self,
+        config: Path | str = "artifacts/hebrew_24l.yaml",
+        device: str = "auto",
+        semantic_encoder_dir: Path | str | Sequence[Path | str | None] | None = None,
+    ):
+        config_path = Path(config)
+        if not config_path.is_absolute() and (Path.cwd() / config_path).is_file():
+            config_path = (Path.cwd() / config_path).resolve()
+        encoder_dir = _resolve_encoder_dir(semantic_encoder_dir)
         # Paths inside the config (weights, tokenizer) are relative to the project root.
         os.chdir(ROOT)
         self.device = pick_device(device)
         started = time.perf_counter()
-        # Builds FlowLM + Mimi from the config and loads artifacts/model.safetensors (strict).
-        tts = TTSModel.load_model(config=Path(config))
+        # Builds FlowLM + Mimi from the config, loads artifacts/model.safetensors (strict,
+        # checking the recorded semantic encoder identity), and loads the frozen semantic
+        # encoder(s) from `encoder_dir` when given or from the Hugging Face cache.
+        tts = TTSModel.load_model(config=config_path, semantic_encoder_dir=encoder_dir)
         self.sample_rate: int = tts.sample_rate
         self.mimi = tts.mimi.to(self.device).eval()
         flow_lm = tts.flow_lm.to(self.device).eval()
+        if flow_lm.semantic_fusion is not None:
+            for enc in getattr(flow_lm.semantic_fusion, "_encoders", ()):
+                if getattr(enc, "model", None) is not None:
+                    enc.model.to(self.device)
+        self.semantic_encoders = (
+            list(flow_lm.semantic_fusion.configs) if flow_lm.semantic_fusion is not None else []
+        )
         # The LSD sampler has no weights of its own at decode time; the wrapper only provides
         # `generate` (classifier-free guidance, EOS countdown).
         self.model = TrainableTTS(flow_lm, LSD(normalize=False), TrainArgs()).eval()
         sp_encode = flow_lm.conditioner.tokenizer.sp.encode
         # Curly quotes, Unicode dashes and the like never reached the model in training.
         self.tokenize = lambda text: sp_encode(fold_characters(text))
-        logger.info("loaded model on %s in %.1fs", self.device, time.perf_counter() - started)
+        sem_desc = (
+            " + ".join(
+                f"{c.encoder}({c.model_name}@{c.revision[:8]})" for c in self.semantic_encoders
+            )
+            if self.semantic_encoders
+            else "none"
+        )
+        logger.info(
+            "loaded model on %s (semantic: %s) in %.1fs",
+            self.device,
+            sem_desc,
+            time.perf_counter() - started,
+        )
 
     def encode_voice(
         self, path: Path | str, prompt_seconds: float = DEFAULTS["prompt_seconds"]
@@ -115,14 +167,15 @@ class HebrewTTS:
         speech at once (try another voice prompt or a higher `eos_threshold`). The text goes to
         the tokenizer with only its characters folded (curly quotes, Unicode dashes, invisible
         marks): no other normalization, no chunking, one pass of at most `max_seconds`."""
-        tokens = torch.tensor(self.tokenize(text), dtype=torch.long)
+        folded = fold_characters(text)
+        tokens = torch.tensor(self.tokenize(folded), dtype=torch.long)
         max_frames = int(max_seconds * self.mimi.frame_rate)
         if seed is not None:
             torch.manual_seed(seed)
         latents = self.model.generate(
             [tokens],
             [voice],
-            texts=[fold_characters(text)],  # what was tokenized; semantic conditioning only
+            texts=[folded],  # exact string `tokens` came from; required for semantic conditioning
             max_frames=max_frames,
             temp=temp,
             n_steps=n_steps,
@@ -154,6 +207,15 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("out.wav"))
     parser.add_argument("--config", type=Path, default=Path("artifacts/hebrew_24l.yaml"))
     parser.add_argument("--device", default="auto", help="auto = cuda, mps, then cpu")
+    parser.add_argument(
+        "--semantic-encoder-dir",
+        nargs="+",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="local directory of the pinned semantic encoder (two directories in config order "
+        "for a combined model); default: download from Hugging Face into ~/.cache/huggingface",
+    )
     parser.add_argument("--seed", type=int, default=None)
     for key, default in DEFAULTS.items():
         if key != "prompt_seconds":
@@ -163,7 +225,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     voice_path, out_path = args.voice.resolve(), args.out.resolve()  # before the chdir to ROOT
-    tts = HebrewTTS(args.config, args.device)
+    tts = HebrewTTS(args.config, args.device, args.semantic_encoder_dir)
     voice = tts.encode_voice(voice_path, args.prompt_seconds)
     started = time.perf_counter()
     wave = tts.synthesize(

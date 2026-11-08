@@ -413,3 +413,106 @@ def test_describe_stored_model_reads_run_from_manifest_or_note(tmp_path):
     assert describe(tmp_path, "cc" * 8) == {"run": None, "note": "just words", "created": None}
     assert describe(tmp_path, "dd" * 8, {"run": "fb"}) == {"run": "fb"}
     assert describe(None, "aa" * 8) == {}
+
+
+def test_downloads_box_and_guide_list_semantic_encoders_and_redirect_weights_to_signed_gcs(
+    tmp_path,
+):
+    import datetime
+    import zipfile
+
+    from deploy.downloads import Downloads, sign_gcs_url
+    from pocket_tts.utils.config import DICTABERT_LARGE_REVISION, RENIKUD_PLUS_REVISION
+
+    weights = tmp_path / "model.safetensors"
+    weights.write_bytes(b"weights-bytes")
+    tok = tmp_path / "tokenizer.model"
+    tok.write_bytes(b"tok")
+    sentences = tmp_path / "sentences.jsonl"
+    sentences.write_text('{"id":"s0","category":"plain","text":"שלום"}\n', encoding="utf-8")
+    cfg = tmp_path / "hebrew_24l.yaml"
+    cfg.write_text(
+        json.dumps(
+            {
+                "weights_path": str(weights),
+                "flow_lm": {
+                    "lookup_table": {"tokenizer_path": str(tok)},
+                    "semantic_conditioners": [
+                        {"encoder": "dictabert"},
+                        {"encoder": "renikud_plus", "onnx_provider": "cpu"},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fixed_now = datetime.datetime(2026, 11, 7, 18, 0, 0, tzinfo=datetime.timezone.utc)
+    signed_url = sign_gcs_url(
+        "my-models-bucket",
+        f"{'4b' * 32}/model.safetensors",
+        "model.safetensors",
+        expires_seconds=1800,
+        now=fixed_now,
+        credentials_fn=lambda: ("svc@project.iam.gserviceaccount.com", "tok"),
+        sign_blob_fn=lambda sa, tok, payload: b"\xab\xcd" * 16,
+    )
+    assert signed_url.startswith(
+        f"https://storage.googleapis.com/my-models-bucket/{'4b' * 32}/model.safetensors?"
+    )
+    assert "X-Goog-Expires=1800" in signed_url
+    assert "X-Goog-Signature=" + ("abcd" * 16) in signed_url
+
+    dl = Downloads(
+        hebrew_tts_server.REPO_ROOT,
+        cfg,
+        sentences,
+        {"temp": 0.3, "cfg": 2.0},
+        lambda: "4b" * 32,
+        encoder_info=lambda: {
+            "encoders": [
+                {"encoder": "dictabert", "sha256": "c3fa" * 16},
+                {"encoder": "renikud_plus", "sha256": "c3a2" * 16},
+            ]
+        },
+        models_bucket="my-models-bucket",
+        signer=lambda b, obj, fn: signed_url,
+    )
+    box_html = dl.html()
+    assert "combined: dictabert + renikud_plus" in box_html
+    assert f"dicta-il/dictabert-large@{DICTABERT_LARGE_REVISION}" in box_html
+    assert f"notmax123/RenikudPlus@{RENIKUD_PLUS_REVISION}/model.onnx" in box_html
+    assert "c3fa" * 16 in box_html
+    assert "c3a2" * 16 in box_html
+
+    guide = dl.guide()
+    assert guide is not None
+    assert "4b" * 32 in guide
+    assert f"dicta-il/dictabert-large@{DICTABERT_LARGE_REVISION}" in guide
+    assert f"notmax123/RenikudPlus@{RENIKUD_PLUS_REVISION}/model.onnx" in guide
+    assert "--semantic-encoder-dir" in guide
+    assert "texts=[folded]" in guide
+
+    bundle = dl.code_zip(guide)
+    with zipfile.ZipFile(hebrew_tts_server.io.BytesIO(bundle)) as zf:
+        names = set(zf.namelist())
+        assert "hebrew_tts_infer.py" in names
+        assert "pocket_tts/conditioners/semantic.py" in names
+        assert "pocket_tts/conditioners/semantic_renikud.py" in names
+        assert "--semantic-encoder-dir" in zf.read("hebrew_tts_infer.py").decode("utf-8")
+
+    fx = Fixture(tmp_path)
+    loader = SimpleNamespace(
+        config=cfg,
+        store=None,
+        engine=SimpleNamespace(device="cuda", n_layers=24, sample_rate=24000, config=cfg),
+        error=None,
+        stage="ready",
+        model_sha256="4b" * 32,
+        voices_dir=tmp_path,
+        semantic_encoder_info=dl.encoder_info,
+    )
+    http = TestClient(hebrew_tts_server.create_app(loader, fx.set, dl, SimpleNamespace()))
+    resp = http.get("/download/model.safetensors", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == signed_url

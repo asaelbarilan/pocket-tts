@@ -196,13 +196,19 @@ hover it to see the expected IPA. Results appear below the player as text + audi
 ## Local inference downloads
 
 The top of the page links the files needed to run the model locally: `model.safetensors`,
-`tokenizer.model`, `hebrew_24l.yaml`, `hebrew_tts_inference_code.zip` (`pocket_tts`, the sampler
-part of `training/`, `hebrew_tts_infer.py`, `requirements.txt`), the example sentences, and
-`inference_guide.md` (written for coding agents; the server fills in the weights hash and the
-sampling defaults). They are served at `/download/<name>`; the weights support Range requests.
-`hebrew_tts_infer.py` is a standalone copy of the server's pipeline; on the same CPU, torch and seed
-it reproduces the validation-set audio byte for byte. Edit `deploy/inference_guide.md`
-and `deploy/hebrew_tts_infer.py` together with the server's sampling code.
+`tokenizer.model`, `hebrew_24l.yaml`, `hebrew_tts_inference_code.zip` (`pocket_tts`, the semantic
+conditioners, the sampler part of `training/`, `hebrew_tts_infer.py`, `requirements.txt`), the
+example sentences, `inference_guide.md` (written for coding agents; the server fills in the
+weights hash, the required semantic encoder versions, and the sampling defaults), and the exact
+pinned semantic encoder version(s) (`dictabert`, `renikud_plus`, or combined) the model requires
+locally. They are served at `/download/<name>`; on Cloud Run `/download/model.safetensors`
+redirects (`302`) to a 30-minute V4-signed Google Cloud Storage URL (signed via the IAM
+Credentials `signBlob` API) so the 1.4 GB weights download directly from the model store bucket
+instead of being proxied through the web server. `hebrew_tts_infer.py` is a standalone copy of
+the server's pipeline (including single and combined semantic conditioning and
+`--semantic-encoder-dir`); on the same CPU, torch and seed it reproduces the validation-set
+audio byte for byte. Edit `deploy/inference_guide.md` and `deploy/hebrew_tts_infer.py` together
+with the server's sampling code.
 
 Notes:
 - One request generates at a time (a lock); others wait. Validation generation takes the lock per
