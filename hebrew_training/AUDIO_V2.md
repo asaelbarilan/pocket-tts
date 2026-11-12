@@ -1,0 +1,57 @@
+# ivrit.ai audio-v2 (weakly labeled, >20k h)
+
+`ivrit-ai/audio-v2` (1.1 TiB audio) + `ivrit-ai/audio-v2-transcripts` (8.1 GiB of
+`full_transcript.json.gz` that matter). Machine transcripts (ivrit.ai whisper-large-v3-turbo,
+stable-ts aligned, VAD), no human check, **speakers unknown** and often mixed. Gated, one
+checkbox, auto-approved. License: ivrit.ai v1.
+
+## Structure (measured)
+
+- transcripts: `source/episode/{full_transcript.json.gz, speech_probs.frame.gz}` (always exactly
+  3 levels); audio: `source/episode.{m4a,mp3}` (flat, 2 levels). Join key `(source, episode)`.
+- 34,580 episodes with both, 78 sources; 276 audio files have no transcript, 6 transcript folders
+  lack `full_transcript.json.gz`. Ignore `.done` markers, `speech_probs.frame.gz` and the YouTube
+  caption files (`.vtt`, `.xml`, `.json3`, `.srv*`, `.ttml`).
+- audio is 48 kHz stereo (Opus in `.m4a`, MP3 in `.mp3`), ~100 kbps; the builder transcodes to
+  24 kHz mono WAV.
+- transcript segments carry `avg_logprob`, `compression_ratio`, `no_speech_prob` and per-word
+  `start/end/probability`; the builder's existing schema needs no conversion.
+- There is no quality manifest (unlike knesset-plenums), hence the survey stage.
+
+## Workflow (`hebrew_training/fetch_audio_v2.py`)
+
+```
+python -m hebrew_training.fetch_audio_v2 --work data/audio_v2_work list
+python -m hebrew_training.fetch_audio_v2 --work data/audio_v2_work survey      # ~8 GiB, resumable
+python -m hebrew_training.fetch_audio_v2 --work data/audio_v2_work report --min-avg-logprob -0.5 --max-compression 2.4
+python -m hebrew_training.fetch_audio_v2 --work data/audio_v2_work select --min-avg-logprob -0.5 --max-compression 2.4 --hours 3000
+python -m hebrew_training.fetch_audio_v2 --work data/audio_v2_work fetch --out data/audio_v2 --max-gb 400
+python -m hebrew_training.build_official_manifest --corpus data/audio_v2 --out-dir ... \
+    --audio-glob audio.m4a,audio.mp3 --min-avg-logprob -0.5 --max-compression-ratio 2.4
+```
+
+`survey --limit-episodes N` takes the first N of a fixed random order, so a small survey is an
+unbiased sample (`report` says how much of the corpus it covers). `select` is nested: raising
+`--hours` later only adds episodes. `fetch` refuses downloads above `--max-gb`.
+
+The builder's `--min-avg-logprob`, `--max-compression-ratio` and `--max-no-speech-prob` are off by
+default and ignore segments that lack the field, so other corpora build as before. Use the
+same thresholds for `select` and the builder, or the hours will not match.
+
+## Speaker key
+
+`metadata.json` `user_id` defaults to the source (show), so a host does not land in both splits.
+It is a proxy, not a speaker: `speaker_known` is `false`. `--speaker-key recording` gives a
+recording-disjoint split instead. A later speaker-classification pass can rewrite `user_id`
+in `metadata.json` with nothing else to redo.
+
+## First sample (600 episodes, 1.7% of the corpus, 311 h of speech)
+
+- `avg_logprob` is the discriminating metric: p5/p50/p95 = -0.43 / -0.17 / -0.07; >= -0.5 keeps
+  96.9% of speech, >= -0.3 keeps 89.7%, >= -0.2 keeps 66%.
+- `compression_ratio` is tight (p5/p50/p95 = 1.75 / 2.15 / 2.35); <= 2.4 keeps 96%, <= 2.2 keeps 63%.
+- `no_speech_prob` is ~0.03 everywhere (stable-ts/VAD already removed those segments): useless.
+- median word probability >= 0.8 keeps 95.7%.
+- `-0.5` / `2.4` together keep 92.9% of speech; 366 of 600 episodes lose < 5%.
+
+Re-run `report` on the full survey before choosing thresholds; these numbers are a sample.

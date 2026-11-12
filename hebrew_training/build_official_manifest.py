@@ -179,7 +179,7 @@ def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
         "--audio-glob",
-        default="audio.wav,audio.m4a,audio.mka",
+        default="audio.wav,audio.m4a,audio.mka,audio.mp3",
         help="Comma-separated candidates; the first that matches wins. "
         "CrowdRecital ships audio.mka, the Knesset corpora audio.m4a.",
     )
@@ -276,6 +276,26 @@ def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
         type=float,
         default=0.6,
         help="Median word probability required to keep a segment.",
+    )
+    parser.add_argument(
+        "--min-avg-logprob",
+        type=float,
+        default=None,
+        help="Drop segments whose Whisper `avg_logprob` is below this (e.g. -0.5). Off by "
+        "default. For weakly labeled corpora (audio-v2) -- see fetch_audio_v2 survey.",
+    )
+    parser.add_argument(
+        "--max-compression-ratio",
+        type=float,
+        default=None,
+        help="Drop segments whose Whisper `compression_ratio` is above this (e.g. 2.4: "
+        "repetition loops and hallucinations). Off by default.",
+    )
+    parser.add_argument(
+        "--max-no-speech-prob",
+        type=float,
+        default=None,
+        help="Drop segments whose Whisper `no_speech_prob` is above this. Off by default.",
     )
     parser.add_argument("--valid-hours", type=float, default=2.0)
     parser.add_argument(
@@ -705,10 +725,30 @@ def transcode_audio(audio: Path, recording: Path, audio_dir: Path) -> tuple[Path
 def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
     """Segments that pass the quality and language filters, times still absolute."""
     kept = []
+    min_logprob = getattr(args, "min_avg_logprob", None)
+    max_compression = getattr(args, "max_compression_ratio", None)
+    max_no_speech = getattr(args, "max_no_speech_prob", None)
     for segment in segments:
         words = segment.get("words") or []
         if not words:
             stats["no_words"] += 1
+            continue
+
+        # Whisper's own confidence, present only in corpora that ship raw Whisper segments.
+        # A missing field passes: CrowdRecital and the aligned Knesset files may not carry it.
+        logprob = segment.get("avg_logprob")
+        compression = segment.get("compression_ratio")
+        no_speech = segment.get("no_speech_prob")
+        if (
+            (min_logprob is not None and logprob is not None and logprob < min_logprob)
+            or (
+                max_compression is not None
+                and compression is not None
+                and compression > max_compression
+            )
+            or (max_no_speech is not None and no_speech is not None and no_speech > max_no_speech)
+        ):
+            stats["asr_filtered"] = stats.get("asr_filtered", 0) + 1
             continue
 
         probabilities = [w["probability"] for w in words if w.get("probability") is not None]
@@ -1126,6 +1166,7 @@ def main() -> None:
     totals = {
         "no_words": 0,
         "low_quality": 0,
+        "asr_filtered": 0,
         "bad_duration": 0,
         "no_hebrew": 0,
         "kept": 0,
@@ -1277,6 +1318,8 @@ def main() -> None:
             f"  dropped: no_words {totals['no_words']}, low_quality {totals['low_quality']}, "
             f"duration {totals['bad_duration']}, no_hebrew {totals['no_hebrew']}"
         )
+        if totals["asr_filtered"]:
+            print(f"  dropped by Whisper confidence filters: {totals['asr_filtered']} segments")
         print(
             f"train : {train_count:6d} utterances, {train_seconds / 3600:6.2f} h, "
             f"{len(train_speakers)} speakers"

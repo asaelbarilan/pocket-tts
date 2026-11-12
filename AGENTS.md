@@ -185,6 +185,10 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
   `flow_lm.semantic_fusion.branches.<k>.*` plus a shared `gate`); the singular
   `semantic_conditioner` is the legacy form, and setting both is an error. Its checkpoints record
   both encoders in order and load only into the same pair (SEMANTIC_CONDITIONING.md).
+- ivrit.ai audio-v2 (weakly labeled, >20k h, speakers unknown) is fetched by
+  `hebrew_training/fetch_audio_v2.py`: survey the transcripts first (`survey`/`report`), choose
+  Whisper-confidence thresholds from the hour distributions, then `select` and `fetch`. Never
+  download the audio repo wholesale (1.1 TiB). See `hebrew_training/AUDIO_V2.md`.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation
