@@ -102,7 +102,11 @@ Stop the tagger after labeling so the label log is stable. The fitted rule is
 `audio_v2_tagger.build_selected` freezes the label log, settings, seed, feature schema and
 XGBoost model in a new snapshot folder; scores every row in `W/rows`; fetches only episodes
 containing selected rows; then builds manifests with `--row-selection` so *unselected rows
-in those episodes do not enter training*. Preserve `W/tagger/labels.jsonl` and
+in those episodes do not enter training*. These episodes retain their full source recordings,
+and the builder keeps the complete transcoded WAVs, enabling later manifest-only refits with
+different model cuts without downloading or transcoding them again. This can approach the size
+of the entire source repository when selected rows are spread across most episodes; check the
+export's `download_gib` before fetching. Preserve `W/tagger/labels.jsonl` and
 `W/tagger/settings.json` for future labeling/refitting. Use a different snapshot and corpus
 directory when making a new cut. The download can be hundreds of GiB and the WAVs larger:
 check capacity before starting, and run it detached on the data host (never in SSH's foreground).
