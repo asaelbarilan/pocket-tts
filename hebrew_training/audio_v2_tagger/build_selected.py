@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--spool-dir", type=Path, required=True)
-    parser.add_argument("--fetch-workers", type=int, default=8)
+    parser.add_argument("--fetch-workers", type=int, default=32)
     parser.add_argument("--build-workers", type=int, default=4)
     parser.add_argument(
         "--builder-python",

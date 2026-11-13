@@ -121,6 +121,8 @@ python -u -m hebrew_training.audio_v2_tagger.build_selected \
 ```
 
 This command is resumable: rerun the same command if it exits after the fit or download.
+It defaults to 32 parallel episode fetches and honors Hugging Face `Retry-After` on 429/503;
+`--fetch-workers` can be lowered if the host or Hub starts throttling persistently.
 The immutable snapshot contains `fit.json`, `labels.jsonl`, `settings.json`, `model.ubj`,
 `selection.json` and `selected_rows.npz`; `W/selection.json` drives the fetcher. Look at
 `W/model3-YYYYMMDD.status`, the detached log and `W/model3-YYYYMMDD.done.json` to track it.

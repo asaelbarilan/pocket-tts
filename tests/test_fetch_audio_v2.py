@@ -87,6 +87,50 @@ def test_selection_order_is_nested():
     assert len(set(order[:50]) & set(order[:100])) == 50
 
 
+def test_audio_download_retries_rate_limit_and_keeps_only_complete_file(monkeypatch, tmp_path):
+    import huggingface_hub
+    import huggingface_hub.utils
+
+    statuses = iter([429, 200])
+
+    class Response:
+        def __init__(self, status):
+            self.status_code = status
+            self.headers = {"retry-after": "3"} if status == 429 else {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            if self.status_code != 200:
+                raise RuntimeError("rate limited")
+
+        def iter_bytes(self, size):
+            yield b"audio"
+
+    class Session:
+        def stream(self, *args, **kwargs):
+            return Response(next(statuses))
+
+    delays = []
+    monkeypatch.setattr(huggingface_hub, "hf_hub_url", lambda *args, **kwargs: "https://test")
+    monkeypatch.setattr(huggingface_hub.utils, "build_hf_headers", dict)
+    monkeypatch.setattr(huggingface_hub.utils, "get_session", lambda: Session())
+    monkeypatch.setattr(av2.time, "sleep", delays.append)
+    monkeypatch.setattr(av2.random, "random", lambda: 0.0)
+    target = tmp_path / "audio.m4a"
+    av2._download_audio(
+        {"id": "episode", "source": "source", "episode": "name", "ext": ".m4a", "audio_bytes": 5},
+        target,
+    )
+    assert target.read_bytes() == b"audio"
+    assert delays == [3.0]
+    assert not (tmp_path / "audio.m4a.part").exists()
+
+
 def test_builder_whisper_filters_are_opt_in():
     stats: dict = defaultdict(int)
     base = {"min_quality": 0.6}

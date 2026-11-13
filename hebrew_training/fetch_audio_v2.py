@@ -47,6 +47,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import random
 import statistics
 import sys
 import time
@@ -295,24 +296,38 @@ def fetch_transcript(episode: dict) -> dict:
     return json.loads(gzip.decompress(_fetch_bytes(TRANSCRIPT_REPO, path)))
 
 
-def _download_audio(episode: dict, target: Path) -> None:
+def _download_audio(episode: dict, target: Path, retries: int = 8) -> None:
     from huggingface_hub import hf_hub_url
     from huggingface_hub.utils import build_hf_headers, get_session
 
     path = f"{episode['source']}/{episode['episode']}{episode['ext']}"
     url = hf_hub_url(AUDIO_REPO, path, repo_type="dataset")
     part = target.with_name(target.name + ".part")
-    with get_session().stream(
-        "GET", url, headers=build_hf_headers(), follow_redirects=True, timeout=300
-    ) as response:
-        response.raise_for_status()
-        with open(part, "wb") as handle:
-            handle.writelines(response.iter_bytes(1 << 20))
-    if episode["audio_bytes"] and part.stat().st_size != episode["audio_bytes"]:
-        raise OSError(
-            f"{path}: got {part.stat().st_size} bytes, listing says {episode['audio_bytes']}"
-        )
-    part.replace(target)
+    for attempt in range(retries):
+        delay = min(2**attempt, 60)
+        try:
+            with get_session().stream(
+                "GET", url, headers=build_hf_headers(), follow_redirects=True, timeout=300
+            ) as response:
+                if response.status_code in (429, 503):
+                    delay = max(delay, float(response.headers.get("retry-after", delay)))
+                    print(
+                        f"  HF {response.status_code} for {episode['id']}; backing off {delay:.0f}s",
+                        flush=True,
+                    )
+                response.raise_for_status()
+                with open(part, "wb") as handle:
+                    handle.writelines(response.iter_bytes(1 << 20))
+            if episode["audio_bytes"] and part.stat().st_size != episode["audio_bytes"]:
+                raise OSError(
+                    f"{path}: got {part.stat().st_size} bytes, listing says {episode['audio_bytes']}"
+                )
+            part.replace(target)
+            return
+        except Exception:  # retry transport errors, truncated streams and 429s
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay + random.random())
 
 
 # ---------------------------------------------------------------------------------------
