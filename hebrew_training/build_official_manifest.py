@@ -766,14 +766,17 @@ def clean_segments(segments: list[dict], args, stats: dict) -> list[dict]:
             stats["no_hebrew"] += 1
             continue
 
-        kept.append(
-            {
-                "start": float(segment["start"]),
-                "end": float(segment["end"]),
-                "text": text,
-                "words": timed,
-            }
-        )
+        entry = {
+            "start": float(segment["start"]),
+            "end": float(segment["end"]),
+            "text": text,
+            "words": timed,
+        }
+        # Carried for tools that rate or filter rows by Whisper confidence (fetch_audio_v2).
+        for key in ("avg_logprob", "compression_ratio", "no_speech_prob"):
+            if segment.get(key) is not None:
+                entry[key] = float(segment[key])
+        kept.append(entry)
     kept.sort(key=lambda s: s["start"])
     return kept
 
