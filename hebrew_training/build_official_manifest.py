@@ -1000,6 +1000,11 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
         "model_filtered": 0,
     }
     audio = find_audio(recording, args.audio_glob)
+    if audio is None:
+        # A model-selected corpus can retain only WAVs after its first build.
+        wav = audio_dir_of(args) / f"{recording.name}.wav"
+        if wav.is_file() and wav.stat().st_size > 44:
+            audio = wav
     align = next(iter(recording.glob(args.align_glob)), None)
     if audio is None or align is None:
         return [], stats

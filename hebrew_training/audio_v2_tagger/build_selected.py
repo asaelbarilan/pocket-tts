@@ -22,6 +22,26 @@ def stage(name: str, path: Path) -> None:
     print(f"STAGE: {name}", flush=True)
 
 
+def remove_sources_after_wavs(episodes: list[dict], corpus: Path, wavs: Path) -> int:
+    """Never delete a source until every selected episode has a complete WAV."""
+    missing_wavs = [
+        e["id"]
+        for e in episodes
+        if not (wavs / f"{e['id']}.wav").is_file() or (wavs / f"{e['id']}.wav").stat().st_size <= 44
+    ]
+    if missing_wavs:
+        raise RuntimeError(f"{len(missing_wavs)} episodes lack finished WAVs; retaining sources")
+    removed = 0
+    for episode in episodes:
+        source = corpus / episode["id"] / f"audio{episode['ext']}"
+        if source.exists():
+            source.unlink()
+            removed += 1
+        if removed and removed % 1000 == 0:
+            print(f"removed {removed:,} source recordings after WAV verification", flush=True)
+    return removed
+
+
 def run(args: argparse.Namespace) -> None:
     work, snapshot, corpus, manifest = args.work, args.snapshot, args.corpus, args.manifest
     status = snapshot.parent / (snapshot.name + ".status")
@@ -77,35 +97,41 @@ def run(args: argparse.Namespace) -> None:
         (snapshot / "missing_episodes.json").write_text(json.dumps(missing) + "\n")
         raise RuntimeError(f"{len(missing)} episode downloads incomplete; rerun to resume")
     stage("manifest", status)
-    subprocess.run(
-        [
-            str(args.builder_python),
-            "-m",
-            "hebrew_training.build_official_manifest",
-            "--corpus",
-            str(corpus),
-            "--out-dir",
-            str(manifest),
-            "--audio-glob",
-            "audio.m4a,audio.mp3",
-            "--row-selection",
-            str(snapshot / "selected_rows.npz"),
-            "--spool-dir",
-            str(args.spool_dir),
-            "--workers",
-            str(args.build_workers),
-        ],
-        check=True,
-    )
+    built = snapshot / "build.ok"
+    if not built.exists():
+        subprocess.run(
+            [
+                str(args.builder_python),
+                "-m",
+                "hebrew_training.build_official_manifest",
+                "--corpus",
+                str(corpus),
+                "--out-dir",
+                str(manifest),
+                "--audio-glob",
+                "audio.m4a,audio.mp3",
+                "--row-selection",
+                str(snapshot / "selected_rows.npz"),
+                "--spool-dir",
+                str(args.spool_dir),
+                "--workers",
+                str(args.build_workers),
+            ],
+            check=True,
+        )
+        built.write_text("manifest builder exited successfully\n")
     counts = {}
     for split in ("train", "valid"):
         path = manifest / f"{split}.jsonl"
         counts[split] = sum(1 for _ in path.open(encoding="utf-8"))
         if not counts[split]:
             raise RuntimeError(f"empty {path}; build is not complete")
+    stage("remove-source-audio", status)
+    removed = remove_sources_after_wavs(episodes, corpus, manifest / "audio")
     result = {
         **info,
         "manifest_rows": counts,
+        "removed_source_audio": removed,
         "corpus": str(corpus),
         "manifest": str(manifest),
         "snapshot": str(snapshot),

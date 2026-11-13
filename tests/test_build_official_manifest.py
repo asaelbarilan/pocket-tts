@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from hebrew_training import build_official_manifest
+from hebrew_training.audio_v2_tagger.build_selected import remove_sources_after_wavs
 
 
 def _make_recording(corpus: Path, name: str, speaker: str) -> None:
@@ -126,6 +127,44 @@ def test_row_selection_filters_builder_output_before_manifest_split(monkeypatch,
     ]
     assert len(rows) == 2
     assert {Path(row["path"]).parent.name for row in rows} == {"recording-0", "recording-2"}
+
+
+def test_builder_reuses_saved_wav_after_source_audio_removed(tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _make_recording(corpus, "episode", "speaker")
+    (corpus / "episode" / "audio.wav").unlink()
+    wavs = tmp_path / "saved-wavs"
+    wavs.mkdir()
+    saved = wavs / "episode.wav"
+    saved.write_bytes(b"RIFF" + b"\0" * 100)
+    args = _transcode_args(tmp_path / "new-manifest", wavs)
+    rows, stats = build_official_manifest.segment_rows(
+        corpus / "episode", args, None, random.Random(0)
+    )
+    assert len(rows) == 1 and rows[0]["path"] == str(saved.resolve())
+    assert stats["audio_reused"] == 1
+
+
+def test_source_audio_removed_only_after_all_wavs_complete(tmp_path):
+    corpus = tmp_path / "corpus"
+    wavs = tmp_path / "wavs"
+    wavs.mkdir()
+    episodes = [{"id": "a", "ext": ".mp3"}, {"id": "b", "ext": ".m4a"}]
+    for episode in episodes:
+        folder = corpus / episode["id"]
+        folder.mkdir(parents=True)
+        (folder / f"audio{episode['ext']}").write_bytes(b"source")
+        (folder / "transcript.aligned.json").write_text("{}")
+    (wavs / "a.wav").write_bytes(b"RIFF" + b"\0" * 100)
+    with pytest.raises(RuntimeError, match="retaining sources"):
+        remove_sources_after_wavs(episodes, corpus, wavs)
+    assert (corpus / "a/audio.mp3").exists()
+    (wavs / "b.wav").write_bytes(b"RIFF" + b"\0" * 100)
+    assert remove_sources_after_wavs(episodes, corpus, wavs) == 2
+    assert not (corpus / "a/audio.mp3").exists()
+    assert not (corpus / "b/audio.m4a").exists()
+    assert (corpus / "a/transcript.aligned.json").exists()
 
 
 def test_spool_limit_removes_partial_file(tmp_path: Path) -> None:
