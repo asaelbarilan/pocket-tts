@@ -225,6 +225,24 @@ Resuming restarts inside the right phase with the right mix. What is not restore
 dataset's shuffle position: like a plain run, the loaders start from the beginning of a new
 shuffle.
 
+**Planning the epochs before the run.** The mix is an exact quota, so each dataset's epochs are
+known in advance: `steps x effective_batch x share / rows`, accumulated over the phases
+(effective batch = `batch_size x grad_accum_steps x GPUs`). `training/plan_curriculum.py` shows
+that table from the config and the manifests, flags datasets that roll over too often or are
+barely seen, and edits the config interactively:
+
+```bash
+uv run python -m training.plan_curriculum training/configs/finetune_hebrew_curriculum.yaml
+#   add <folder>   paste a dataset's folder: train/valid manifests (most processed stage) found
+#   share 2 hifitts2 10   |  mix 2 a=90 b=10  |  steps 2 120k  |  phase add
+#   solve 2        target epochs per dataset -> the steps and mix that reach them
+#   rows <dataset> <rows> [hours]   when the manifests live on another machine
+#   save           shows a diff first; only data.datasets / data.curriculum change
+```
+
+`--show` prints the table and exits; `--world-size` sets the GPU count (default 8) and `batch N`
+overrides the effective batch size. Run it from the repo root.
+
 ### Reproducing our results
 
 If you train on 2k hours of HiFiTTS-2 and batch size 64, this is the metrics progress you should expect to see:
