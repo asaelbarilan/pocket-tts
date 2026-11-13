@@ -24,7 +24,8 @@
   .w.done { color:#aab4c8; }
   .w.cur { background:var(--acc); color:#fff; }
   audio { width:100%; margin:8px 0; direction:ltr; } /* a timeline is conventionally left to right */
-  .buttons { display:grid; grid-template-columns: repeat(3,1fr); gap:10px; margin-top:8px; }
+  /* Physical keyboard order (1, 2, 3), even though the rest of the page is RTL. */
+  .buttons { display:grid; direction:ltr; grid-template-columns: repeat(3,1fr); gap:10px; margin-top:8px; }
   button { font:inherit; color:var(--fg); background:#222733; border:1px solid var(--line); border-radius:8px; padding:12px; cursor:pointer; }
   button:hover { border-color:var(--acc); }
   button.r1 { border-color:var(--r1); } button.r2 { border-color:var(--r2); } button.r3 { border-color:var(--r3); }
