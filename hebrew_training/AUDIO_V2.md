@@ -111,7 +111,7 @@ check capacity before starting, and run it detached on the data host (never in S
 python -u -m hebrew_training.audio_v2_tagger.build_selected \
   --work W --snapshot W/model3-YYYYMMDD \
   --corpus DATA/model3-corpus --manifest DATA/model3-manifest \
-  --spool-dir /tmp
+  --spool-dir /tmp --builder-python /path/to/main/.venv/bin/python
 ```
 
 This command is resumable: rerun the same command if it exits after the fit or download.

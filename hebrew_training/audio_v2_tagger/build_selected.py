@@ -79,7 +79,7 @@ def run(args: argparse.Namespace) -> None:
     stage("manifest", status)
     subprocess.run(
         [
-            sys.executable,
+            str(args.builder_python),
             "-m",
             "hebrew_training.build_official_manifest",
             "--corpus",
@@ -124,6 +124,12 @@ def main() -> None:
     parser.add_argument("--spool-dir", type=Path, required=True)
     parser.add_argument("--fetch-workers", type=int, default=8)
     parser.add_argument("--build-workers", type=int, default=4)
+    parser.add_argument(
+        "--builder-python",
+        type=Path,
+        default=Path(sys.executable),
+        help="Main project Python for build_official_manifest (tagger has a separate environment).",
+    )
     run(parser.parse_args())
 
 
