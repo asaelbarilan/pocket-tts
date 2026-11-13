@@ -11,7 +11,9 @@ import pytest
 pytest.importorskip("xgboost")
 pytest.importorskip("pandas")
 
+from hebrew_training.audio_v2_table import Table
 from hebrew_training.audio_v2_tagger import model as tm
+from hebrew_training.audio_v2_tagger.export_selection import replay_labels
 from hebrew_training.audio_v2_tagger.server import Tagger
 
 NAMES = ["lp_mean", "cr_max", "noise"]
@@ -178,3 +180,28 @@ def test_settings_persist_and_invalid_cutoff_does_not_overwrite(tmp_path):
     with pytest.raises(ValueError):
         tagger.update_settings(False, 1.0)
     assert json.loads(tagger.settings_path.read_text()) == {"use_source": True, "cutoff": 0.65}
+
+
+def test_export_replays_undo_and_rejects_stale_table_rows(tmp_path):
+    import json
+
+    table = Table(
+        x=np.zeros((2, 3)),
+        episode=np.array([0, 0]),
+        source=np.array([0, 0]),
+        start=np.array([1.0, 2.0]),
+        end=np.array([2.0, 3.0]),
+        episode_ids=["episode"],
+        sources=["source"],
+    )
+    path = tmp_path / "labels.jsonl"
+    records = [
+        {"key": "episode_1000", "row": 0, "rating": 1},
+        {"key": "episode_2000", "row": 1, "rating": 3},
+        {"undo": "episode_1000"},
+    ]
+    path.write_text("\n".join(map(json.dumps, records)) + "\n")
+    assert list(replay_labels(path, table)) == ["episode_2000"]
+    path.write_text(json.dumps({"key": "wrong", "row": 1, "rating": 3}) + "\n")
+    with pytest.raises(ValueError, match="does not match"):
+        replay_labels(path, table)

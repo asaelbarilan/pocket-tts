@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from hebrew_training import build_official_manifest
@@ -81,6 +82,50 @@ def test_parallel_output_matches_serial_and_removes_spool(
     output = capsys.readouterr().out
     assert "progress : 4/4 recordings (100.0%), 0 waiting" in output
     assert "ETA 0s, 4 utterances" in output
+
+
+def test_row_selection_filters_builder_output_before_manifest_split(monkeypatch, tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for index in range(4):
+        _make_recording(corpus, f"recording-{index}", f"speaker-{index}")
+    selected = tmp_path / "rows.npz"
+    np.savez_compressed(
+        selected,
+        episode_ids=np.array([f"recording-{index}" for index in range(4)]),
+        episode=np.array([0, 2]),
+        start=np.array([0.0, 0.0]),
+        end=np.array([6.1, 6.1]),
+    )
+    output = tmp_path / "selected"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_official_manifest",
+            "--corpus",
+            str(corpus),
+            "--out-dir",
+            str(output),
+            "--spool-dir",
+            str(tmp_path),
+            "--row-selection",
+            str(selected),
+            "--no-transcode-audio",
+            "--workers",
+            "2",
+            "--valid-hours",
+            "0.001",
+        ],
+    )
+    build_official_manifest.main()
+    rows = [
+        json.loads(line)
+        for name in ("train.jsonl", "valid.jsonl")
+        for line in (output / name).read_text().splitlines()
+    ]
+    assert len(rows) == 2
+    assert {Path(row["path"]).parent.name for row in rows} == {"recording-0", "recording-2"}
 
 
 def test_spool_limit_removes_partial_file(tmp_path: Path) -> None:

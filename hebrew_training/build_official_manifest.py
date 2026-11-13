@@ -104,6 +104,7 @@ recording (or the source audio when --no-transcode-audio is used).
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import multiprocessing
@@ -298,6 +299,11 @@ def build_parser(add_help: bool = True) -> argparse.ArgumentParser:
         help="Drop segments whose Whisper `no_speech_prob` is above this. Off by default.",
     )
     parser.add_argument("--valid-hours", type=float, default=2.0)
+    parser.add_argument(
+        "--row-selection",
+        type=Path,
+        help="NPZ from audio_v2_tagger.export_selection; keep only its exact (recording, start, end) rows.",
+    )
     parser.add_argument(
         "--normalize-text",
         action="store_true",
@@ -958,6 +964,29 @@ def neighbour_gaps(segments: list[dict]):
     return gaps
 
 
+@functools.lru_cache(maxsize=1)
+def _selected_row_table(path: Path):
+    import numpy as np
+
+    with np.load(path) as data:
+        ids = [str(value) for value in data["episode_ids"]]
+        episode = data["episode"].astype(int)
+        start = data["start"]
+        end = data["end"]
+    if len(episode) and np.any(episode[1:] < episode[:-1]):
+        raise ValueError("selected rows must be sorted by recording")
+    offsets = np.searchsorted(episode, np.arange(len(ids) + 1))
+    return {name: (int(offsets[i]), int(offsets[i + 1])) for i, name in enumerate(ids)}, start, end
+
+
+def selected_row_keys(path: Path, recording_name: str) -> set[tuple[float, float]]:
+    offsets, starts, ends = _selected_row_table(path)
+    if recording_name not in offsets:
+        raise ValueError(f"recording {recording_name} is not in row selection")
+    first, last = offsets[recording_name]
+    return set(zip(starts[first:last], ends[first:last]))
+
+
 def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[list[dict], dict]:
     """One manifest row per merged run of aligned segments."""
     stats = {
@@ -968,6 +997,7 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
         "kept": 0,
         "audio_transcoded": 0,
         "audio_reused": 0,
+        "model_filtered": 0,
     }
     audio = find_audio(recording, args.audio_glob)
     align = next(iter(recording.glob(args.align_glob)), None)
@@ -990,6 +1020,11 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
     except (json.JSONDecodeError, KeyError, OSError):
         return [], stats
 
+    selected = (
+        selected_row_keys(args.row_selection, recording.name)
+        if getattr(args, "row_selection", None)
+        else None
+    )
     rows = []
     groups = merge_segments(clean_segments(segments, args, stats), args, rng)
     neighbours = neighbour_gaps(segments)
@@ -998,6 +1033,9 @@ def segment_rows(recording: Path, args, normalize, rng: random.Random) -> tuple[
         duration = group[-1]["end"] - start
         if not args.min_duration <= duration <= args.max_duration:
             stats["bad_duration"] += 1
+            continue
+        if selected is not None and (round(start, 4), round(group[-1]["end"], 4)) not in selected:
+            stats["model_filtered"] += 1
             continue
 
         words = [word for segment in group for word in segment["words"]]
@@ -1175,6 +1213,7 @@ def main() -> None:
         "kept": 0,
         "audio_transcoded": 0,
         "audio_reused": 0,
+        "model_filtered": 0,
     }
 
     def add_stats(stats: dict) -> None:
@@ -1323,6 +1362,8 @@ def main() -> None:
         )
         if totals["asr_filtered"]:
             print(f"  dropped by Whisper confidence filters: {totals['asr_filtered']} segments")
+        if args.row_selection:
+            print(f"  dropped by model row selection: {totals['model_filtered']}")
         print(
             f"train : {train_count:6d} utterances, {train_seconds / 3600:6.2f} h, "
             f"{len(train_speakers)} speakers"

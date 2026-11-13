@@ -94,3 +94,27 @@ you rate rows and estimates the data cut from the ratings.
 
 The tagger shows a row's words using `audio_v2_table.row_segments`, a copy of the builder's segment
 rule that a test pins to `clean_segments`.
+
+## Build the model-selected dataset
+
+Stop the tagger after labeling so the label log is stable. The fitted rule is
+`P(rating >= 3) >= tagger/settings.json:cutoff` (not the old Whisper thresholds).
+`audio_v2_tagger.build_selected` freezes the label log, settings, seed, feature schema and
+XGBoost model in a new snapshot folder; scores every row in `W/rows`; fetches only episodes
+containing selected rows; then builds manifests with `--row-selection` so *unselected rows
+in those episodes do not enter training*. Preserve `W/tagger/labels.jsonl` and
+`W/tagger/settings.json` for future labeling/refitting. Use a different snapshot and corpus
+directory when making a new cut. The download can be hundreds of GiB and the WAVs larger:
+check capacity before starting, and run it detached on the data host (never in SSH's foreground).
+
+```
+python -u -m hebrew_training.audio_v2_tagger.build_selected \
+  --work W --snapshot W/model3-YYYYMMDD \
+  --corpus DATA/model3-corpus --manifest DATA/model3-manifest \
+  --spool-dir /tmp
+```
+
+This command is resumable: rerun the same command if it exits after the fit or download.
+The immutable snapshot contains `fit.json`, `labels.jsonl`, `settings.json`, `model.ubj`,
+`selection.json` and `selected_rows.npz`; `W/selection.json` drives the fetcher. Look at
+`W/model3-YYYYMMDD.status`, the detached log and `W/model3-YYYYMMDD.done.json` to track it.
