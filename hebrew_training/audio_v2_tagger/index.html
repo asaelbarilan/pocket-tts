@@ -12,13 +12,15 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
   main { display:grid; grid-template-columns: minmax(0,1.5fr) minmax(320px,1fr); gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
   @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card { min-width:0; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
   h2 { margin:0 0 10px; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); font-weight:600; }
   .meta { color:var(--mut); font-size:13px; display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
   .meta span { unicode-bidi:plaintext; }
   .num { direction:ltr; unicode-bidi:isolate; display:inline-block; }
-  .text { direction:rtl; text-align:start; font-size:28px; line-height:1.9; min-height:150px; padding:8px 4px; }
-  .w { padding:0 4px; margin-inline:3px; border-radius:5px; cursor:pointer; transition:background .08s; }
+  .text { direction:rtl; text-align:start; font-size:28px; line-height:1.9; min-height:150px; padding:8px 4px; max-width:100%; overflow-wrap:anywhere; }
+  /* Inline-block creates a line-break opportunity between adjacent Alpine word spans.
+     Margins alone do not: without it, the transcript behaves as one unbreakable run. */
+  .w { display:inline-block; max-width:100%; overflow-wrap:anywhere; white-space:normal; padding:0 4px; margin-inline:3px; border-radius:5px; cursor:pointer; transition:background .08s; }
   .w.done { color:#aab4c8; }
   .w.cur { background:var(--acc); color:#fff; }
   audio { width:100%; margin:8px 0; direction:ltr; } /* a timeline is conventionally left to right */
