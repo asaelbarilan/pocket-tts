@@ -267,22 +267,26 @@ def quantile(histogram: dict[int, float], axis: Axis, q: float) -> float:
 # Transport
 
 
-def _fetch_bytes(repo: str, path: str, retries: int = 4) -> bytes:
+def _fetch_bytes(repo: str, path: str, retries: int = 8) -> bytes:
     from huggingface_hub import hf_hub_url
     from huggingface_hub.utils import build_hf_headers, get_session
 
     url = hf_hub_url(repo, path, repo_type="dataset")
     for attempt in range(retries):
+        delay = min(2**attempt, 60)
         try:
             response = get_session().get(
                 url, headers=build_hf_headers(), follow_redirects=True, timeout=120
             )
+            if response.status_code == 429:
+                # The Hub rate-limits per client: honor its Retry-After rather than guessing.
+                delay = max(delay, float(response.headers.get("retry-after", delay)))
             response.raise_for_status()
             return response.content
         except Exception:
             if attempt == retries - 1:
                 raise
-            time.sleep(2**attempt)
+            time.sleep(delay)
     raise AssertionError("unreachable")
 
 
