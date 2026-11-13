@@ -198,7 +198,7 @@ def main() -> None:
     parser.add_argument("--spool-dir", type=Path, required=True)
     parser.add_argument("--fetch-workers", type=int, default=32)
     parser.add_argument("--build-workers", type=int, default=4)
-    parser.add_argument("--transcode-workers", type=int, default=16)
+    parser.add_argument("--transcode-workers", type=int, default=64)
     parser.add_argument(
         "--builder-python",
         type=Path,

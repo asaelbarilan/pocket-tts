@@ -82,7 +82,7 @@ def main() -> None:
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--wavs", type=Path, required=True)
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=64)
     args = parser.parse_args()
     episodes = json.loads(args.selection.read_text(encoding="utf-8"))["episodes"]
     args.wavs.mkdir(parents=True, exist_ok=True)
