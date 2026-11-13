@@ -188,7 +188,9 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
 - ivrit.ai audio-v2 (weakly labeled, >20k h, speakers unknown) is fetched by
   `hebrew_training/fetch_audio_v2.py`: survey the transcripts first (`survey`/`report`), choose
   Whisper-confidence thresholds from the hour distributions, then `select` and `fetch`. Never
-  download the audio repo wholesale (1.1 TiB). See `hebrew_training/AUDIO_V2.md`.
+  download the audio repo wholesale (1.1 TiB). See `hebrew_training/AUDIO_V2.md`. Its rating tool
+  (`hebrew_training/audio_v2_tagger/`, FastAPI + xgboost) has its own uv project and must not import
+  torch/`pocket_tts`; run it with `uv run --project hebrew_training/audio_v2_tagger`.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation

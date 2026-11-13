@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audio-v2 tagger</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e8eaf0; --mut:#8b93a7; --acc:#5b9cff;
+          --r1:#d9534f; --r2:#e0a030; --r3:#3fb27f; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
+  main { display:grid; grid-template-columns: minmax(0,1.5fr) minmax(320px,1fr); gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  h2 { margin:0 0 10px; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); font-weight:600; }
+  .meta { color:var(--mut); font-size:13px; display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+  .meta span { unicode-bidi:plaintext; }
+  .num { direction:ltr; unicode-bidi:isolate; display:inline-block; }
+  .text { direction:rtl; text-align:start; font-size:28px; line-height:1.9; min-height:150px; padding:8px 4px; }
+  .w { padding:0 4px; margin-inline:3px; border-radius:5px; cursor:pointer; transition:background .08s; }
+  .w.done { color:#aab4c8; }
+  .w.cur { background:var(--acc); color:#fff; }
+  audio { width:100%; margin:8px 0; direction:ltr; } /* a timeline is conventionally left to right */
+  .buttons { display:grid; grid-template-columns: repeat(3,1fr); gap:10px; margin-top:8px; }
+  button { font:inherit; color:var(--fg); background:#222733; border:1px solid var(--line); border-radius:8px; padding:12px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.r1 { border-color:var(--r1); } button.r2 { border-color:var(--r2); } button.r3 { border-color:var(--r3); }
+  button.r1:hover { background:rgba(217,83,79,.18);} button.r2:hover { background:rgba(224,160,48,.18);} button.r3:hover { background:rgba(63,178,127,.18);}
+  button.small { padding:6px 10px; font-size:13px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .kbd { color:var(--mut); font-size:12px; margin-top:8px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { padding:5px 6px; border-bottom:1px solid var(--line); text-align:start; unicode-bidi:plaintext; }
+  /* number columns: keep digits and ranges in reading order inside the RTL table */
+  th:not(:first-child), td:not(:first-child) { direction:ltr; unicode-bidi:isolate; text-align:end; }
+  th { color:var(--mut); font-weight:600; }
+  .bar { height:8px; border-radius:4px; background:#222733; overflow:hidden; display:flex; }
+  .bar i { display:block; height:100%; }
+  .mut { color:var(--mut); } .good { color:var(--r3); } .bad { color:var(--r1); } .warn { color:var(--r2); }
+  .metrics { font-family:ui-monospace, monospace; font-size:12px; color:var(--mut); columns:2; margin-top:8px; direction:ltr; text-align:left; }
+  .spin { color:var(--mut); padding:40px 0; text-align:center; }
+  label { font-size:13px; color:var(--mut); }
+  input[type=range] { width:140px; }
+</style>
+</head>
+<body x-data="tagger()" x-init="init()">
+<main>
+  <section class="card">
+    <h2>Rate this clip as a training sample</h2>
+    <template x-if="!item">
+      <div class="spin">
+        Preparing clips... <span x-text="queue.ready"></span> ready, <span x-text="queue.inflight"></span> loading
+        <span x-show="queue.failed" class="warn">(<span x-text="queue.failed"></span> failed)</span>
+      </div>
+    </template>
+    <template x-if="item">
+      <div>
+        <div class="meta">
+          <span x-text="item.source"></span>
+          <span x-text="item.episode" style="max-width:520px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></span>
+          <span x-text="fmtTime(item.start) + '  ·  ' + item.duration.toFixed(1) + ' s'"></span>
+        </div>
+        <div class="text" dir="rtl">
+          <template x-for="(w, i) in item.words" :key="i">
+            <span class="w" :class="{cur: i === cur, done: i < cur}" x-text="w.w" @click="seek(w.start)"></span>
+          </template>
+        </div>
+        <audio x-ref="audio" controls preload="auto"></audio>
+        <div class="buttons">
+          <button class="r1" @click="rate(1)"><b>1</b> &nbsp;clearly not</button>
+          <button class="r2" @click="rate(2)"><b>2</b> &nbsp;in a bunch</button>
+          <button class="r3" @click="rate(3)"><b>3</b> &nbsp;clearly yes</button>
+        </div>
+        <div class="row">
+          <button class="small" @click="rate(0)">Skip (S) - bad audio, not rated</button>
+          <button class="small" @click="undo()">Undo (Backspace)</button>
+          <button class="small" @click="replay()">Replay (R)</button>
+          <label><input type="checkbox" x-model="showMetrics"> show metrics (can bias you)</label>
+        </div>
+        <div class="metrics" x-show="showMetrics">
+          <template x-for="(v, k) in item.metrics" :key="k"><div><span x-text="k"></span>: <span x-text="v"></span></div></template>
+        </div>
+        <div class="kbd">1 / 2 / 3 rate &nbsp; S skip &nbsp; Backspace undo &nbsp; Space play/pause &nbsp; R replay &nbsp; click a word to seek</div>
+      </div>
+    </template>
+  </section>
+
+  <section style="display:grid; gap:16px; align-content:start">
+    <div class="card">
+      <h2>Progress</h2>
+      <div>
+        <b x-text="rated"></b> rated
+        <span class="mut num">(<span x-text="ratings[1]"></span> / <span x-text="ratings[2]"></span> / <span x-text="ratings[3]"></span> for 1 / 2 / 3, <span x-text="ratings[0]"></span> skipped)</span>
+      </div>
+      <div class="bar" style="margin:8px 0">
+        <i :style="`width:${pct(1)}%; background:var(--r1)`"></i><i :style="`width:${pct(2)}%; background:var(--r2)`"></i><i :style="`width:${pct(3)}%; background:var(--r3)`"></i>
+      </div>
+      <div class="mut">
+        Population: <span x-text="fmt(pop.hours)"></span> h in <span x-text="fmt(pop.rows)"></span> rows, <span x-text="pop.sources"></span> sources.
+        Queue: <span x-text="queue.ready"></span> ready, <span x-text="queue.inflight"></span> loading.
+        <span x-show="disk > diskLimit" class="bad">Cache disk above <span x-text="Math.round(diskLimit*100)"></span>%: preloading paused.</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Estimated data to keep</h2>
+      <template x-if="!fit || fit.n === undefined || fit.n === 0 && !fit.direct">
+        <div class="mut">Rate a few clips to see estimates.</div>
+      </template>
+      <template x-if="fit && fit.direct">
+        <div>
+          <table>
+            <tr><th>rule</th><th>kept hours</th><th>95% range</th><th>WAV</th></tr>
+            <template x-for="k in [3, 2]" :key="k">
+              <tbody>
+                <tr>
+                  <td x-text="'rating >= ' + k + ' (labels only)'"></td>
+                  <td x-text="fmt(fit.direct[k].hours)"></td>
+                  <td x-text="fmt(fit.direct[k].hours_low) + ' - ' + fmt(fit.direct[k].hours_high)"></td>
+                  <td x-text="fit.direct[k].wav_tb.toFixed(2) + ' TB'"></td>
+                </tr>
+                <tr x-show="fit.model">
+                  <td x-text="'rating >= ' + k + ' (model)'"></td>
+                  <td x-text="fit.model ? fmt(fit.model[k].hours) : ''"></td>
+                  <td x-text="fit.model ? fmt(fit.model[k].hours_low) + ' - ' + fmt(fit.model[k].hours_high) : ''"></td>
+                  <td x-text="fit.model ? fit.model[k].wav_tb.toFixed(2) + ' TB' : ''"></td>
+                </tr>
+              </tbody>
+            </template>
+          </table>
+          <div class="mut" style="margin-top:8px" x-show="fit.note" x-text="fit.note"></div>
+          <div style="margin-top:8px" x-show="fit.model">
+            Margin of error (rating &gt;= 3, model): &plusmn;<b x-text="fit.model ? fmt(fit.model[3].margin_hours) : ''"></b> h of
+            <span x-text="fmt(fit.total_hours)"></span> h.
+          </div>
+          <div class="mut" x-show="rated < 20 && !fit.model">Too few ratings for a margin of error yet (need 20+).</div>
+        </div>
+      </template>
+    </div>
+
+    <div class="card" x-show="fit && fit.cv">
+      <h2>Does the model predict anything yet?</h2>
+      <template x-if="fit && fit.cv">
+        <div>
+          <table>
+            <tr><th></th><th>model</th><th>prior only</th></tr>
+            <tr><td>cross-validated log loss</td><td x-text="fit.cv.log_loss.toFixed(3)"></td><td x-text="fit.cv.baseline_log_loss.toFixed(3)"></td></tr>
+            <tr><td>accuracy</td><td x-text="(fit.cv.accuracy*100).toFixed(0)+'%'"></td><td x-text="(fit.cv.baseline_accuracy*100).toFixed(0)+'%'"></td></tr>
+            <tr><td>mean abs rating error</td><td x-text="fit.cv.mae.toFixed(2)"></td><td></td></tr>
+          </table>
+          <div style="margin-top:6px" :class="fit.cv.log_loss < fit.cv.baseline_log_loss - 0.02 ? 'good' : 'warn'"
+               x-text="fit.cv.log_loss < fit.cv.baseline_log_loss - 0.02 ? 'The features beat the prior: the model is learning your taste.' : 'Not better than the prior yet: trust the label-only rows.'"></div>
+          <h2 style="margin-top:14px">Most useful features (gain)</h2>
+          <template x-for="f in fit.importance" :key="f[0]">
+            <div style="display:flex; gap:8px; align-items:center">
+              <span style="width:110px" x-text="f[0]"></span>
+              <div class="bar" style="flex:1"><i :style="`width:${100*f[1]/fit.importance[0][1]}%; background:var(--acc)`"></i></div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <div class="card">
+      <h2>Model settings</h2>
+      <div class="row" style="margin-top:0">
+        <label><input type="checkbox" x-model="settings.use_source" @change="saveSettings()"> use source as a feature</label>
+      </div>
+      <div class="row">
+        <label>keep a row when P(rating &gt;= k) &ge; <b x-text="settings.cutoff.toFixed(2)"></b></label>
+        <input type="range" min="0.2" max="0.8" step="0.05" x-model.number="settings.cutoff" @change="saveSettings()">
+      </div>
+      <div class="row">
+        <button class="small" @click="refit()">Refit now</button>
+        <span class="mut" x-show="fitting">fitting...</span>
+        <span class="bad" x-show="fit && fit.error" x-text="fit && fit.error"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+function tagger() {
+  return {
+    item: null, cur: -1, raf: null, showMetrics: false,
+    ratings: {0: 0, 1: 0, 2: 0, 3: 0}, queue: {ready: 0, inflight: 0, failed: 0},
+    pop: {hours: 0, rows: 0, sources: 0}, fit: null, fitting: false, disk: 0, diskLimit: 0.8,
+    settings: {use_source: false, cutoff: 0.5}, busy: false,
+
+    get rated() { return this.ratings[1] + this.ratings[2] + this.ratings[3]; },
+    pct(k) { return this.rated ? 100 * this.ratings[k] / this.rated : 0; },
+    fmt(v) { return v == null ? '' : Math.round(v).toLocaleString(); },
+    fmtTime(s) { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); },
+
+    apply(st) {
+      this.ratings = st.ratings; this.queue = st.queue; this.pop = st.population; this.fit = st.fit;
+      this.fitting = st.fitting; this.disk = st.disk_fraction; this.diskLimit = st.disk_limit;
+      if (!this.settingsTouched) this.settings = {...st.settings};
+    },
+    async init() {
+      window.addEventListener('keydown', (e) => this.key(e));
+      await this.refresh(); await this.next();
+      setInterval(() => this.refresh(), 2500);
+    },
+    async refresh() { this.apply(await (await fetch('/api/status')).json()); },
+    async next() {
+      const r = await (await fetch('/api/next')).json();
+      if (r.wait) { this.item = null; setTimeout(() => this.next(), 700); return; }
+      this.show(r);
+    },
+    show(item) {
+      this.item = item; this.cur = -1; this.busy = false;
+      this.$nextTick(() => {
+        const a = this.$refs.audio; a.src = item.audio_url; a.play().catch(() => {});
+        cancelAnimationFrame(this.raf);
+        const tick = () => {
+          const t = a.currentTime; let c = -1;
+          for (let i = 0; i < item.words.length; i++) { if (t >= item.words[i].start) c = i; else break; }
+          this.cur = a.paused && t === 0 ? -1 : c;
+          this.raf = requestAnimationFrame(tick);
+        };
+        tick();
+      });
+    },
+    seek(t) { const a = this.$refs.audio; a.currentTime = Math.max(0, t - 0.05); a.play(); },
+    replay() { const a = this.$refs.audio; a.currentTime = 0; a.play(); },
+    async rate(v) {
+      if (!this.item || this.busy) return; this.busy = true;
+      const r = await fetch('/api/label', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                           body: JSON.stringify({id: this.item.id, rating: v})});
+      if (r.ok) this.apply(await r.json());
+      await this.next();
+    },
+    async undo() {
+      const r = await (await fetch('/api/undo', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                 body: JSON.stringify({current_id: this.item ? this.item.id : null})})).json();
+      this.apply(r); if (r.item) this.show(r.item);
+    },
+    async saveSettings() {
+      this.settingsTouched = true;
+      this.apply(await (await fetch('/api/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                      body: JSON.stringify(this.settings)})).json());
+      this.settingsTouched = false;
+    },
+    async refit() { this.apply(await (await fetch('/api/refit', {method: 'POST'})).json()); },
+    key(e) {
+      if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') return;
+      if (e.key === '1' || e.key === '2' || e.key === '3') this.rate(+e.key);
+      else if (e.key === 's' || e.key === 'S') this.rate(0);
+      else if (e.key === 'Backspace') { e.preventDefault(); this.undo(); }
+      else if (e.key === 'r' || e.key === 'R') this.replay();
+      else if (e.key === ' ') { e.preventDefault(); const a = this.$refs.audio; a.paused ? a.play() : a.pause(); }
+    },
+  };
+}
+</script>
+</body>
+</html>

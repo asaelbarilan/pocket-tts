@@ -105,3 +105,24 @@ def test_builder_whisper_filters_are_opt_in():
         k: v for k, v in TRANSCRIPT["segments"][0].items() if k in ("start", "end", "text", "words")
     }
     assert len(clean_segments([bare], on, defaultdict(int))) == 1
+
+
+def test_row_segments_matches_the_builders_cleaning():
+    """The tagger runs without the builder; this pins its segment rule to clean_segments."""
+    from hebrew_training.audio_v2_table import MIN_SEGMENT_QUALITY, row_segments
+
+    segments = [
+        segment(0.0, 5.0, -0.1, 1.5),
+        segment(5.0, 10.0, -0.1, 1.5, probability=0.4),  # median word probability too low
+        segment(10.0, 15.0, -0.1, 1.5, text="hello world"),  # no Hebrew
+        {"start": 15.0, "end": 20.0, "text": "שלום", "words": []},  # no words
+        segment(20.0, 25.0, -0.1, 1.5),
+        {**segment(25.0, 30.0, -0.1, 1.5), "words": [{"word": "x", "start": None, "end": None}]},
+    ]
+    args = SimpleNamespace(min_quality=MIN_SEGMENT_QUALITY)
+    builder = clean_segments(segments, args, defaultdict(int))
+    ours = row_segments(segments, 0.0, 30.0)
+    assert [(s["start"], s["end"]) for s in ours] == [(s["start"], s["end"]) for s in builder]
+    assert [len(s["words"]) for s in ours] == [len(s["words"]) for s in builder]
+    # Only segments fully inside the row are returned.
+    assert [s["start"] for s in row_segments(segments, 0.0, 12.0)] == [0.0]

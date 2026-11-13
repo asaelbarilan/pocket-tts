@@ -1,0 +1,27 @@
+# Separate environment for the audio-v2 rating tool: it shares nothing with the model's
+# environment (no torch, no pocket_tts), so it stays small and is only built when used.
+#
+#   uv run --project hebrew_training/audio_v2_tagger \
+#       python -m hebrew_training.audio_v2_tagger.server --work <work dir>
+#
+# Run from the repository root: the tool imports `hebrew_training.fetch_audio_v2` and
+# `hebrew_training.audio_v2_table`, both of which need only numpy and huggingface_hub.
+[project]
+name = "audio-v2-tagger"
+version = "0.0.0"
+description = "Browser tool for rating ivrit.ai audio-v2 rows and estimating the data cut"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "xgboost>=2.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "huggingface_hub>=0.30",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false

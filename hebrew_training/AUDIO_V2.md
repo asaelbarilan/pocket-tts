@@ -55,3 +55,35 @@ in `metadata.json` with nothing else to redo.
 - `-0.5` / `2.4` together keep 92.9% of speech; 366 of 600 episodes lose < 5%.
 
 Re-run `report` on the full survey before choosing thresholds; these numbers are a sample.
+
+## Choosing the cut by ear: the tagger
+
+Whisper's confidence numbers say little about what *sounds* usable, so a small browser tool lets
+you rate rows and estimates the data cut from the ratings.
+
+1. **Prep (once, main env):** `python -m hebrew_training.audio_v2_rows --work W --workers 8`
+   re-reads the transcripts (~8 GB through the Hub, nothing kept) and writes one feature row per
+   candidate training row to `W/rows/` (the builder's own merge; Whisper, word-probability,
+   word-duration and gap features). Resumable.
+2. **Run (own env, no torch):** from the repo root,
+
+   ```
+   uv run --project hebrew_training/audio_v2_tagger \
+       python -m hebrew_training.audio_v2_tagger.server --work W --port 8765
+   ssh -L 8765:localhost:8765 technion-compute-113      # then open http://localhost:8765
+   ```
+
+   The tagger has its own `pyproject.toml`/`uv.lock` (fastapi, xgboost, pandas): it is used rarely
+   and shares no dependencies with the model's environment. Tests:
+   `PYTHONPATH=. uv run --project hebrew_training/audio_v2_tagger --group dev pytest tests/test_audio_v2_tagger.py`.
+3. **Rate:** keys 1 / 2 / 3 (clearly not / in a bunch / clearly yes), S skip, Backspace undo.
+   Rows are drawn in proportion to their duration, so the ratings are a uniform sample of speech
+   hours. Clips are encoded on demand by seeking inside the remote file (mp3: download, cut,
+   delete), `--ahead` (12) are always ready in `--cache` (local disk, preloading pauses above
+   `--max-disk-fraction` 0.8), and rated clips are deleted. Ratings append to `W/tagger/labels.jsonl`.
+4. **Read:** estimated kept hours and WAV size for "rating >= 3" and ">= 2", from the labels alone
+   (Wilson interval) and from an xgboost model (bootstrap interval), plus cross-validated log loss
+   against the class prior: only trust the model rows once it beats the prior.
+
+The tagger shows a row's words using `audio_v2_table.row_segments`, a copy of the builder's segment
+rule that a test pins to `clean_segments`.
