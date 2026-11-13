@@ -14,7 +14,10 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
     "pandas>=2.0",
-    "xgboost>=2.0",
+    # The tool only ever trains on a few hundred rows: use the CPU-only build where there is one.
+    # The default Linux wheel is built for CUDA 13 and fails at training time on older drivers.
+    "xgboost-cpu>=2.0; sys_platform != 'darwin'",
+    "xgboost>=2.0; sys_platform == 'darwin'",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "huggingface_hub>=0.30",
