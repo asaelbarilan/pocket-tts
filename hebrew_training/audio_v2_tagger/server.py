@@ -10,8 +10,10 @@ URL and an ffmpeg range request) and encoding ~12 s of Opus; only mp3 episodes, 
 inexact, are downloaded whole, cut, and deleted. `--ahead` clips are always ready, and clips
 you have rated are deleted from the cache.
 
-Ratings append to `W/tagger/labels.jsonl` (resume and undo safe). Features are not stored with
-a rating, only the row's identity; they are looked up in the table at fit time.
+Ratings append to `W/tagger/labels.jsonl` (resume and undo safe). Seven random clips remain
+an unbiased hour-weighted control stream; once the model beats the prior, seven more are drawn
+from uncertain predictions and high-error feature ranges. The label records its selection mode,
+so targeted clips never contaminate the direct Wilson estimate. Features are looked up at fit time.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from hebrew_training.audio_v2_tagger import model as tagmodel
 
 PAD = 0.25  # seconds of audio around the row so the first/last word is not clipped
 POPULATION_SAMPLE = 150_000
+ACTIVE_POOL = 30_000
 KEEP_SERVED = 40
 INDEX = Path(__file__).with_name("index.html")
 
@@ -146,11 +149,13 @@ class Tagger:
 
         self.lock = threading.RLock()
         self.ready: collections.deque[dict] = collections.deque()
-        self.inflight = 0
+        self.inflight = collections.Counter()
+        self.active_pool: tuple[np.ndarray, np.ndarray] | None = None
+        self.active_generation = 0
         self.failed = 0
         self.used: set[int] = set()
         self.served: collections.OrderedDict[str, dict] = collections.OrderedDict()
-        self.ratings: dict[str, dict] = {}  # key -> {row, rating}; rating 0 = skipped
+        self.ratings: dict[str, dict] = {}  # key -> {row, rating, selection}; rating 0 = skipped
         self.history: list[str] = []
         self.transcripts: collections.OrderedDict[str, list] = collections.OrderedDict()
         self.settings = {"use_source": False, "cutoff": 0.5}
@@ -182,7 +187,11 @@ class Tagger:
             if row >= len(self.table) or self.key_of(row) != record["key"]:
                 print(f"label {record['key']} does not match the table; ignored")
                 continue
-            self.ratings[record["key"]] = {"row": row, "rating": record["rating"]}
+            self.ratings[record["key"]] = {
+                "row": row,
+                "rating": record["rating"],
+                "selection": record.get("selection", "random"),
+            }
             self.history.append(record["key"])
             self.used.add(row)
         print(f"loaded {len(self.ratings)} ratings")
@@ -192,10 +201,16 @@ class Tagger:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # -- sampling and preparation ---------------------------------------------------------
-    def draw(self) -> int:
+    def draw(self, mode: str) -> int:
         with self.lock:
             while True:
-                row = int(np.searchsorted(self.cum, self.rng.random() * self.cum[-1], side="right"))
+                if mode == "active" and self.active_pool is not None:
+                    pool, scores = self.active_pool
+                    row = int(pool[self.rng.choice(len(pool), p=scores)])
+                else:
+                    row = int(
+                        np.searchsorted(self.cum, self.rng.random() * self.cum[-1], side="right")
+                    )
                 row = min(row, len(self.cum) - 1)
                 if row not in self.used:
                     self.used.add(row)
@@ -225,7 +240,7 @@ class Tagger:
                     )
         return words
 
-    def prepare(self, row: int) -> dict:
+    def prepare(self, row: int, selection: str = "random") -> dict:
         table = self.table
         episode = self.episodes[table.episode[row]]
         start, end = float(table.start[row]), float(table.end[row])
@@ -237,6 +252,7 @@ class Tagger:
         return {
             "id": key,
             "row": row,
+            "selection": selection,
             "audio_url": f"/clips/{key}.ogg",
             "words": words,
             "source": episode["source"],
@@ -251,24 +267,38 @@ class Tagger:
             # The disk check comes first: a slot claimed and then abandoned would never be freed.
             paused = disk_fraction(self.args.cache) > self.args.max_disk_fraction
             with self.lock:
-                full = len(self.ready) + self.inflight >= self.args.ahead
-                if not full and not paused:
-                    self.inflight += 1
-            if full or paused:
+                counts = collections.Counter(i["selection"] for i in self.ready)
+                mode = None
+                if not paused:
+                    if counts["random"] + self.inflight["random"] < self.args.ahead:
+                        mode = "random"
+                    elif (
+                        self.active_pool is not None
+                        and counts["active"] + self.inflight["active"] < self.args.active_ahead
+                    ):
+                        mode = "active"
+                    if mode:
+                        self.inflight[mode] += 1
+                        generation = self.active_generation
+            if not mode:
                 time.sleep(0.4)
                 continue
-            row = self.draw()
+            row = self.draw(mode)
             try:
-                item = self.prepare(row)
+                item = self.prepare(row, mode)
                 with self.lock:
-                    self.ready.append(item)
+                    if mode == "active" and generation != self.active_generation:
+                        (self.clips / f"{item['id']}.ogg").unlink(missing_ok=True)
+                        self.used.discard(row)
+                    else:
+                        self.ready.append(item)
             except Exception as exc:  # noqa: BLE001 -- a dead episode must not stop the queue
                 with self.lock:
                     self.failed += 1
                 print(f"prepare failed for row {row}: {exc}")
             finally:
                 with self.lock:
-                    self.inflight -= 1
+                    self.inflight[mode] -= 1
 
     # -- api actions ----------------------------------------------------------------------
     def next_item(self) -> dict | None:
@@ -287,21 +317,44 @@ class Tagger:
             item = self.served.get(item_id)
             if item is None or item_id in self.ratings:
                 raise KeyError(item_id)
-            self.ratings[item_id] = {"row": item["row"], "rating": rating}
+            self.ratings[item_id] = {
+                "row": item["row"],
+                "rating": rating,
+                "selection": item.get("selection", "random"),
+            }
             self.history.append(item_id)
-            self._append({"t": time.time(), "key": item_id, "row": item["row"], "rating": rating})
+            self._append(
+                {
+                    "t": time.time(),
+                    "key": item_id,
+                    "row": item["row"],
+                    "rating": rating,
+                    "selection": item.get("selection", "random"),
+                }
+            )
         self.maybe_refit()
 
     def undo(self, current_id: str | None) -> dict | None:
         with self.lock:
             if not self.history:
                 return None
-            key = self.history.pop()
+            key = self.history[-1]
+            row = self.ratings[key]["row"]
+            selection = self.ratings[key].get("selection", "random")
+            item = self.served.get(key)
+        # After 40 clips (or a restart) the previous clip is no longer cached. Rebuild it
+        # before altering history, so a transient download failure does not lose a rating.
+        if item is None or not (self.clips / f"{key}.ogg").exists():
+            item = self.prepare(row, selection)
+        with self.lock:
+            if not self.history or self.history[-1] != key:
+                return None
+            self.history.pop()
             self.ratings.pop(key, None)
             self._append({"t": time.time(), "undo": key})
             if current_id and current_id in self.served and current_id not in self.ratings:
                 self.ready.appendleft(self.served.pop(current_id))
-            item = self.served.get(key)
+            self.served[key] = item
         self.maybe_refit(force=True)
         return item
 
@@ -324,6 +377,23 @@ class Tagger:
                 use_source,
             )
         return self._population_cache[use_source]
+
+    def _active_candidates(self, booster, use_source: bool, ranges: list[dict], cutoff: float):
+        # Draw the candidate pool uniformly over hours, then favor predicted uncertainty.
+        rng = np.random.default_rng(71)
+        pool = np.minimum(
+            np.searchsorted(self.cum, rng.random(ACTIVE_POOL) * self.cum[-1], side="right"),
+            len(self.cum) - 1,
+        )
+        df = tagmodel.frame(
+            self.table.x[pool],
+            self.table.source[pool],
+            len(self.table.sources),
+            self.names,
+            use_source,
+        )
+        scores = tagmodel.active_scores(tagmodel.predict(booster, df), df, ranges, cutoff)
+        return pool, scores / scores.sum()
 
     def maybe_refit(self, force: bool = False) -> None:
         with self.lock:
@@ -358,11 +428,39 @@ class Tagger:
                 self.total_hours,
                 cutoff=settings["cutoff"],
                 seed=len(rows),
+                control_mask=np.array([r["selection"] == "random" for r in chosen], dtype=bool),
             )
             result["settings"] = settings
+            active = None
+            if result["ready"] and result["cv"]["log_loss"] < result["cv"]["baseline_log_loss"]:
+                booster = tagmodel.fit(
+                    tagmodel.frame(
+                        self.table.x[rows],
+                        self.table.source[rows],
+                        len(self.table.sources),
+                        self.names,
+                        settings["use_source"],
+                    ),
+                    y,
+                    seed=len(rows),
+                )
+                active = self._active_candidates(
+                    booster, settings["use_source"], result["confusion_ranges"], settings["cutoff"]
+                )
             with self.lock:
                 self.fit_result = result
                 self.fit_n = len(rows)
+                self.active_pool = active
+                self.active_generation += 1
+                # Refresh only the unserved active prefetch. Random controls stay in place.
+                keep = collections.deque()
+                for item in self.ready:
+                    if item["selection"] == "active":
+                        (self.clips / f"{item['id']}.ogg").unlink(missing_ok=True)
+                        self.used.discard(item["row"])
+                    else:
+                        keep.append(item)
+                self.ready = keep
         except Exception as exc:  # noqa: BLE001 -- show the error in the UI rather than die
             print(f"fit failed: {exc}")
             with self.lock:
@@ -381,8 +479,10 @@ class Tagger:
                 "ratings": {str(k): counts.get(k, 0) for k in (0, 1, 2, 3)},
                 "queue": {
                     "ready": len(self.ready),
-                    "inflight": self.inflight,
+                    "inflight": sum(self.inflight.values()),
                     "failed": self.failed,
+                    "random_ready": sum(i["selection"] == "random" for i in self.ready),
+                    "active_ready": sum(i["selection"] == "active" for i in self.ready),
                 },
                 "fit": self.fit_result,
                 "fitting": self.fitting,
@@ -491,7 +591,13 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--ahead", type=int, default=12, help="Clips kept ready ahead of you.")
+    parser.add_argument("--ahead", type=int, default=7, help="Random control clips kept ready.")
+    parser.add_argument(
+        "--active-ahead",
+        type=int,
+        default=7,
+        help="Uncertain clips kept ready after the model beats the prior.",
+    )
     parser.add_argument("--workers", type=int, default=3, help="Parallel clip preparations.")
     parser.add_argument("--refit-every", type=int, default=5)
     parser.add_argument(

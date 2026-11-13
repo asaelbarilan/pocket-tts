@@ -101,7 +101,7 @@
       </div>
       <div class="mut">
         Population: <span x-text="fmt(pop.hours)"></span> h in <span x-text="fmt(pop.rows)"></span> rows, <span x-text="pop.sources"></span> sources.
-        Queue: <span x-text="queue.ready"></span> ready, <span x-text="queue.inflight"></span> loading.
+        Queue: <span x-text="queue.random_ready || 0"></span> random + <span x-text="queue.active_ready || 0"></span> uncertain ready, <span x-text="queue.inflight"></span> loading.
         <span x-show="disk > diskLimit" class="bad">Cache disk above <span x-text="Math.round(diskLimit*100)"></span>%: preloading paused.</span>
       </div>
     </div>
@@ -133,6 +133,7 @@
             </template>
           </table>
           <div class="mut" style="margin-top:8px" x-show="fit.note" x-text="fit.note"></div>
+          <div class="mut" style="margin-top:8px">Label-only 95% ranges use the <b x-text="fit.random_n"></b> random-control ratings only; <span x-text="fit.active_n"></span> targeted ratings improve the model but cannot be counted as random hours. Model ranges are bootstrap estimates, not guaranteed 95% coverage.</div>
           <div style="margin-top:8px" x-show="fit.model">
             Margin of error (rating &gt;= 3, model): &plusmn;<b x-text="fit.model ? fmt(fit.model[3].margin_hours) : ''"></b> h of
             <span x-text="fmt(fit.total_hours)"></span> h.
@@ -154,6 +155,12 @@
           </table>
           <div style="margin-top:6px" :class="fit.cv.log_loss < fit.cv.baseline_log_loss - 0.02 ? 'good' : 'warn'"
                x-text="fit.cv.log_loss < fit.cv.baseline_log_loss - 0.02 ? 'The features beat the prior: the model is learning your taste.' : 'Not better than the prior yet: trust the label-only rows.'"></div>
+          <div class="mut" x-show="!fit.cv_population_holdout">Not enough random ratings for population CV; this check is provisional.</div>
+          <h2 style="margin-top:14px">Feature ranges with most held-out confusion</h2>
+          <div class="mut" x-show="!fit.confusion_ranges?.length">No reliable hot spots yet.</div>
+          <template x-for="range in (fit.confusion_ranges || []).slice(0,5)" :key="range.feature + ':' + range.low">
+            <div class="mut"><b x-text="range.feature"></b> <span x-text="range.low.toFixed(2) + '–' + range.high.toFixed(2)"></span> · <span x-text="range.n"></span> control ratings · error <span x-text="(100 * range.error).toFixed(0) + '%'"></span> · ~<span x-text="(100 * range.population_share).toFixed(1) + '%'"></span> of hours</div>
+          </template>
           <h2 style="margin-top:14px">Most useful features (gain)</h2>
           <template x-for="f in fit.importance" :key="f[0]">
             <div style="display:flex; gap:8px; align-items:center">
@@ -189,7 +196,7 @@ function tagger() {
     item: null, cur: -1, raf: null, showMetrics: false,
     ratings: {0: 0, 1: 0, 2: 0, 3: 0}, queue: {ready: 0, inflight: 0, failed: 0},
     pop: {hours: 0, rows: 0, sources: 0}, fit: null, fitting: false, disk: 0, diskLimit: 0.8,
-    settings: {use_source: false, cutoff: 0.5}, busy: false,
+    settings: {use_source: false, cutoff: 0.5}, busy: false, navigation: 0, pollTimer: null,
 
     get rated() { return this.ratings[1] + this.ratings[2] + this.ratings[3]; },
     pct(k) { return this.rated ? 100 * this.ratings[k] / this.rated : 0; },
@@ -208,8 +215,12 @@ function tagger() {
     },
     async refresh() { this.apply(await (await fetch('/api/status')).json()); },
     async next() {
+      const navigation = ++this.navigation;
       const r = await (await fetch('/api/next')).json();
-      if (r.wait) { this.item = null; setTimeout(() => this.next(), 700); return; }
+      if (navigation !== this.navigation) return;
+      if (r.wait) { this.item = null; this.pollTimer = setTimeout(() => {
+        if (navigation === this.navigation) this.next();
+      }, 700); return; }
       this.show(r);
     },
     show(item) {
@@ -232,13 +243,22 @@ function tagger() {
       if (!this.item || this.busy) return; this.busy = true;
       const r = await fetch('/api/label', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                            body: JSON.stringify({id: this.item.id, rating: v})});
-      if (r.ok) this.apply(await r.json());
-      await this.next();
+      if (r.ok) { this.apply(await r.json()); await this.next(); }
+      else { this.busy = false; alert('Could not save rating. Please retry.'); }
     },
     async undo() {
-      const r = await (await fetch('/api/undo', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                                 body: JSON.stringify({current_id: this.item ? this.item.id : null})})).json();
-      this.apply(r); if (r.item) this.show(r.item);
+      if (this.busy) return;
+      this.busy = true;
+      ++this.navigation; clearTimeout(this.pollTimer);
+      try {
+        const response = await fetch('/api/undo', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                   body: JSON.stringify({current_id: this.item ? this.item.id : null})});
+        if (!response.ok) throw new Error('Could not restore previous audio');
+        const r = await response.json();
+        this.apply(r);
+        if (r.item) this.show(r.item);
+        else { this.busy = false; if (!this.item) this.next(); }
+      } catch (e) { this.busy = false; alert(e.message); }
     },
     async saveSettings() {
       this.settingsTouched = true;

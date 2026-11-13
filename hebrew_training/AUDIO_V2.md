@@ -77,13 +77,20 @@ you rate rows and estimates the data cut from the ratings.
    and shares no dependencies with the model's environment. Tests:
    `PYTHONPATH=. uv run --project hebrew_training/audio_v2_tagger --group dev pytest tests/test_audio_v2_tagger.py`.
 3. **Rate:** keys 1 / 2 / 3 (clearly not / in a bunch / clearly yes), S skip, Backspace undo.
-   Rows are drawn in proportion to their duration, so the ratings are a uniform sample of speech
-   hours. Clips are encoded on demand by seeking inside the remote file (mp3: download, cut,
-   delete), `--ahead` (12) are always ready in `--cache` (local disk, preloading pauses above
-   `--max-disk-fraction` 0.8), and rated clips are deleted. Ratings append to `W/tagger/labels.jsonl`.
+   The first 7 prefetched clips (`--ahead`) are random and drawn in proportion to duration.
+   Once the model beats the prior, 7 additional clips (`--active-ahead`) target uncertain
+   predictions and feature ranges with high held-out error. The latter are refreshed after every
+   fit; only the random stream provides an unbiased direct hours estimate. Clips are encoded on
+   demand by seeking inside the remote file (mp3: download, cut, delete). The `--cache` is local
+   disk and preloading pauses above `--max-disk-fraction` 0.8. Older clips are evicted, but undo
+   reconstructs the actual previous clip if needed. Ratings append to `W/tagger/labels.jsonl`.
 4. **Read:** estimated kept hours and WAV size for "rating >= 3" and ">= 2", from the labels alone
-   (Wilson interval) and from an xgboost model (bootstrap interval), plus cross-validated log loss
-   against the class prior: only trust the model rows once it beats the prior.
+    (Wilson interval on *random* ratings) and from an xgboost model (bootstrap interval), plus
+    cross-validated log loss against the class prior. Feature-range diagnostics rank where
+    out-of-fold prediction error affects the most population hours. CV uses the random ratings
+    when there are enough; until then it is provisional. Targeted ratings improve the model but
+    are not included in the direct estimate; model bootstrap intervals are not guaranteed to
+    cover the truth under adaptive selection.
 
 The tagger shows a row's words using `audio_v2_table.row_segments`, a copy of the builder's segment
 rule that a test pins to `clean_segments`.
