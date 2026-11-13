@@ -164,3 +164,17 @@ def test_undo_reconstructs_evicted_previous_clip_and_can_go_back_twice(tmp_path)
         r["undo"]
         for r in map(__import__("json").loads, tagger.labels_path.read_text().splitlines())
     ] == ["second", "first"]
+
+
+def test_settings_persist_and_invalid_cutoff_does_not_overwrite(tmp_path):
+    import json
+
+    tagger = Tagger.__new__(Tagger)
+    tagger.lock = threading.RLock()
+    tagger.settings_path = tmp_path / "settings.json"
+    tagger.maybe_refit = lambda **kwargs: None
+    tagger.update_settings(True, 0.65)
+    assert json.loads(tagger.settings_path.read_text()) == {"use_source": True, "cutoff": 0.65}
+    with pytest.raises(ValueError):
+        tagger.update_settings(False, 1.0)
+    assert json.loads(tagger.settings_path.read_text()) == {"use_source": True, "cutoff": 0.65}

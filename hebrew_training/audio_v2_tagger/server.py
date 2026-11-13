@@ -158,7 +158,10 @@ class Tagger:
         self.ratings: dict[str, dict] = {}  # key -> {row, rating, selection}; rating 0 = skipped
         self.history: list[str] = []
         self.transcripts: collections.OrderedDict[str, list] = collections.OrderedDict()
+        self.settings_path = args.work / "tagger" / "settings.json"
         self.settings = {"use_source": False, "cutoff": 0.5}
+        if self.settings_path.exists():
+            self.settings.update(json.loads(self.settings_path.read_text(encoding="utf-8")))
         self.fit_result: dict | None = None
         self.fit_n = -1
         self.fitting = False
@@ -199,6 +202,17 @@ class Tagger:
     def _append(self, record: dict) -> None:
         with open(self.labels_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def update_settings(self, use_source: bool, cutoff: float) -> None:
+        if not 0 < cutoff < 1:
+            raise ValueError("cutoff must be strictly between 0 and 1")
+        with self.lock:
+            updated = {"use_source": use_source, "cutoff": cutoff}
+            temp = self.settings_path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(updated), encoding="utf-8")
+            temp.replace(self.settings_path)
+            self.settings = updated
+        self.maybe_refit(force=True)
 
     # -- sampling and preparation ---------------------------------------------------------
     def draw(self, mode: str) -> int:
@@ -560,9 +574,10 @@ def create_app(args: argparse.Namespace):
 
     @app.post("/api/settings")
     def settings(body: Settings) -> dict:
-        with tagger.lock:
-            tagger.settings = {"use_source": body.use_source, "cutoff": body.cutoff}
-        tagger.maybe_refit(force=True)
+        try:
+            tagger.update_settings(body.use_source, body.cutoff)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return tagger.status()
 
     @app.post("/api/refit")
