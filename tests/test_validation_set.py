@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from deploy import hebrew_tts_server
+from deploy.milim_bench import MilimBench
 from deploy.validation_set import ValidationBusy, ValidationSet
 
 SENTENCES = [{"id": f"s{i}", "category": "plain", "text": f"משפט {i}"} for i in range(3)]
@@ -52,6 +53,67 @@ class Fixture:
 
     def audio(self, item_id="s0"):
         return self.set.audio_path(item_id).read_bytes()
+
+
+def test_milim_categories_extend_validation_and_invalidate_old_cache(tmp_path):
+    fx = Fixture(tmp_path)
+    fx.set.start()
+    fx.wait()
+    gold = tmp_path / "milim" / "data" / "gold.tsv"
+    gold.parent.mkdir(parents=True)
+    gold.write_text(
+        "Category\tText\tLabel\n"
+        + "".join(
+            f"{category}\t{category} sentence {i}\t0=ipa\n"
+            for category in ("gender", "homographs")
+            for i in range(7)
+        ),
+        encoding="utf-8",
+    )
+    milim = MilimBench(gold.parent.parent)
+    first = milim.validation_sentences()
+    assert first == milim.validation_sentences()
+    assert {s["category"] for s in first} == {"MILIM / gender", "MILIM / homographs"}
+    assert len(first) == 10
+    assert len({s["id"] for s in first}) == 10
+    assert all(s["text"] in {row["text"] for row in milim.samples} for s in first)
+    assert all(s["note"] == f"MILIM-Bench row {s['id'].removeprefix('milim_')}" for s in first)
+
+    extended = ValidationSet(
+        tmp_path / "sentences.jsonl",
+        tmp_path / "cache",
+        {"temp": 0.3},
+        voices=lambda: list(VOICES),
+        generate=fx.generate,
+        cache_key=lambda: fx.key,
+        milim=milim,
+    )
+    assert extended.status()["state"] == "none"  # the old manifest is not the extended set
+    assert extended.status()["total"] == 13
+    assert [s["id"] for s in extended.sentence_rows()[3:]] == [s["id"] for s in first]
+    extended.start()
+    deadline = time.time() + 5
+    while extended.status()["state"] == "running":
+        assert time.time() < deadline
+        time.sleep(0.01)
+    assert extended.status()["state"] == "done"
+    assert len(extended.status()["items"]) == 13
+    assert extended.past_runs() == []  # old manifests cannot be compared as the same set
+
+    # A changed pinned snapshot must not reuse audio generated for different selected texts.
+    gold.write_text(gold.read_text().replace("gender sentence", "new gender sentence"))
+    changed = MilimBench(gold.parent.parent)
+    assert changed.validation_sentences() != first
+    updated = ValidationSet(
+        tmp_path / "sentences.jsonl",
+        tmp_path / "cache",
+        {"temp": 0.3},
+        voices=lambda: list(VOICES),
+        generate=fx.generate,
+        cache_key=lambda: fx.key,
+        milim=changed,
+    )
+    assert updated.status()["state"] == "none"
 
 
 def test_a_plain_start_picks_a_voice_and_a_second_one_reuses_the_cache(tmp_path):

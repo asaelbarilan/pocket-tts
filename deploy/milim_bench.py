@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import random
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ DATASET = "renikud/MILIM-Bench"
 GOLD = Path("data") / "gold.tsv"
 DEFAULT_DIR = Path(__file__).resolve().parent / "milim_bench_data"
 MAX_BATCH = 5
+VALIDATION_SAMPLES_PER_CATEGORY = 5
 
 
 def download(directory: Path, revision: str | None = None) -> None:
@@ -79,6 +81,29 @@ class MilimBench:
 
     def payload(self) -> dict:
         return {"categories": self.categories, "samples": self.samples, "max_batch": MAX_BATCH}
+
+    def validation_sentences(self) -> list[dict]:
+        """Five reproducible examples per category, with IDs tied to the gold.tsv row."""
+        by_category: dict[str, list[dict]] = {}
+        for sample in self.samples:
+            by_category.setdefault(sample["category"], []).append(sample)
+        sentences = []
+        for category, samples in by_category.items():
+            if len(samples) < VALIDATION_SAMPLES_PER_CATEGORY:
+                raise ValueError(f"MILIM category {category!r} has fewer than five samples")
+            rng = random.Random(f"milim-validation-v1:{category}")
+            for sample in sorted(
+                rng.sample(samples, VALIDATION_SAMPLES_PER_CATEGORY), key=lambda s: s["id"]
+            ):
+                sentences.append(
+                    {
+                        "id": f"milim_{sample['id']}",
+                        "category": f"MILIM / {category}",
+                        "text": sample["text"],
+                        "note": f"MILIM-Bench row {sample['id']}",
+                    }
+                )
+        return sentences
 
 
 if __name__ == "__main__":

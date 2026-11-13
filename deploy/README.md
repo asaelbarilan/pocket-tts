@@ -141,13 +141,16 @@ batch 1), ~2x at cfg 1.0, i.e. about 4-5x faster than the Cloud Run CPU service.
 
 The test page has a **הצג סט ולידציה** button. It renders the 40 fixed sentences of
 `deploy/eval_sentences_he.jsonl` (plain, nikud, numbers, English / Latin / loanwords in Hebrew,
-homographs) with one randomly chosen voice prompt and the default sampling settings (seed 1234),
-and shows them with players. The page polls `GET /validation` every 5 s while it runs;
+homographs) plus five deterministic examples from each category of the installed MILIM-Bench
+snapshot (95 sentences with the pinned snapshot). It uses one chosen voice prompt and the default
+sampling settings (seed 1234), and shows the results with players. The page polls `GET /validation`
+every 5 s while it runs;
 `POST /validation/start` starts (or resumes) a run.
 
 - Audio and a `manifest.json` are cached under `--cache-dir` (env `VALIDATION_CACHE_DIR`;
   default `deploy/validation_cache/`, gitignored), in a folder named `<weights sha256[:16]>-<device>`.
-  A different model, device kind, sentence file or sampling default never reuses another's audio.
+  A different model, device kind, sentence file, MILIM selection or sampling default never reuses
+  another's audio. A pre-MILIM manifest does not match the expanded set and must be regenerated.
 - A finished cache is shown at once. A run cut short resumes with the same voice.
 - **צור מחדש עם הקול הנבחר** ("regenerate with the selected voice") next to the button deletes the
   loaded model's cached set and renders all sentences again with the voice selected in the **Voice

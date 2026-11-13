@@ -513,7 +513,9 @@ def wav_bytes(samples: torch.Tensor, sample_rate: int) -> bytes:
     return buffer.getvalue()
 
 
-def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) -> ValidationSet:
+def make_validation_set(
+    loader: EngineLoader, sentences: Path, cache_dir: Path, milim: MilimBench | None = None
+) -> ValidationSet:
     def describe(sha_prefix: str) -> dict:
         store = getattr(loader, "store", None)
         fallback = None
@@ -541,6 +543,7 @@ def make_validation_set(loader: EngineLoader, sentences: Path, cache_dir: Path) 
         generate=generate,
         cache_key=loader.cache_key,
         describe=describe,
+        milim=milim,
     )
 
 
@@ -1704,7 +1707,8 @@ def main() -> None:
         logger.warning("no voice prompts in %s; upload one per request or add files", voices_dir)
     loader = EngineLoader(config, voices_dir, device, store, encoder_store)
     loader.start()
-    validation = make_validation_set(loader, sentences, cache_dir)
+    milim = MilimBench(milim_dir)
+    validation = make_validation_set(loader, sentences, cache_dir, milim)
     downloads = Downloads(
         REPO_ROOT,
         config,
@@ -1715,7 +1719,6 @@ def main() -> None:
         weights_size=store.files["model.safetensors"]["size"] if store is not None else None,
     )
     logger.info("validation cache: %s", cache_dir)
-    milim = MilimBench(milim_dir)
     uvicorn.run(
         create_app(loader, validation, downloads, milim),
         host=args.host,
