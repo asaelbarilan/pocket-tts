@@ -30,6 +30,9 @@ PARAMS = {
     "min_child_weight": 1.0,
     "reg_lambda": 3.0,
     "tree_method": "hist",
+    # The CUDA wheel picks the GPU by default and fails on hosts with an old driver; a few
+    # hundred rows gain nothing from one.
+    "device": "cpu",
     "max_cat_to_onehot": 1,
     "verbosity": 0,
     "nthread": 4,
