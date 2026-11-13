@@ -123,6 +123,10 @@ python -u -m hebrew_training.audio_v2_tagger.build_selected \
 This command is resumable: rerun the same command if it exits after the fit or download.
 It defaults to 32 parallel episode fetches and honors Hugging Face `Retry-After` on 429/503;
 `--fetch-workers` can be lowered if the host or Hub starts throttling persistently.
+While fetching, `--transcode-workers` (default 16) converts completed episodes to restart-safe
+WAVs in the background. It waits for every WAV before building the row-filtered manifests.
+Original MP3/M4A files are removed **only after** the full manifest and WAV verification;
+the fetcher therefore never redownloads audio just because conversion completed.
 The immutable snapshot contains `fit.json`, `labels.jsonl`, `settings.json`, `model.ubj`,
 `selection.json` and `selected_rows.npz`; `W/selection.json` drives the fetcher. Look at
 `W/model3-YYYYMMDD.status`, the detached log and `W/model3-YYYYMMDD.done.json` to track it.

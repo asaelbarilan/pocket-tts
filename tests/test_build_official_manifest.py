@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from hebrew_training import build_official_manifest
+from hebrew_training.audio_v2_tagger import transcode_selected
 from hebrew_training.audio_v2_tagger.build_selected import remove_sources_after_wavs
 
 
@@ -165,6 +166,36 @@ def test_source_audio_removed_only_after_all_wavs_complete(tmp_path):
     assert not (corpus / "a/audio.mp3").exists()
     assert not (corpus / "b/audio.m4a").exists()
     assert (corpus / "a/transcript.aligned.json").exists()
+
+
+def test_transcoder_waits_for_complete_download_and_reuses_existing_wavs(monkeypatch, tmp_path):
+    corpus, wavs = tmp_path / "corpus", tmp_path / "wavs"
+    corpus.mkdir()
+    wavs.mkdir()
+    episodes = [
+        {"id": "first", "ext": ".mp3", "audio_bytes": 6},
+        {"id": "second", "ext": ".m4a", "audio_bytes": 6},
+    ]
+    for episode in episodes:
+        folder = corpus / episode["id"]
+        folder.mkdir()
+        (folder / f"audio{episode['ext']}").write_bytes(b"source")
+        (folder / "transcript.aligned.json").write_text("{}")
+    (corpus / "first/metadata.json").write_text("{}")
+    converted = []
+
+    def fake_transcode(source, folder, output):
+        converted.append(folder.name)
+        (output / f"{folder.name}.wav").write_bytes(b"RIFF" + b"\0" * 100)
+        (corpus / "second/metadata.json").write_text("{}")
+        return output / f"{folder.name}.wav", True
+
+    monkeypatch.setattr(transcode_selected, "transcode_audio", fake_transcode)
+    assert transcode_selected.transcode_ready(episodes, corpus, wavs, workers=2, interval=0.01) == 2
+    assert converted == ["first", "second"]
+    assert (corpus / "first/audio.mp3").exists()
+    assert (corpus / "second/audio.m4a").exists()
+    assert transcode_selected.transcode_ready(episodes, corpus, wavs, workers=2) == 0
 
 
 def test_spool_limit_removes_partial_file(tmp_path: Path) -> None:

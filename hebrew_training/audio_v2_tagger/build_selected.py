@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,25 @@ from hebrew_training.audio_v2_tagger.export_selection import export
 def stage(name: str, path: Path) -> None:
     path.write_text(name + "\n", encoding="utf-8")
     print(f"STAGE: {name}", flush=True)
+
+
+def stop_child(process: subprocess.Popen) -> None:
+    """Stop a child and its ffmpeg/download subprocesses on interruption."""
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def run_fetch(command: list[str]) -> None:
+    process = subprocess.Popen(command, start_new_session=True)
+    try:
+        if (code := process.wait()) != 0:
+            raise subprocess.CalledProcessError(code, command)
+    finally:
+        stop_child(process)
 
 
 def remove_sources_after_wavs(episodes: list[dict], corpus: Path, wavs: Path) -> int:
@@ -62,40 +83,63 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("selection.json does not belong to frozen fit")
     episodes = selection["episodes"]
     stage("fetch", status)
-    for attempt in range(1, 4):
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "hebrew_training.fetch_audio_v2",
-                "--work",
-                str(work),
-                "fetch",
-                "--out",
-                str(corpus),
-                "--max-gb",
-                str(math.ceil(info["download_gib"]) + 1),
-                "--workers",
-                str(args.fetch_workers),
-            ],
-            check=True,
-        )
-        missing = [
-            e["id"]
-            for e in episodes
-            if not (corpus / e["id"] / "metadata.json").exists()
-            or not (corpus / e["id"] / f"audio{e['ext']}").is_file()
-            or not (corpus / e["id"] / "transcript.aligned.json").is_file()
-        ]
-        print(
-            f"fetch attempt {attempt}: {len(episodes) - len(missing):,}/{len(episodes):,} complete",
-            flush=True,
-        )
-        if not missing:
-            break
-    if missing:
-        (snapshot / "missing_episodes.json").write_text(json.dumps(missing) + "\n")
-        raise RuntimeError(f"{len(missing)} episode downloads incomplete; rerun to resume")
+    corpus.mkdir(parents=True, exist_ok=True)
+    converter = subprocess.Popen(
+        [
+            str(args.builder_python),
+            "-u",
+            "-m",
+            "hebrew_training.audio_v2_tagger.transcode_selected",
+            "--selection",
+            str(snapshot / "selection.json"),
+            "--corpus",
+            str(corpus),
+            "--wavs",
+            str(manifest / "audio"),
+            "--workers",
+            str(args.transcode_workers),
+        ],
+        start_new_session=True,
+    )
+    try:
+        for attempt in range(1, 4):
+            run_fetch(
+                [
+                    sys.executable,
+                    "-m",
+                    "hebrew_training.fetch_audio_v2",
+                    "--work",
+                    str(work),
+                    "fetch",
+                    "--out",
+                    str(corpus),
+                    "--max-gb",
+                    str(math.ceil(info["download_gib"]) + 1),
+                    "--workers",
+                    str(args.fetch_workers),
+                ]
+            )
+            missing = [
+                e["id"]
+                for e in episodes
+                if not (corpus / e["id"] / "metadata.json").exists()
+                or not (corpus / e["id"] / f"audio{e['ext']}").is_file()
+                or not (corpus / e["id"] / "transcript.aligned.json").is_file()
+            ]
+            print(
+                f"fetch attempt {attempt}: {len(episodes) - len(missing):,}/{len(episodes):,} complete",
+                flush=True,
+            )
+            if not missing:
+                break
+        if missing:
+            (snapshot / "missing_episodes.json").write_text(json.dumps(missing) + "\n")
+            raise RuntimeError(f"{len(missing)} episode downloads incomplete; rerun to resume")
+        stage("finish-transcoding", status)
+        if converter.wait() != 0:
+            raise RuntimeError("concurrent transcoder failed; sources retained; rerun to resume")
+    finally:
+        stop_child(converter)
     stage("manifest", status)
     built = snapshot / "build.ok"
     if not built.exists():
@@ -142,6 +186,10 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    def stop_on_signal(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, stop_on_signal)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--snapshot", type=Path, required=True)
@@ -150,6 +198,7 @@ def main() -> None:
     parser.add_argument("--spool-dir", type=Path, required=True)
     parser.add_argument("--fetch-workers", type=int, default=32)
     parser.add_argument("--build-workers", type=int, default=4)
+    parser.add_argument("--transcode-workers", type=int, default=16)
     parser.add_argument(
         "--builder-python",
         type=Path,
