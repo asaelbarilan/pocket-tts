@@ -182,6 +182,64 @@ def test_comparison_does_not_pair_different_words(temp_dataset):
     ]
 
 
+def test_text_variants_use_saved_alignment_and_span_audio(temp_dataset):
+    row = dict(temp_dataset["rows"][0])
+    row.update(
+        original_start=1.8,
+        original_words=[dict(word) for word in row["words"]],
+        nikud=["שָׁלוֹם", "עוֹלָם", "בְּדִיקָה", "רִאשׁוֹנָה"],
+        alt_words={
+            "norms": [
+                {"from": 0, "to": 0, "replace": ["שלומ"], "k": "o"},
+                {"from": 2, "to": 3, "replace": ["בדיקה-ראשונה"], "k": "h"},
+            ]
+        },
+    )
+    row["words"] = [dict(word) for word in row["words"]]
+    row["words"][2]["start"] = 2.3
+    manifest = temp_dataset["root"] / "variants.jsonl"
+    manifest.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    sample = dv.ManifestIndex(manifest).get_sample_data(0)
+
+    assert sample["nikud"] == row["nikud"]
+    assert sample["norm_spans"] == [
+        {
+            "from": 0,
+            "to": 0,
+            "replace": ["שלומ"],
+            "k": "o",
+            "source": ["שלום"],
+            "start": 0.0,
+            "end": 1.0,
+            "audio_start": 2.0,
+            "audio_end": 3.0,
+        },
+        {
+            "from": 2,
+            "to": 3,
+            "replace": ["בדיקה-ראשונה"],
+            "k": "h",
+            "source": ["בדיקה", "ראשונה"],
+            "start": 2.3,
+            "end": 5.0,
+            "audio_start": 4.3,
+            "audio_end": 7.0,
+        },
+    ]
+    assert sample["original_words"][2]["audio_start"] == 4.2
+
+
+def test_variants_missing_or_invalid_are_not_fabricated(temp_dataset):
+    row = dict(temp_dataset["rows"][0])
+    row["nikud"] = ["שָׁלוֹם"]  # No index-to-word correspondence.
+    row["alt_words"] = {"norms": [{"from": 2, "to": 9, "replace": ["wrong"]}]}
+    manifest = temp_dataset["root"] / "invalid_variants.jsonl"
+    manifest.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    sample = dv.ManifestIndex(manifest).get_sample_data(0)
+    assert sample["nikud"] is None
+    assert sample["norm_spans"] == []
+
+
 def test_extract_audio_slice(temp_dataset):
     sample_wav = temp_dataset["audio_dir"] / "clip1.wav"
 
@@ -242,6 +300,8 @@ def test_fastapi_endpoints(temp_dataset):
     assert 'id="zoom-in-btn"' in res.text
     assert 'id="zoom-out-btn"' in res.text
     assert 'id="alignment-select"' in res.text
+    assert 'id="nikud-toggle"' in res.text
+    assert 'id="norm-controls"' in res.text
     assert 'id="align-btn"' not in res.text
     for endpoint in ("align", "calibrate-last-word", "calibrate-last-word-emission"):
         assert client.post(f"/api/sample/0/{endpoint}").status_code == 404

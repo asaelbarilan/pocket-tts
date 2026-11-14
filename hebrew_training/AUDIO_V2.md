@@ -130,3 +130,13 @@ the fetcher therefore never redownloads audio just because conversion completed.
 The immutable snapshot contains `fit.json`, `labels.jsonl`, `settings.json`, `model.ubj`,
 `selection.json` and `selected_rows.npz`; `W/selection.json` drives the fetcher. Look at
 `W/model3-YYYYMMDD.status`, the detached log and `W/model3-YYYYMMDD.done.json` to track it.
+
+## Inspect a manifest locally
+
+`python -m hebrew_training.dataset_viewer --manifest DATA/model3-manifest/train_aligned.jsonl`
+serves the dataset viewer on port 8000. Its **Text variants** panel displays `nikud` when
+available and lets you toggle each `alt_words.norms` span independently. Clicking a displayed
+word or replacement plays its saved-alignment audio. Replacements may contain a different
+number of tokens than the source: the viewer shows and plays the complete source span's
+interval, **not invented per-replacement-word timestamps**. Switching to a manifest without
+`alt_words.norms` shows no norms; the viewer does not derive them from the transcript.

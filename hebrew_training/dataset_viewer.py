@@ -254,6 +254,40 @@ class ManifestIndex:
         original_words = (
             normalize_words(row["original_words"], original_start) if has_snapshot else words
         )
+        # Text variants belong to the saved row's word indices, not the old alignment.
+        nikud = row.get("nikud")
+        if not isinstance(nikud, list) or len(nikud) != len(words):
+            nikud = None
+        norm_spans = []
+        raw_spans = (row.get("alt_words") or {}).get("norms", [])
+        previous_end = -1
+        for span in raw_spans:
+            first, last, replacement = span.get("from"), span.get("to"), span.get("replace")
+            if (
+                not isinstance(first, int)
+                or not isinstance(last, int)
+                or not 0 <= first <= last < len(words)
+                or first <= previous_end
+                or not isinstance(replacement, list)
+                or not replacement
+            ):
+                logger.warning("Skipping invalid norms span in %s line %d", self.path, index + 1)
+                continue
+            first_word, last_word = words[first], words[last]
+            norm_spans.append(
+                {
+                    "from": first,
+                    "to": last,
+                    "replace": replacement,
+                    "k": span.get("k"),
+                    "source": [word["word"] for word in words[first : last + 1]],
+                    "start": first_word["start"],
+                    "end": last_word["end"],
+                    "audio_start": first_word["audio_start"],
+                    "audio_end": last_word["audio_end"],
+                }
+            )
+            previous_end = last
         comparisons = []
         if has_snapshot:
             matcher = SequenceMatcher(
@@ -293,6 +327,8 @@ class ManifestIndex:
             "sample_audio_start": round(sample_audio_start, 3),
             "sample_audio_end": round(sample_audio_end, 3),
             "words": words,
+            "nikud": nikud,
+            "norm_spans": norm_spans,
             "original_words": original_words,
             "original_start": original_start,
             "original_duration": original_duration,
@@ -1021,6 +1057,20 @@ HTML_UI = """<!DOCTYPE html>
       <p class="text-xs text-slate-500 mt-3">All times use the displayed sample's start as zero, including original timings. Negative times are before that start. Differences are saved result minus original.</p>
     </div>
 
+    <!-- Text variants use the saved word alignment; substitutions do not change audio. -->
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-3" aria-label="Text variants">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-bold text-slate-200">Text variants · saved timings</h2>
+        <label class="flex items-center gap-2 text-sm text-slate-200 cursor-pointer">
+          <input id="nikud-toggle" type="checkbox" class="accent-indigo-500">
+          Show niqqud <span id="nikud-status" class="text-xs text-slate-400"></span>
+        </label>
+      </div>
+      <p class="text-xs text-slate-400">Click a word to hear its audio; click a norm below to swap its spelling. A replacement plays the source span's audio and shows its combined time interval, not a newly aligned word timing.</p>
+      <div id="variant-transcript" dir="rtl" class="flex flex-wrap gap-2 items-center leading-loose" aria-live="polite"></div>
+      <div id="norm-controls" class="flex flex-wrap gap-2" aria-label="Available norms"></div>
+    </section>
+
     <!-- Waveform & Playback Visualizer Card -->
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg space-y-3">
       
@@ -1258,6 +1308,7 @@ HTML_UI = """<!DOCTYPE html>
   <script>
     // State variables
     let currentSample = null;
+    let activeNorms = new Set();
     let audioContext = null;
     let audioBuffer = null;
     let currentSource = null;
@@ -1298,6 +1349,10 @@ HTML_UI = """<!DOCTYPE html>
     const transcriptContainer = document.getElementById('transcript-container');
     const alternativeTranscriptContainer = document.getElementById('alternative-transcript-container');
     const copyTranscriptBtn = document.getElementById('copy-transcript-btn');
+    const nikudToggle = document.getElementById('nikud-toggle');
+    const nikudStatus = document.getElementById('nikud-status');
+    const variantTranscript = document.getElementById('variant-transcript');
+    const normControls = document.getElementById('norm-controls');
       const alignmentSelect = document.getElementById('alignment-select');
       const alternativeTrackLabel = document.getElementById('alternative-track-label');
      const alignmentStatus = document.getElementById('alignment-status');
@@ -1406,9 +1461,11 @@ HTML_UI = """<!DOCTYPE html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         currentSample = data;
+        activeNorms = new Set();
         loadSavedAlignments();
         renderSampleMetadata(data);
         renderTranscript(data);
+        renderTextVariants();
         renderWordsTable(data);
         sampleIndexInput.value = data.index;
         
@@ -1431,9 +1488,11 @@ HTML_UI = """<!DOCTYPE html>
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         currentSample = data;
+        activeNorms = new Set();
         loadSavedAlignments();
         renderSampleMetadata(data);
         renderTranscript(data);
+        renderTextVariants();
         renderWordsTable(data);
         sampleIndexInput.value = data.index;
         await fetchAndDecodeAudio(data.index);
@@ -1473,6 +1532,88 @@ HTML_UI = """<!DOCTYPE html>
       }
 
       renderWordTokens(transcriptContainer, data.words, 'original');
+    }
+
+    function renderTextVariants() {
+      const words = currentSample.alternative_words || currentSample.words || [];
+      const nikud = currentSample.nikud;
+      const spans = currentSample.norm_spans || [];
+      const showNikud = Array.isArray(nikud) && nikudToggle.checked;
+      nikudToggle.disabled = !Array.isArray(nikud);
+      nikudStatus.textContent = nikudToggle.disabled ? '(not available in this row)' : '';
+      variantTranscript.replaceChildren();
+      normControls.replaceChildren();
+      variantTranscript.dir = currentSample.is_calibration ? 'ltr' : 'rtl';
+
+      // One timed token for an entire swapped span: replacement tokens have no
+      // independent alignment, so dividing this interval would invent timings.
+      const spanByStart = new Map(spans.map((span, index) => [span.from, {span, index}]));
+      const spanAtWord = new Map(spans.flatMap((span, index) =>
+        Array.from({length: span.to - span.from + 1}, (_, offset) => [span.from + offset, index])));
+      for (let i = 0; i < words.length;) {
+        const entry = spanByStart.get(i);
+        const span = entry?.span;
+        const swapped = entry && activeNorms.has(entry.index);
+        const last = swapped ? span.to : i;
+        const firstWord = words[i];
+        const lastWord = words[last];
+        const label = swapped ? span.replace.join(' ') :
+          words.slice(i, last + 1).map((w, offset) =>
+            showNikud ? nikud[i + offset] : w.word).join(' ');
+        const token = document.createElement('button');
+        token.type = 'button';
+        token.className = 'word-token px-2 py-1 rounded-md border text-right ' +
+          (spanAtWord.has(i) ? 'bg-amber-950/50 border-amber-600 text-amber-100 ' :
+            'bg-slate-800 border-slate-700 text-slate-100 ') +
+          (swapped ? 'ring-2 ring-amber-400 ' : '');
+        token.dataset.variantFrom = i;
+        token.dataset.variantTo = last;
+        const available = spans[spanAtWord.get(i)];
+        token.title = available ? `Norm available: ${available.source.join(' ')} ⇄ ${available.replace.join(' ')}` : '';
+        const text = document.createElement('span');
+        text.dir = 'rtl';
+        text.className = 'block font-semibold';
+        text.textContent = label;
+        const timing = document.createElement('span');
+        timing.className = 'block text-[10px] text-slate-400 font-mono' ;
+        timing.textContent = `${firstWord.start.toFixed(3)}–${lastWord.end.toFixed(3)}s` +
+          (swapped ? ' · source span' : '');
+        token.append(text, timing);
+        token.addEventListener('click', () => playRange(firstWord.audio_start, lastWord.audio_end, 'word'));
+        variantTranscript.appendChild(token);
+        i = last + 1;
+      }
+      if (!words.length) variantTranscript.textContent = '(No aligned words)';
+      if (!spans.length) {
+        normControls.textContent = 'No norms available for this row.';
+        normControls.className = 'flex flex-wrap gap-2 text-xs text-slate-400';
+      } else {
+        normControls.className = 'flex flex-wrap gap-2';
+      }
+      spans.forEach((span, index) => {
+        const group = document.createElement('div');
+        group.className = 'flex items-center gap-2 rounded-lg bg-slate-950 border border-slate-700 p-2 text-sm';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'rounded px-2 py-1 bg-amber-900/60 hover:bg-amber-800 text-amber-100';
+        toggle.setAttribute('aria-pressed', String(activeNorms.has(index)));
+        toggle.textContent = `${span.source.join(' ')} ⇄ ${span.replace.join(' ')} ${activeNorms.has(index) ? '✓' : ''}`;
+        toggle.title = `Swap norm for source words ${span.from + 1}–${span.to + 1}`;
+        toggle.addEventListener('click', () => {
+          if (activeNorms.has(index)) activeNorms.delete(index);
+          else activeNorms.add(index);
+          renderTextVariants();
+        });
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'rounded px-2 py-1 bg-indigo-700 hover:bg-indigo-600 text-white';
+        play.textContent = '▶';
+        play.title = `Play source span ${span.start.toFixed(3)}–${span.end.toFixed(3)}s`;
+        play.setAttribute('aria-label', play.title);
+        play.addEventListener('click', () => playRange(span.audio_start, span.audio_end, 'word'));
+        group.append(toggle, play);
+        normControls.appendChild(group);
+      });
     }
 
     function renderWordTokens(container, words, track) {
@@ -2223,6 +2364,12 @@ HTML_UI = """<!DOCTYPE html>
     // Word highlighting synchronization
     function updateActiveWord(currentSec) {
       if (!currentSample || !currentSample.words) return;
+      document.querySelectorAll('#variant-transcript [data-variant-from]').forEach(token => {
+        const words = currentSample.alternative_words || currentSample.words;
+        const first = words[Number(token.dataset.variantFrom)];
+        const last = words[Number(token.dataset.variantTo)];
+        token.classList.toggle('active', currentSec >= first.audio_start && currentSec <= last.audio_end);
+      });
       currentSample.words.forEach((w, idx) => {
         const isActive = currentSec >= w.audio_start && currentSec <= w.audio_end;
         const token = document.querySelector(`.word-token[data-track="original"][data-index="${idx}"]`);
@@ -2418,6 +2565,7 @@ HTML_UI = """<!DOCTYPE html>
         hoveredWordIndex = null;
         drawWaveform();
       });
+      nikudToggle.addEventListener('change', renderTextVariants);
 
       // Zoom Controls Events
       zoomSlider.addEventListener('input', (e) => setZoom(e.target.value));
