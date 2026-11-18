@@ -588,3 +588,21 @@ def test_auxiliary_thread_caps_do_not_change_the_viter_thread_budget(monkeypatch
     aligner.limit_auxiliary_threads()
     assert all(aligner.os.environ[name] == "1" for name in names)
     assert aligner.os.environ["RAYON_NUM_THREADS"] == "4"
+
+
+def test_viter_chunk_size_splits_align_many_for_retry_after_worker_oom(monkeypatch):
+    rows = [(1, sample("שלום")), (2, sample("עולם")), (3, sample("שלום"))]
+    monkeypatch.setattr(aligner, "_VITER_WORDS", {"שלום", "עולם"})
+    monkeypatch.setattr(aligner, "decode_audio", lambda _: ([0.0] * 64000, 2.5))
+    viter = Mock()
+    viter.align_many.side_effect = [
+        [viter_result(("שלום", 0.2, 1.7)), viter_result(("עולם", 0.3, 1.8))],
+        [viter_result(("שלום", 0.4, 1.9))],
+    ]
+    monkeypatch.setattr(aligner, "_VITER", viter)
+    fallback = Mock()
+    outcomes = aligner.align_viter_batch(rows, options(), fallback, chunk_size=2)
+    assert viter.align_many.call_count == 2
+    assert [len(call.args[0]) for call in viter.align_many.call_args_list] == [2, 1]
+    assert [item["row"]["alignment_backend"] for item in outcomes] == ["viter", "viter", "viter"]
+    fallback.align.assert_not_called()

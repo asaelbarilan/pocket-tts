@@ -859,8 +859,14 @@ class MMSFallback:
             self.process = None
 
 
+MAX_VITER_WORKER_BATCHES = 250
+
+
 def align_viter_batch(
-    rows: list[Any], args: argparse.Namespace, fallback: MMSFallback
+    rows: list[Any],
+    args: argparse.Namespace,
+    fallback: MMSFallback,
+    chunk_size: int | None = None,
 ) -> list[dict[str, Any]]:
     strict = getattr(args, "strict", False)
     outcomes: list[Any] = [None] * len(rows)
@@ -894,26 +900,35 @@ def align_viter_batch(
             else:
                 valid.append((candidate, value))
         if valid:
-            try:
-                write_viter_batch_dictionary(
-                    word for candidate, _ in valid for word in candidate[2]
-                )
-                alignments = _VITER.align_many(
-                    [
-                        (audio, " ".join(candidate[2]), SAMPLE_RATE)
-                        for candidate, (audio, _) in valid
-                    ],
-                    speakers=[
-                        str(rows[candidate[0]][1].get("speaker") or rows[candidate[0]][1]["path"])
-                        for candidate, _ in valid
-                    ],
-                    beam=args.beam,
-                    retry_beam=args.retry_beam,
-                )
-            except Exception as exc:  # noqa: BLE001
-                alignments = [None] * len(valid)
-                for candidate, _ in valid:
-                    reasons[candidate[0]] = f"Viter batch failed: {exc}"
+            alignments = []
+            step = len(valid) if chunk_size is None else max(1, chunk_size)
+            for start in range(0, len(valid), step):
+                chunk = valid[start : start + step]
+                try:
+                    write_viter_batch_dictionary(
+                        word for candidate, _ in chunk for word in candidate[2]
+                    )
+                    alignments.extend(
+                        _VITER.align_many(
+                            [
+                                (audio, " ".join(candidate[2]), SAMPLE_RATE)
+                                for candidate, (audio, _) in chunk
+                            ],
+                            speakers=[
+                                str(
+                                    rows[candidate[0]][1].get("speaker")
+                                    or rows[candidate[0]][1]["path"]
+                                )
+                                for candidate, _ in chunk
+                            ],
+                            beam=args.beam,
+                            retry_beam=args.retry_beam,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    alignments.extend([None] * len(chunk))
+                    for candidate, _ in chunk:
+                        reasons[candidate[0]] = f"Viter batch failed: {exc}"
             for (candidate, (audio, origin)), alignment in zip(valid, alignments, strict=True):
                 index, words, cleaned = candidate
                 try:
@@ -980,9 +995,12 @@ def worker_main(
             import viter
 
             _VITER_WORDS, _VITER_DICTIONARY = load_viter_dictionary(args.merged_dictionary)
+            safe_worker_id = worker_id.replace(":", "_")
+            for stale in args.merged_dictionary.parent.glob(f"dictionary-{safe_worker_id}-*.tsv"):
+                stale.unlink(missing_ok=True)
             with tempfile.NamedTemporaryFile(
                 dir=args.merged_dictionary.parent,
-                prefix=f"dictionary-{os.getpid()}-",
+                prefix=f"dictionary-{safe_worker_id}-{os.getpid()}-",
                 suffix=".tsv",
                 delete=False,
             ) as handle:
@@ -1001,13 +1019,14 @@ def worker_main(
             task = tasks.get()
             if task is None:
                 return
-            batch_id, rows = task
+            batch_id, rows, *extra = task
+            chunk_size = extra[0] if extra else None
             started = time.monotonic()
             try:
                 outcomes = (
                     align_batch(rows, args.decode_workers)
                     if args.aligner == "mms"
-                    else align_viter_batch(rows, args, fallback)
+                    else align_viter_batch(rows, args, fallback, chunk_size)
                 )
                 results.put(("batch", batch_id, rows[-1][0], outcomes, time.monotonic() - started))
             except Exception as exc:  # noqa: BLE001 - surface batch failures to the coordinator
@@ -1115,13 +1134,27 @@ def iter_batches(manifest: Path, start_line: int, batch_size: int, limit: int | 
         yield selected
 
 
+def describe_exit(exitcode: int | None) -> str:
+    """Name how a worker died; a negative code is the killing signal (-9 is usually the OOM killer)."""
+    if exitcode is None or exitcode >= 0:
+        return f"exit code {exitcode}"
+    try:
+        return f"killed by {signal.Signals(-exitcode).name}"
+    except ValueError:
+        return f"killed by signal {-exitcode}"
+
+
 def wait_for_workers(processes: list[Any], results: Any) -> None:
     ready = set()
     while len(ready) < len(processes):
         try:
             message = results.get(timeout=5)
         except queue.Empty:
-            dead = [process.name for process in processes if not process.is_alive()]
+            dead = [
+                f"{process.name} ({describe_exit(process.exitcode)})"
+                for process in processes
+                if not process.is_alive()
+            ]
             if dead:
                 raise RuntimeError(f"GPU workers exited during startup: {', '.join(dead)}")
             continue
@@ -1173,20 +1206,33 @@ def align_split(args: argparse.Namespace, split: str, devices: list[str]) -> Non
         return
 
     context = mp.get_context("spawn")
-    worker_count = len(devices) * args.workers_per_gpu
-    tasks = context.Queue(maxsize=worker_count * 2)
-    results = context.Queue(maxsize=worker_count * 2)
-    processes = [
-        context.Process(
-            target=worker_main,
-            args=(device, f"{args.aligner}-{device}-{worker_index}", args, tasks, results),
-            name=f"{args.aligner}-{device}-{worker_index}",
-        )
+    worker_specs = [
+        (device, f"{args.aligner}-{device}-{worker_index}")
         for device in devices
         for worker_index in range(args.workers_per_gpu)
     ]
-    for process in processes:
+    worker_count = len(worker_specs)
+    name_to_slot = {name: slot for slot, (_, name) in enumerate(worker_specs)}
+    worker_tasks = [context.Queue() for _ in worker_specs]
+    results = context.Queue()
+
+    def spawn_worker(slot: int) -> Any:
+        device, name = worker_specs[slot]
+        process = context.Process(
+            target=worker_main,
+            args=(device, name, args, worker_tasks[slot], results),
+            name=name,
+        )
         process.start()
+        return process
+
+    processes = [spawn_worker(slot) for slot in range(worker_count)]
+    worker_ready = [False] * worker_count
+    worker_in_flight: list[list[int]] = [[] for _ in range(worker_count)]
+    worker_batches = [0] * worker_count
+    batch_slot: dict[int, int] = {}
+    batch_attempts: dict[int, int] = {}
+    pending_retries: list[tuple[int, list[Any], int | None]] = []
 
     started = time.monotonic()
     submitted: dict[int, list[Any]] = {}
@@ -1197,37 +1243,130 @@ def align_split(args: argparse.Namespace, split: str, devices: list[str]) -> Non
     aligned = failures = source_rows = retained = 0
     batches = iter(iter_batches(source, start_line, args.batch_size, args.limit))
     checkpoint_batches = 0
+
+    def handle_message(message: Any) -> None:
+        if message[0] == "ready":
+            slot = name_to_slot.get(message[1])
+            if slot is not None:
+                worker_ready[slot] = True
+            return
+        if message[0] == "fatal":
+            raise RuntimeError(f"worker {message[1]} failed: {message[2]}")
+        _, batch_id, last_line, outcomes, batch_seconds = message
+        slot = batch_slot.pop(batch_id, None)
+        if slot is not None:
+            if batch_id in worker_in_flight[slot]:
+                worker_in_flight[slot].remove(batch_id)
+            worker_batches[slot] += 1
+        batch_attempts.pop(batch_id, None)
+        completed[batch_id] = (last_line, outcomes, batch_seconds)
+
+    def drain_results() -> None:
+        while True:
+            try:
+                handle_message(results.get_nowait())
+            except queue.Empty:
+                break
+
     try:
         wait_for_workers(processes, results)
+        worker_ready = [True] * worker_count
         print(
             f"{split}: {worker_count} {args.aligner} workers ready on {len(devices)} devices; "
             f"resuming after source line {start_line}",
             flush=True,
         )
         while not exhausted or submitted:
-            while not exhausted and len(submitted) < worker_count * 2:
-                try:
-                    rows = next(batches)
-                except StopIteration:
-                    exhausted = True
-                    break
-                submitted[next_submit] = rows
-                tasks.put((next_submit, rows))
-                next_submit += 1
+            if args.aligner == "viter":
+                for slot in range(worker_count):
+                    if (
+                        worker_ready[slot]
+                        and worker_batches[slot] >= MAX_VITER_WORKER_BATCHES
+                        and not worker_in_flight[slot]
+                    ):
+                        with contextlib.suppress(OSError, ValueError):
+                            worker_tasks[slot].put_nowait(None)
+                        processes[slot].join(timeout=5)
+                        if processes[slot].is_alive():
+                            processes[slot].terminate()
+                            processes[slot].join(timeout=5)
+                        worker_tasks[slot] = context.Queue()
+                        worker_ready[slot] = False
+                        worker_batches[slot] = 0
+                        processes[slot] = spawn_worker(slot)
+
+            for slot in sorted(range(worker_count), key=lambda idx: len(worker_in_flight[idx])):
+                while (
+                    worker_ready[slot]
+                    and processes[slot].is_alive()
+                    and len(worker_in_flight[slot]) < 2
+                    and (
+                        args.aligner != "viter"
+                        or worker_batches[slot] + len(worker_in_flight[slot])
+                        < MAX_VITER_WORKER_BATCHES
+                    )
+                ):
+                    if pending_retries:
+                        batch_id, rows, chunk_size = pending_retries.pop(0)
+                    elif not exhausted and len(submitted) < worker_count * 2:
+                        try:
+                            rows = next(batches)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        batch_id = next_submit
+                        next_submit += 1
+                        submitted[batch_id] = rows
+                        chunk_size = None
+                    else:
+                        break
+                    task = (batch_id, rows) if chunk_size is None else (batch_id, rows, chunk_size)
+                    worker_tasks[slot].put(task)
+                    worker_in_flight[slot].append(batch_id)
+                    batch_slot[batch_id] = slot
 
             if not submitted:
                 break
             try:
-                message = results.get(timeout=30)
+                handle_message(results.get(timeout=2))
             except queue.Empty:
-                dead = [process.name for process in processes if not process.is_alive()]
-                if dead:
-                    raise RuntimeError(f"GPU workers exited unexpectedly: {', '.join(dead)}")
-                continue
-            if message[0] == "fatal":
-                raise RuntimeError(f"worker {message[1]} failed: {message[2]}")
-            _, batch_id, last_line, outcomes, batch_seconds = message
-            completed[batch_id] = (last_line, outcomes, batch_seconds)
+                pass
+            drain_results()
+
+            for slot, process in enumerate(processes):
+                if not process.is_alive():
+                    drain_results()
+                    if not worker_ready[slot]:
+                        raise RuntimeError(
+                            f"GPU worker exited during startup: {process.name} "
+                            f"({describe_exit(process.exitcode)})"
+                        )
+                    for pos, batch_id in enumerate(worker_in_flight[slot]):
+                        batch_slot.pop(batch_id, None)
+                        if pos == 0:
+                            attempts = batch_attempts[batch_id] = (
+                                batch_attempts.get(batch_id, 0) + 1
+                            )
+                            if attempts > 3:
+                                raise RuntimeError(
+                                    f"GPU worker {process.name} ({describe_exit(process.exitcode)}) "
+                                    f"crashed {attempts} times on batch {batch_id}"
+                                )
+                            chunk_size = max(1, len(submitted[batch_id]) // (4**attempts))
+                            pending_retries.append((batch_id, submitted[batch_id], chunk_size))
+                        else:
+                            pending_retries.append((batch_id, submitted[batch_id], None))
+                    worker_in_flight[slot].clear()
+                    print(
+                        f"{split}: worker {process.name} exited unexpectedly "
+                        f"({describe_exit(process.exitcode)}); respawning",
+                        flush=True,
+                    )
+                    worker_tasks[slot] = context.Queue()
+                    worker_ready[slot] = False
+                    worker_batches[slot] = 0
+                    processes[slot] = spawn_worker(slot)
+
             while next_write in completed:
                 last_line, outcomes, batch_seconds = completed.pop(next_write)
                 rows = submitted.pop(next_write)
@@ -1292,11 +1431,9 @@ def align_split(args: argparse.Namespace, split: str, devices: list[str]) -> Non
     finally:
         output_handle.close()
         failed_handle.close()
-        for _ in processes:
-            try:
-                tasks.put_nowait(None)
-            except queue.Full:
-                break
+        for task_queue in worker_tasks:
+            with contextlib.suppress(queue.Full, OSError, ValueError):
+                task_queue.put_nowait(None)
         for process in processes:
             process.join(timeout=10)
             if process.is_alive():
