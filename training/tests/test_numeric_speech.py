@@ -1,6 +1,7 @@
 """Fixed-cut rows (`prompt_end`) and the numeric-speech builder's pure parts."""
 
 import json
+from typing import ClassVar
 
 import numpy as np
 import pytest
