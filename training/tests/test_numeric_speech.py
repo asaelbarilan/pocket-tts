@@ -248,3 +248,18 @@ def test_pair_subset_is_seeded_and_sorted():
     a = ns.sample_pairs(pairs, 10, seed=1)
     assert a == ns.sample_pairs(pairs, 10, seed=1) and a != ns.sample_pairs(pairs, 10, seed=2)
     assert [p["id"] for p in a] == sorted(p["id"] for p in a) and len(a) == 10
+
+
+def test_no_eos_warning_is_noticed():
+    import logging
+
+    watch = ns.NoEosWatch()
+    log = logging.getLogger("pocket_tts.models.tts_model")
+    log.addHandler(watch)
+    try:
+        log.warning("something else")
+        assert not watch.hit
+        log.warning("Maximum generation length reached without EOS, this very often ...")
+        assert watch.hit
+    finally:
+        log.removeHandler(watch)

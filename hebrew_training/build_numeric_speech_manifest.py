@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import random
 import sys
@@ -157,12 +158,31 @@ def trim_tail(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     return audio[: min(len(audio), loud[-1] + 1 + int(TRAIL_SEC * sample_rate))]
 
 
+class NoEosWatch(logging.Handler):
+    """Notices the model's "reached maximum length without EOS" warning (the speech ran to the
+    length cap instead of ending), which usually means trailing babble or a repeated phrase."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.hit = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if "without EOS" in record.getMessage():
+            self.hit = True
+
+
 def audio_path(out_dir: Path, pair_id: str) -> Path:
     return out_dir / "audio" / pair_id[:2] / f"{pair_id}.wav"
 
 
 def build_row(
-    pair: dict, prompt: dict, prompt_audio: np.ndarray, speech: np.ndarray, path: Path, sr: int
+    pair: dict,
+    prompt: dict,
+    prompt_audio: np.ndarray,
+    speech: np.ndarray,
+    path: Path,
+    sr: int,
+    no_eos: bool = False,
 ) -> dict:
     """Write the wav and return the manifest row; `prompt_end` is the prompt's exact length."""
     import soundfile
@@ -184,6 +204,7 @@ def build_row(
         "prompt_text": prompt.get("text"),
         "speaker": speaker_of(prompt),
         "sample_rate": sr,
+        "no_eos": no_eos,
     }
 
 
@@ -266,7 +287,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--max-prompt-sec", type=float, default=5.0, help="loader's max_voice_prompt_sec"
     )
-    p.add_argument("--max-tokens", type=int, default=400, help="frames at 12.5 Hz (400 = 32 s)")
+    p.add_argument(
+        "--max-tokens",
+        type=int,
+        default=400,
+        help="text tokens per generated chunk; texts over it are split and spoken in pieces, so "
+        "keep it above the longest pair to get one utterance per pair",
+    )
+    p.add_argument(
+        "--drop-no-eos",
+        action="store_true",
+        help="fail (to failures.jsonl) samples whose generation hit the length cap without EOS; "
+        "they are otherwise kept and marked `no_eos: true`",
+    )
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--merge", action="store_true", help="fold shard files into train/valid.jsonl")
@@ -325,11 +358,14 @@ def main(argv: list[str] | None = None) -> None:
     sr = model.sample_rate
     suffix = "" if args.num_shards == 1 else f".shard-{args.shard_index}"
 
+    watch = NoEosWatch()
+    logging.getLogger("pocket_tts.models.tts_model").addHandler(watch)
     written, started = 0, time.monotonic()
     for pair in todo:
         if args.limit is not None and written >= args.limit:
             break
         side, prompt = chosen[pair["id"]]
+        watch.hit = False
         try:
             state = model.get_state_for_audio_prompt(prompt["audio"])
             speech = (
@@ -339,6 +375,8 @@ def main(argv: list[str] | None = None) -> None:
                 .numpy()
                 .reshape(-1)
             )
+            if watch.hit and args.drop_no_eos:
+                raise RuntimeError("no_eos: generation hit the length cap without EOS")
             row = build_row(
                 pair,
                 prompt,
@@ -346,6 +384,7 @@ def main(argv: list[str] | None = None) -> None:
                 trim_tail(speech, sr),
                 audio_path(args.out_dir, pair["id"]),
                 sr,
+                no_eos=watch.hit,
             )
         except Exception as exc:  # noqa: BLE001 - one bad sample must not stop the run
             append(args.out_dir / f"failures{suffix}.jsonl", {"id": pair["id"], "error": repr(exc)})
