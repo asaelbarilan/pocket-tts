@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice prompt pool</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    main { max-width: 1100px; }
+    nav.tabs { display: flex; gap: .5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    nav.tabs button { width: auto; margin: 0; }
+    .grid-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .75rem 1rem; }
+    .grid-params label { margin: 0; font-size: .85rem; }
+    .grid-params input, .grid-params select { margin: .2rem 0 0; }
+    .bar { background: var(--pico-muted-border-color); border-radius: 6px; height: .7rem; overflow: hidden; }
+    .bar > div { background: var(--pico-primary); height: 100%; transition: width .3s; }
+    .summary { display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: .9rem; }
+    .summary b { display: block; font-size: 1.15rem; }
+    .ok { color: #3fb950; } .bad { color: #f85149; } .muted { color: var(--pico-muted-color); }
+    .path-row { display: flex; gap: .5rem; align-items: center; }
+    .path-row code { flex: 1; overflow-wrap: anywhere; }
+    .path-row button { width: auto; margin: 0; padding: .25rem .6rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
+    article { margin: 0; }
+    audio { width: 100%; margin-bottom: .5rem; }
+    pre { max-height: 18rem; overflow: auto; font-size: .75rem; }
+    .text { font-size: 1.05rem; margin: .25rem 0; }
+    .figure { font-size: 3rem; font-weight: 700; line-height: 1; }
+    .error { color: #f85149; }
+    details { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<main class="container" x-data="voicePromptApp()" x-init="init()">
+  <h1>Voice prompt pool</h1>
+
+  <!-- target summary -->
+  <article x-show="output">
+    <div class="summary" x-show="target.exists">
+      <div><b x-text="target.count"></b>prompts</div>
+      <div><b x-text="target.speakers"></b>speaker keys</div>
+      <div><b x-text="target.hours + ' h'"></b>audio</div>
+      <div><b x-text="target.mean_duration + ' s'"></b>mean length</div>
+      <div><b x-text="Object.entries(target.datasets || {}).map(([k, v]) => k + ' ' + v).join(', ')"></b>by dataset</div>
+    </div>
+    <span class="muted" x-show="!target.exists">Nothing extracted into this folder yet.</span>
+  </article>
+  <p class="error" x-show="error" x-text="error"></p>
+
+  <nav class="tabs">
+    <template x-for="t in tabs" :key="t.id">
+      <button :class="tab === t.id ? '' : 'outline'" @click="tab = t.id; if (t.id==='preview' && !samples.length) loadSamples()" x-text="t.label"></button>
+    </template>
+  </nav>
+
+  <!-- SETUP -->
+  <section x-show="tab === 'setup'">
+    <h3>Datasets</h3>
+    <p class="muted">Folders on this machine holding <code>train_aligned.jsonl</code> / <code>valid_aligned.jsonl</code>
+      (or <code>_diac</code>, or the built files). Optionally name one with <code>NAME=/path</code>.</p>
+    <form @submit.prevent="addDataset()" role="group">
+      <input x-model="newDataset" placeholder="/mlspeech/hebrew/pockettts-data/plenum" autocomplete="off">
+      <button type="submit">Add</button>
+    </form>
+    <template x-for="(spec, i) in datasets" :key="spec">
+      <div class="path-row">
+        <code x-text="spec"></code>
+        <small :class="checkFor(spec)?.error ? 'bad' : 'ok'" x-text="describe(checkFor(spec))"></small>
+        <button class="outline secondary" @click="removeDataset(i)">remove</button>
+      </div>
+    </template>
+
+    <h3>Target folder</h3>
+    <p class="muted">Where <code>prompts/</code> and <code>manifest.jsonl</code> go. Every run adds to what is already there.</p>
+    <input x-model.debounce.500ms="output" @input.debounce.600ms="refreshTarget()" placeholder="/mlspeech/hebrew/voice-prompts" autocomplete="off">
+  </section>
+
+  <!-- EXTRACT -->
+  <section x-show="tab === 'extract'">
+    <h3>Extract</h3>
+    <div class="grid-params">
+      <label>Samples to add this run<input type="number" min="1" x-model.number="params.count"></label>
+      <label>Max per speaker (whole folder, 0 = no cap)<input type="number" min="0" x-model.number="params.per_speaker"></label>
+      <label>Max per source row<input type="number" min="1" x-model.number="params.per_row"></label>
+      <label>Min duration (s)<input type="number" step="0.1" x-model.number="params.min_duration"></label>
+      <label>Max duration (s)<input type="number" step="0.1" x-model.number="params.max_duration"></label>
+      <label>Min seam gap (ms)<input type="number" step="10" x-model.number="params.min_gap_ms"></label>
+      <label>Min words<input type="number" min="1" x-model.number="params.min_words"></label>
+      <label>Max pause inside (ms)<input type="number" step="50" x-model.number="params.max_inner_gap_ms"></label>
+      <label>Min speech ratio<input type="number" step="0.05" min="0" max="1" x-model.number="params.min_speech_ratio"></label>
+      <label>Sample rate<input type="number" step="1000" x-model.number="params.sample_rate"></label>
+      <label>Manifest stage
+        <select x-model="params.stage"><option>auto</option><option>aligned</option><option>diac</option><option>built</option></select>
+      </label>
+      <label>Seed (blank = new each run)<input type="number" x-model="params.seed" placeholder="random"></label>
+      <label>Workers<input type="number" min="1" x-model="params.workers" placeholder="auto"></label>
+    </div>
+    <fieldset style="margin-top:1rem">
+      <label style="display:inline-block;margin-right:1.5rem"><input type="checkbox" x-model="params.splits" value="train"> train</label>
+      <label style="display:inline-block;margin-right:1.5rem"><input type="checkbox" x-model="params.splits" value="valid"> valid</label>
+      <label style="display:inline-block;margin-right:1.5rem"><input type="checkbox" x-model="params.edge_cuts"> cut in the gap beside a row (lead/tail gap)</label>
+      <label style="display:inline-block"><input type="checkbox" x-model="params.fresh"> start fresh (delete existing prompts first)</label>
+    </fieldset>
+    <button @click="startExtract()" :disabled="job.state === 'running'" x-text="params.fresh ? 'Replace with a new extraction' : 'Add samples'"></button>
+    <button class="secondary outline" x-show="job.state === 'running'" @click="api('/api/cancel', {method: 'POST'})" style="margin-left:.5rem">Cancel</button>
+
+    <article x-show="job.state !== 'idle'">
+      <p>
+        <strong x-text="job.state"></strong>
+        <span class="muted" x-show="job.phase" x-text="' · ' + job.phase"></span>
+        <span class="muted" x-show="job.elapsed != null" x-text="' · ' + job.elapsed + ' s'"></span>
+        <span class="muted" x-show="job.seed != null" x-text="' · seed ' + job.seed"></span>
+      </p>
+      <div class="bar" x-show="job.total"><div :style="`width:${100 * job.done / job.total}%`"></div></div>
+      <p class="muted" x-show="job.state === 'running'" x-text="job.total ? `${job.done} / ${job.total}` : `${job.done} rows scanned`"></p>
+      <p class="error" x-show="job.state === 'error'" x-text="job.error"></p>
+      <template x-if="job.stats">
+        <details open>
+          <summary x-text="`${job.stats.written || 0} added`"></summary>
+          <pre x-text="JSON.stringify(job.stats, null, 2)"></pre>
+        </details>
+      </template>
+    </article>
+  </section>
+
+  <!-- PREVIEW -->
+  <section x-show="tab === 'preview'">
+    <h3>Preview</h3>
+    <div role="group" style="max-width: 24rem">
+      <input type="number" min="1" max="50" x-model.number="sampleN" aria-label="how many">
+      <button @click="loadSamples()">Random samples</button>
+    </div>
+    <div class="cards">
+      <template x-for="s in samples" :key="s.id">
+        <article>
+          <audio controls preload="none" :src="s.audio_url"></audio>
+          <div><strong x-text="'#' + s.id"></strong>
+            <span class="muted" x-text="` · ${s.duration}s · ${s.dataset}/${s.split} · ${speaker(s)}`"></span></div>
+          <div class="text" dir="auto" x-text="s.text"></div>
+          <small class="muted" x-text="`gap before ${s.gap_before_ms} ms · after ${s.gap_after_ms} ms · ${s.num_words} words`"></small>
+          <details><summary>json</summary><pre x-text="pretty(s)"></pre></details>
+        </article>
+      </template>
+    </div>
+  </section>
+
+  <!-- SIMILARITY -->
+  <section x-show="tab === 'similarity'">
+    <h3>Similarity</h3>
+    <p class="muted">Cosine similarity in the space Pocket-TTS reads a voice prompt in (Mimi encoder output, mean + std over time),
+      standardized against the pool. Leave the ids blank for random prompts.</p>
+    <div class="grid-params">
+      <label>Prompt id A<input type="number" x-model="sim.a" placeholder="random"></label>
+      <label>Prompt id B<input type="number" x-model="sim.b" placeholder="random"></label>
+      <label>Space
+        <select x-model="sim.space"><option value="latent">latent (Mimi)</option><option value="conditioning">conditioning (after speaker_proj)</option></select>
+      </label>
+      <label x-show="sim.space === 'conditioning'">Language<input x-model="sim.language"></label>
+      <label x-show="sim.space === 'conditioning'">Config path<input x-model="sim.config" placeholder="optional"></label>
+      <label x-show="sim.space === 'conditioning'">Checkpoint (.pt)<input x-model="sim.checkpoint" placeholder="optional"></label>
+    </div>
+    <div style="margin-top:1rem">
+      <button @click="compare(true)" :aria-busy="simBusy" :disabled="simBusy">Sample two &amp; compare</button>
+      <button class="outline" @click="compare(false)" :disabled="simBusy" style="margin-left:.5rem">Compare these ids</button>
+    </div>
+    <p class="muted" x-show="simBusy">The first comparison loads the model and embeds a reference sample of the pool; later ones are fast.</p>
+
+    <template x-if="result">
+      <div>
+        <article>
+          <div class="figure" x-text="result.similarity.toFixed(3)"></div>
+          <p>More alike than <strong x-text="result.percentile + '%'"></strong> of random pairs from the pool
+            <span class="muted" x-text="`(${result.reference})`"></span>.
+            Raw cosine <span x-text="result.raw_cosine.toFixed(3)"></span> ·
+            <span x-text="result.same_speaker ? 'same speaker key' : 'different speaker keys'"></span>.</p>
+          <p class="muted" x-show="result.nearest_neighbour">Nearest-neighbour similarity across the pool:
+            <span x-text="Object.entries(result.nearest_neighbour).map(([k, v]) => k + ' ' + v).join(' · ')"></span> — a threshold for dedupe is read from here.</p>
+        </article>
+        <div class="cards" style="margin-top:1rem">
+          <template x-for="(s, i) in [result.a, result.b]" :key="s.id">
+            <article>
+              <audio controls preload="none" :src="s.audio_url"></audio>
+              <div><strong x-text="(i ? 'B' : 'A') + ' #' + s.id"></strong>
+                <span class="muted" x-text="` · ${s.duration}s · ${s.dataset}/${s.split} · ${speaker(s)}`"></span></div>
+              <div class="text" dir="auto" x-text="s.text"></div>
+              <details><summary>json</summary><pre x-text="pretty(s)"></pre></details>
+            </article>
+          </template>
+        </div>
+      </div>
+    </template>
+  </section>
+</main>
+
+<script>
+const STORAGE_KEY = 'voice-prompts-ui-v1';
+
+function voicePromptApp() {
+  return {
+    tabs: [
+      { id: 'setup', label: 'Datasets & target' },
+      { id: 'extract', label: 'Extract' },
+      { id: 'preview', label: 'Preview' },
+      { id: 'similarity', label: 'Similarity' },
+    ],
+    tab: 'setup',
+    datasets: [], newDataset: '', checks: [],
+    output: '', target: {}, error: '',
+    params: {
+      count: 1000, per_speaker: 10, per_row: 1, min_duration: 3, max_duration: 5,
+      min_gap_ms: 300, min_words: 3, max_inner_gap_ms: 1000, min_speech_ratio: 0.6,
+      sample_rate: 24000, stage: 'auto', seed: '', workers: '', splits: ['train', 'valid'],
+      edge_cuts: true, fresh: false,
+    },
+    job: { state: 'idle' }, poller: null,
+    samples: [], sampleN: 4,
+    sim: { a: '', b: '', space: 'latent', language: 'english', config: '', checkpoint: '' },
+    result: null, simBusy: false,
+
+    init() {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      this.datasets = saved.datasets || [];
+      this.output = saved.output || '';
+      this.tab = saved.tab || 'setup';
+      this.sampleN = saved.sampleN || 4;
+      Object.assign(this.params, saved.params || {}, { fresh: false });
+      Object.assign(this.sim, saved.sim || {}, { a: '', b: '' });
+      this.$watch(() => JSON.stringify(this.persisted()), (value) => localStorage.setItem(STORAGE_KEY, value));
+      this.checkDatasets();
+      this.refreshTarget();
+      this.pollJob();
+    },
+    persisted() {
+      const { fresh, ...params } = this.params;
+      const { a, b, ...sim } = this.sim;
+      return { datasets: this.datasets, output: this.output, tab: this.tab, sampleN: this.sampleN, params, sim };
+    },
+
+    async api(path, options = {}) {
+      this.error = '';
+      const headers = options.body ? { 'Content-Type': 'application/json' } : {};
+      const response = await fetch(path, { ...options, headers });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.loc.join('.') + ': ' + d.msg).join('; ') : data.detail;
+        throw new Error(detail || response.statusText);
+      }
+      return data;
+    },
+    async guard(work) {
+      try { return await work(); } catch (e) { this.error = e.message; }
+    },
+
+    // datasets
+    addDataset() {
+      const spec = this.newDataset.trim();
+      if (spec && !this.datasets.includes(spec)) this.datasets.push(spec);
+      this.newDataset = '';
+      this.checkDatasets();
+    },
+    removeDataset(i) { this.datasets.splice(i, 1); this.checkDatasets(); },
+    checkDatasets() {
+      if (!this.datasets.length) { this.checks = []; return; }
+      return this.guard(async () => {
+        this.checks = await this.api('/api/datasets/check', { method: 'POST', body: JSON.stringify({ specs: this.datasets }) });
+      });
+    },
+    checkFor(spec) { return this.checks.find((c) => c.spec === spec); },
+    describe(check) {
+      if (!check) return '…';
+      if (check.error) return check.error;
+      return check.files.map((f) => `${f.split}: ${f.file} (${f.mb} MB)`).join(' · ');
+    },
+
+    // target
+    refreshTarget() {
+      if (!this.output.trim()) { this.target = {}; return; }
+      return this.guard(async () => {
+        this.target = await this.api('/api/target?output=' + encodeURIComponent(this.output));
+      });
+    },
+
+    // extract
+    startExtract() {
+      if (this.params.fresh && this.target.count && !confirm(`Delete the ${this.target.count} prompts in ${this.output} and start over?`)) return;
+      return this.guard(async () => {
+        const { seed, workers, ...rest } = this.params;
+        this.job = await this.api('/api/extract', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...rest, datasets: this.datasets, output: this.output,
+            seed: seed === '' || seed === null ? null : Number(seed),
+            workers: workers === '' || workers === null ? null : Number(workers),
+          }),
+        });
+        this.params.fresh = false;
+        this.pollJob();
+      });
+    },
+    pollJob() {
+      clearInterval(this.poller);
+      const tick = async () => {
+        try { this.job = await this.api('/api/job'); } catch (e) { return; }
+        if (this.job.state !== 'running') {
+          clearInterval(this.poller);
+          this.refreshTarget();
+        }
+      };
+      tick();
+      this.poller = setInterval(tick, 1000);
+    },
+
+    // preview
+    loadSamples() {
+      return this.guard(async () => {
+        this.samples = await this.api(`/api/samples?n=${this.sampleN}&output=` + encodeURIComponent(this.output));
+      });
+    },
+    speaker(s) { return s.speaker || s.user_id || 'no speaker id'; },
+    pretty(s) { const { audio_url, ...row } = s; return JSON.stringify(row, null, 2); },
+
+    // similarity
+    async compare(random) {
+      this.simBusy = true;
+      await this.guard(async () => {
+        if (random) { this.sim.a = ''; this.sim.b = ''; }
+        const id = (v) => (v === '' || v === null ? null : Number(v));
+        this.result = await this.api('/api/similarity', {
+          method: 'POST',
+          body: JSON.stringify({ ...this.sim, a: id(this.sim.a), b: id(this.sim.b), output: this.output }),
+        });
+        this.sim.a = this.result.a.id;
+        this.sim.b = this.result.b.id;
+      });
+      this.simBusy = false;
+    },
+  };
+}
+</script>
+</body>
+</html>
