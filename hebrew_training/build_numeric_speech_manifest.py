@@ -49,6 +49,7 @@ import numpy as np
 from hebrew_training.data import read_jsonl
 
 TRAIN, VALID = "train", "valid"
+SPLIT_NAMES = {"train", "dev", "test", "valid", "validation"}
 # Silence kept after the last generated sample, same role as DataLoader.TRAIL_SEC.
 TRAIL_SEC = 0.2
 SILENCE_FLOOR = 10 ** (-45 / 20)  # amplitude under which the end of the audio counts as silence
@@ -59,20 +60,31 @@ def _hash(*parts) -> int:
 
 
 def load_pairs(directory: Path) -> list[dict]:
-    """Every pair of every `*.jsonl` in `directory` (any split), each id once, sorted by id."""
-    pairs, seen = [], set()
+    """Every pair of every `*.jsonl` in `directory` (any split), each id once, sorted by id.
+
+    An id can be in several files (an aggregate `pairs.jsonl` next to `train/dev/test.jsonl`).
+    The copy with its own `split` field wins, then one from a file named after a split, then any
+    other, so an aggregate without splits can never relabel a dev or test pair as train.
+    """
+    best: dict[str, tuple[int, dict]] = {}
     for path in sorted(directory.glob("*.jsonl")):
         for row in read_jsonl(path):
             if not row.get("digits") or not row.get("cardinal"):
                 continue
-            if row["id"] in seen:
+            rank = 2 if row.get("split") else int(path.stem in SPLIT_NAMES)
+            if row["id"] in best and best[row["id"]][0] >= rank:
                 continue
-            seen.add(row["id"])
             row.setdefault("split", path.stem)
-            pairs.append(row)
-    if not pairs:
+            best[row["id"]] = (rank, row)
+    if not best:
         raise SystemExit(f"no pairs with `digits` and `cardinal` in {directory}/*.jsonl")
-    return sorted(pairs, key=lambda p: p["id"])
+    return sorted((row for _, row in best.values()), key=lambda p: p["id"])
+
+
+def sample_pairs(pairs: list[dict], count: int, seed: int) -> list[dict]:
+    """A seeded random subset of `count` pairs (for a canary), still sorted by id."""
+    chosen = sorted(pairs, key=lambda p: _hash(seed, "subset", p["id"]))[:count]
+    return sorted(chosen, key=lambda p: p["id"])
 
 
 def speaker_of(prompt: dict) -> str:
@@ -258,7 +270,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
     p.add_argument("--merge", action="store_true", help="fold shard files into train/valid.jsonl")
-    p.add_argument("--limit", type=int, help="stop after this many generated rows")
+    p.add_argument(
+        "--max-pairs",
+        type=int,
+        help="use only a seeded random subset of this many pairs (a canary); the speaker "
+        "assignment is then computed on the subset, so use a separate --out-dir",
+    )
+    p.add_argument("--limit", type=int, help="stop each process after this many generated rows")
     p.add_argument("--log-every", type=int, default=100)
     p.add_argument("--dry-run", action="store_true", help="show the assignment, generate nothing")
     args = p.parse_args(argv)
@@ -277,6 +295,8 @@ def main(argv: list[str] | None = None) -> None:
         merge_shards(args.out_dir)
         return
     pairs = load_pairs(args.pairs)
+    if args.max_pairs:
+        pairs = sample_pairs(pairs, args.max_pairs, args.seed)
     by_speaker = load_prompts(args.prompts, args.max_prompt_sec)
     chosen = assign(
         pairs, by_speaker, set(args.valid_splits.split(",")), args.valid_speaker_fraction, args.seed

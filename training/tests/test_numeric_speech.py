@@ -226,3 +226,25 @@ def test_shards_partition_the_work_and_merge(tmp_path, monkeypatch):
     assert len(_read(out / "train.jsonl")) == 6 and len(_read(out / "valid.jsonl")) == 1
     ns.main([*base, "--shard-index", "0"])  # merged rows still count as done
     assert not list(out.glob("*.shard-*"))
+
+
+def test_aggregate_file_without_splits_cannot_relabel_pairs(tmp_path):
+    def row(i, **extra):
+        return {"id": i, "digits": "1", "cardinal": "אחת", **extra}
+
+    # `pairs.jsonl` sorts before `test.jsonl`: it must not claim the test pair for itself.
+    (tmp_path / "pairs.jsonl").write_text(
+        "\n".join(json.dumps(row(i)) for i in ("a", "b", "c", "new"))
+    )
+    (tmp_path / "test.jsonl").write_text(json.dumps(row("b", split="test")))
+    (tmp_path / "train.jsonl").write_text(json.dumps(row("a")))  # split from the file name
+    (tmp_path / "dev.jsonl").write_text(json.dumps(row("c", split="dev")))
+    got = {p["id"]: p["split"] for p in ns.load_pairs(tmp_path)}
+    assert got == {"a": "train", "b": "test", "c": "dev", "new": "pairs"}
+
+
+def test_pair_subset_is_seeded_and_sorted():
+    pairs = [{"id": f"p{i:03d}", "split": "train"} for i in range(50)]
+    a = ns.sample_pairs(pairs, 10, seed=1)
+    assert a == ns.sample_pairs(pairs, 10, seed=1) and a != ns.sample_pairs(pairs, 10, seed=2)
+    assert [p["id"] for p in a] == sorted(p["id"] for p in a) and len(a) == 10
