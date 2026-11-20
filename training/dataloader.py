@@ -10,6 +10,9 @@ Rows with `words` are cut at a random word boundary and trained on the words aft
 that text per sample, see training/text_augment.py: `alt_words` (rewritten words swapped back
 for what the corpus wrote: digits, abbreviations, punctuation, ...) and `nikud` (a vocalized form of each word). Rows without
 them behave exactly as before and consume no random numbers.
+
+A row with `prompt_end` (seconds) is cut exactly there: the audio before is the voice prompt, the
+audio after is the target, the text is `transcript`. No `words` are needed (NUMERIC_SPEECH.md).
 """
 
 import json
@@ -63,6 +66,11 @@ class Entry:
     # (`tail_gap`, written by build_official_manifest and kept true by the aligner). None: the
     # row does not say, and the tail is whatever the row's own duration holds.
     tail_gap: int | None = None
+    # Seconds from the row start where the voice prompt ends and the target begins. Set by
+    # synthetic rows that were built as prompt + generated speech (hebrew_training/
+    # numeric_speech.py): the loader cuts exactly there, never searches for a cut, and trains
+    # on `transcript` as written. None: the usual word-boundary cut.
+    prompt_end: float | None = None
 
 
 @dataclass
@@ -225,6 +233,8 @@ class DataLoader:
         # validation row a different cut from one evaluation to the next. A `fixed_draws`
         # loader gives each row its own generator instead, so the cut depends on the row only.
         rng = self.rng if entry.cut_seed is None else random.Random(f"cut:{entry.cut_seed}")
+        if entry.prompt_end is not None:
+            return self._sample_fixed_cut(entry)
         if entry.words:
             # Cut the utterance at a random point between two aligned words:
             # audio before the cut = voice conditioning, audio after = target,
@@ -295,6 +305,35 @@ class DataLoader:
         )
         return wav, tokens, prompt, length, text
 
+    def _sample_fixed_cut(
+        self, entry: Entry
+    ) -> tuple[np.ndarray, torch.Tensor, np.ndarray, int, str]:
+        """A row that names its own cut: prompt = [0, prompt_end), target = [prompt_end, end).
+
+        Nothing is searched or drawn. The row's audio is the prompt followed by speech
+        generated for `transcript`, so the target is everything after the cut (up to
+        `max_duration_sec`) and the prompt must not be shortened: a prompt over
+        `max_voice_prompt_sec` is an error rather than a silent truncation.
+        """
+        cut = entry.prompt_end
+        if not 0 < cut < entry.duration:
+            raise ValueError(f"prompt_end {cut} outside (0, {entry.duration}) in {entry.path}")
+        if 0 < self.max_voice_prompt_sec < cut:
+            raise ValueError(
+                f"prompt_end {cut} exceeds max_voice_prompt_sec {self.max_voice_prompt_sec}"
+            )
+        tokens = torch.tensor(self.tokenize(entry.transcript), dtype=torch.long)
+        wav = _load_window(
+            entry.path,
+            entry.start + cut,
+            min(entry.duration - cut, self.max_duration_sec),
+            self.sample_rate,
+        )
+        prompt, length = self._cap_prompt(
+            _load_window(entry.path, entry.start, cut, self.sample_rate)
+        )
+        return wav, tokens, prompt, length, entry.transcript
+
     def get_entry(self, index: int) -> Entry:
         d = json.loads(self.entries[index])
         start = float(d.get("start", 0.0))
@@ -318,6 +357,7 @@ class DataLoader:
             text_seed,
             cut_seed,
             tail_gap=d.get("tail_gap"),
+            prompt_end=d.get("prompt_end"),
         )
 
     def _sample_or_none(self, entry: Entry) -> tuple | None:

@@ -307,10 +307,23 @@ class ManifestIndex:
                         {"original_index": None, "alternative_index": b} for b in range(b0, b1)
                     )
 
+        # Fixed-cut rows (build_numeric_speech_manifest): the audio is voice prompt + target and
+        # `prompt_end` is where the training loader cuts. Shown as given, never re-derived.
+        prompt_end = None
+        raw_cut = row.get("prompt_end")
+        if isinstance(raw_cut, (int, float)) and not isinstance(raw_cut, bool):
+            if 0 < raw_cut < duration:
+                prompt_end = round(float(raw_cut), 4)
+            else:
+                logger.warning("prompt_end outside the row in %s line %d", self.path, index + 1)
+
         return {
             "index": index,
             "line_number": index + 1,
             "total_samples": self.count,
+            "prompt_end": prompt_end,
+            "prompt_end_audio": None if prompt_end is None else round(pre_padding + prompt_end, 4),
+            "cardinal": row.get("cardinal"),
             "manifest_name": self.path.name,
             "manifest_path": str(self.path),
             "audio_path": str(resolved_path),
@@ -1169,6 +1182,14 @@ HTML_UI = """<!DOCTYPE html>
             ▶ Last Word + Tail
           </button>
 
+          <!-- Fixed-cut rows only (`prompt_end`): the exact pieces the loader hands the model -->
+          <button id="play-prompt-btn" class="hidden px-3.5 py-2 bg-orange-600 hover:bg-orange-500 text-white font-semibold rounded-lg text-xs transition" title="Audio before the cut: the voice prompt">
+            ▶ Prompt
+          </button>
+          <button id="play-target-btn" class="hidden px-3.5 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-semibold rounded-lg text-xs transition" title="Audio after the cut: what the model is trained to produce">
+            ▶ Target
+          </button>
+
           <!-- Play Full with Padding -->
           <button id="play-full-btn" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-md shadow-indigo-600/30 transition">
             <span id="play-full-icon">▶</span>
@@ -1378,6 +1399,8 @@ HTML_UI = """<!DOCTYPE html>
     const playSampleBtn = document.getElementById('play-sample-btn');
     const playSampleIcon = document.getElementById('play-sample-icon');
     const playFullBtn = document.getElementById('play-full-btn');
+    const playPromptBtn = document.getElementById('play-prompt-btn');
+    const playTargetBtn = document.getElementById('play-target-btn');
     const playFullIcon = document.getElementById('play-full-icon');
     const stopBtn = document.getElementById('stop-btn');
     const loopBtn = document.getElementById('loop-btn');
@@ -1504,7 +1527,43 @@ HTML_UI = """<!DOCTYPE html>
     }
 
     // Render metadata tags
+    // A row with an exact prompt/target cut (`prompt_end`), not a loader-chosen one.
+    function hasFixedCut() {
+      return !!currentSample && currentSample.prompt_end_audio != null;
+    }
+
+    // Colors the peaks and the cut marker of such a row: orange = prompt, the sample colour = target.
+    function peakColor(isSample, pxStart, pxEnd, defaultColor) {
+      if (hasFixedCut() && isSample && pxEnd <= currentSample.prompt_end_audio) return '#f97316';
+      return defaultColor;
+    }
+
+    function drawCutMarker(ctx, totalDur, width, bottom, labelY) {
+      if (!hasFixedCut()) return;
+      const x = (currentSample.prompt_end_audio / totalDur) * width;
+      ctx.save();
+      ctx.strokeStyle = '#e879f9';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+      if (labelY) {
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.fillStyle = '#f97316';
+        ctx.textAlign = 'right';
+        ctx.fillText(`PROMPT ${currentSample.prompt_end.toFixed(3)}s ▎`, x - 6, labelY);
+        ctx.fillStyle = '#e879f9';
+        ctx.textAlign = 'left';
+        ctx.fillText('▎ CUT → TARGET', x + 6, labelY);
+      }
+      ctx.restore();
+    }
+
     function renderSampleMetadata(data) {
+      const fixed = data.prompt_end_audio != null;
+      playPromptBtn.classList.toggle('hidden', !fixed);
+      playTargetBtn.classList.toggle('hidden', !fixed);
       speakerBadge.textContent = data.speaker || 'unknown';
       audioFilenameBadge.textContent = data.audio_filename;
       audioFilenameBadge.title = data.audio_path;
@@ -1583,7 +1642,16 @@ HTML_UI = """<!DOCTYPE html>
         variantTranscript.appendChild(token);
         i = last + 1;
       }
-      if (!words.length) variantTranscript.textContent = '(No aligned words)';
+      if (!words.length) {
+        // No words: a fixed-cut row's text is its `transcript` (digits), next to what was spoken.
+        variantTranscript.textContent = currentSample.transcript || '(No aligned words)';
+        if (currentSample.cardinal) {
+          const spoken = document.createElement('div');
+          spoken.className = 'basis-full text-sm text-slate-400';
+          spoken.textContent = `spoken: ${currentSample.cardinal}`;
+          variantTranscript.appendChild(spoken);
+        }
+      }
       if (!spans.length) {
         normControls.textContent = 'No norms available for this row.';
         normControls.className = 'flex flex-wrap gap-2 text-xs text-slate-400';
@@ -1920,7 +1988,7 @@ HTML_UI = """<!DOCTYPE html>
           const pxStart = (x / width) * totalDur;
           const pxEnd = ((x + 1) / width) * totalDur;
           const isSample = pxEnd > prePad && pxStart < sampleEnd;
-          ctx.fillStyle = isSample ? '#818cf8' : '#475569';
+          ctx.fillStyle = peakColor(isSample, pxStart, pxEnd, isSample ? '#818cf8' : '#475569');
 
           const yLow = (1 + min) * amp;
           const yHigh = Math.max(1, (max - min) * amp);
@@ -1941,6 +2009,7 @@ HTML_UI = """<!DOCTYPE html>
       ctx.moveTo(xSampleEnd, 0);
       ctx.lineTo(xSampleEnd, height);
       ctx.stroke();
+      drawCutMarker(ctx, totalDur, width, height, 0);
 
       // Playhead in overview
       if (currentPlaybackSec !== null && currentPlaybackSec >= 0) {
@@ -2056,6 +2125,7 @@ HTML_UI = """<!DOCTYPE html>
           } else {
             ctx.fillStyle = '#475569'; // Muted slate for padding
           }
+          ctx.fillStyle = peakColor(isSample, pxStart, pxEnd, ctx.fillStyle);
 
           // If inside hovered word
           if (hoveredWordIndex !== null && getViewerWords()[hoveredWordIndex]) {
@@ -2099,6 +2169,7 @@ HTML_UI = """<!DOCTYPE html>
 
       ctx.fillStyle = '#94a3b8';
       ctx.fillText(`POST-PAD ▶`, xSampleEnd + 8, 14);
+      drawCutMarker(ctx, totalDur, width, waveHeight + wordTrackHeight, 28);
 
       // 4. Draw Word Blocks in Word Track
       const trackY = waveHeight;
@@ -2543,6 +2614,12 @@ HTML_UI = """<!DOCTYPE html>
        playSampleBtn.addEventListener('click', playSampleOnly);
        lastWordBtn.addEventListener('click', playLastWordWithTail);
        playFullBtn.addEventListener('click', playFullAudio);
+      playPromptBtn.addEventListener('click', () => {
+        if (hasFixedCut()) playRange(currentSample.sample_audio_start, currentSample.prompt_end_audio, 'word');
+      });
+      playTargetBtn.addEventListener('click', () => {
+        if (hasFixedCut()) playRange(currentSample.prompt_end_audio, currentSample.sample_audio_end, 'word');
+      });
       stopBtn.addEventListener('click', stopAudio);
 
       loopBtn.addEventListener('click', () => {

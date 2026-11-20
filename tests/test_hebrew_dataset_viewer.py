@@ -474,3 +474,41 @@ def test_calibration_fastapi_endpoints():
     res = client.post("/api/set_manifest", json={"path": "calibrate"})
     assert res.status_code == 200
     assert res.json()["is_calibration"] is True
+
+
+def _fixed_cut_manifest(tmp_path: Path, prompt_end) -> Path:
+    wav = tmp_path / "audio" / "ab" / "x.wav"
+    wav.parent.mkdir(parents=True)
+    _create_synthetic_wav(wav, duration_sec=8.0)
+    row = {
+        "path": str(wav),
+        "start": 0.0,
+        "duration": 8.0,
+        "prompt_end": prompt_end,
+        "transcript": "עד 143 משתתפים",
+        "cardinal": "עד מאה ארבעים ושלושה משתתפים",
+        "speaker": "spk",
+    }
+    manifest = tmp_path / "train.jsonl"
+    manifest.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    return manifest
+
+
+def test_fixed_cut_row_reports_the_exact_cut(tmp_path: Path):
+    index = dv.ManifestIndex(_fixed_cut_manifest(tmp_path, 3.5))
+    data = index.get_sample_data(0, padding=3.0)
+    assert data["prompt_end"] == 3.5
+    assert data["prompt_end_audio"] == data["pre_padding"] + 3.5  # no pre-padding at start 0
+    assert data["words"] == [] and data["transcript"] == "עד 143 משתתפים"
+    assert data["cardinal"].startswith("עד מאה")
+
+
+@pytest.mark.parametrize("bad", [0, 8.0, 9.0, -1, "3", None, True])
+def test_fixed_cut_outside_the_row_is_not_shown(tmp_path: Path, bad):
+    data = dv.ManifestIndex(_fixed_cut_manifest(tmp_path, bad)).get_sample_data(0)
+    assert data["prompt_end"] is None and data["prompt_end_audio"] is None
+
+
+def test_page_has_the_prompt_and_target_controls():
+    for needle in ('id="play-prompt-btn"', 'id="play-target-btn"', "prompt_end_audio"):
+        assert needle in dv.HTML_UI

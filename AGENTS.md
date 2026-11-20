@@ -191,6 +191,12 @@ Read `HEBREW_TRAINING.md` and `TODO.md` before changing or running it.
   download the audio repo wholesale (1.1 TiB). See `hebrew_training/AUDIO_V2.md`. Its rating tool
   (`hebrew_training/audio_v2_tagger/`, FastAPI + xgboost) has its own uv project and must not import
   torch/`pocket_tts`; run it with `uv run --project hebrew_training/audio_v2_tagger`.
+- Numeric-speech (`hebrew_training/build_numeric_speech_manifest.py`, NUMERIC_SPEECH.md):
+  synthetic rows of prompt WAV + Pocket-TTS speech of a pair's cardinal text, trained with its
+  digits text. Rows carry a `prompt_end` sentinel (seconds) and no `words`; `training/dataloader.py`
+  cuts exactly there instead of searching for a cut, and the dataset viewer draws it. The builder
+  splits the library's speakers into train/valid itself (never shared) and deals a different
+  speaker to each pair; `--num-shards`/`--merge` for multi-GPU server runs.
 - The recommended next command is `run_hebrew_v3_ablation.ps1`. It compares flow/m1,
   flow/m8, and FM-LSD/m8 from the same released 6-layer base before any longer run.
 - `run_hebrew_v3_fmlsd_training.ps1 -Smoke` passed a real 30-step optimization/validation
