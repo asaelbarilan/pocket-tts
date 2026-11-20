@@ -2,7 +2,7 @@
 
 Input: numeric pairs (`digits` / `cardinal`, same meaning; `data_local/numeric_pairs/*.jsonl`) and
 a voice prompt library (`python -m hebrew_training.voice_prompts extract`). For every pair, a
-prompt is drawn from the library, Pocket-TTS speaks the CARDINAL text in that voice (the form the
+prompt is drawn from the library, the Hebrew model speaks the CARDINAL text in that voice (the form the
 model reads well), and the row stores `prompt WAV + generated WAV` as one file. The row's text is
 the DIGITS form, so training teaches the model to say digits the way it says the cardinal.
 
@@ -12,8 +12,7 @@ no `words`.
 
     uv run python -m hebrew_training.build_numeric_speech_manifest \
         --pairs data_local/numeric_pairs --prompts data_local/voice_prompts_out \
-        --out-dir data_local/numeric_speech --config pocket_tts/config/hebrew.yaml \
-        [--checkpoint runs/.../checkpoint.pt] [--device cuda]
+        --out-dir data_local/numeric_speech --config artifacts/hebrew_24l.yaml --device cuda
 
 `OUT_DIR` gets `audio/<id[:2]>/<id>.wav`, `train.jsonl`, `valid.jsonl` and `failures.jsonl`.
 
@@ -167,7 +166,8 @@ class NoEosWatch(logging.Handler):
         self.hit = False
 
     def emit(self, record: logging.LogRecord) -> None:
-        if "without EOS" in record.getMessage():
+        message = record.getMessage()
+        if "without EOS" in message or "EOS never fired" in message:
             self.hit = True
 
 
@@ -267,15 +267,36 @@ def read_prompt(path: str, sr: int) -> np.ndarray:
     return audio
 
 
+def load_tts(config: str, device: str, encoder_dirs: list[str] | None):
+    """The deploy server's sampler (`HebrewTTS`): classifier-free guidance and the EOS countdown,
+    which `TTSModel.generate_audio` does not have. It changes into the project root, so every
+    path given on the command line is made absolute first (see `main`)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "deploy"))
+    from hebrew_tts_infer import HebrewTTS
+
+    return HebrewTTS(config, device, encoder_dirs)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--pairs", type=Path, help="directory of pair *.jsonl files")
     p.add_argument("--prompts", type=Path, help="voice prompt library directory")
     p.add_argument("--out-dir", type=Path, required=True, help="gets audio/ and the jsonl files")
-    p.add_argument("--language", help="a predefined language config (e.g. english)")
-    p.add_argument("--config", help="model YAML (e.g. pocket_tts/config/hebrew.yaml)")
-    p.add_argument("--checkpoint", help="training checkpoint (.pt) to speak with")
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--config", help="model YAML, as deploy/hebrew_tts_infer.py takes it")
+    p.add_argument(
+        "--semantic-encoder-dir", nargs="+", help="local semantic encoder dirs (config order)"
+    )
+    p.add_argument("--device", default="cuda")
+    gen = p.add_argument_group(
+        "generation (the deploy server's sampler, deploy/hebrew_tts_infer.py)"
+    )
+    gen.add_argument("--temp", type=float, default=0.3)
+    gen.add_argument("--cfg", type=float, default=2.0, help="classifier-free guidance")
+    gen.add_argument("--decode-steps", type=int, default=1)
+    gen.add_argument("--eos-threshold", type=float, default=-4.0)
+    gen.add_argument("--eos-countdown", type=int, default=5, help="frames kept after EOS fires")
+    gen.add_argument("--max-seconds", type=float, default=30.0)
+    gen.add_argument("--prompt-seconds", type=float, default=5.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--valid-splits", default="dev,test", help="pair splits that go to valid.jsonl")
     p.add_argument(
@@ -286,13 +307,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--max-prompt-sec", type=float, default=5.0, help="loader's max_voice_prompt_sec"
-    )
-    p.add_argument(
-        "--max-tokens",
-        type=int,
-        default=400,
-        help="text tokens per generated chunk; texts over it are split and spoken in pieces, so "
-        "keep it above the longest pair to get one utterance per pair",
     )
     p.add_argument(
         "--drop-no-eos",
@@ -317,8 +331,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("--shard-index must be in [0, --num-shards)")
     if not args.merge and not (args.pairs and args.prompts):
         p.error("--pairs and --prompts are required")
-    if args.config and args.language:
-        p.error("pass --config or --language, not both")
+    if not args.merge and not args.dry_run and not args.config:
+        p.error("--config is required to generate")
     return args
 
 
@@ -327,6 +341,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.merge:
         merge_shards(args.out_dir)
         return
+    args.pairs, args.prompts, args.out_dir = (
+        path.resolve() if path else path for path in (args.pairs, args.prompts, args.out_dir)
+    )
     pairs = load_pairs(args.pairs)
     if args.max_pairs:
         pairs = sample_pairs(pairs, args.max_pairs, args.seed)
@@ -349,17 +366,12 @@ def main(argv: list[str] | None = None) -> None:
             print(pair["id"], "->", side, speaker_of(prompt), prompt["id"], prompt["duration"], "s")
         return
 
-    from pocket_tts import TTSModel
-
-    model = TTSModel.load_model(
-        language=args.language, config=args.config, checkpoint=args.checkpoint
-    )
-    model.to(args.device).eval()
-    sr = model.sample_rate
+    tts = load_tts(str(Path(args.config).resolve()), args.device, args.semantic_encoder_dir)
+    sr = tts.sample_rate
     suffix = "" if args.num_shards == 1 else f".shard-{args.shard_index}"
 
     watch = NoEosWatch()
-    logging.getLogger("pocket_tts.models.tts_model").addHandler(watch)
+    logging.getLogger("hebrew_tts_infer").addHandler(watch)
     written, started = 0, time.monotonic()
     for pair in todo:
         if args.limit is not None and written >= args.limit:
@@ -367,14 +379,21 @@ def main(argv: list[str] | None = None) -> None:
         side, prompt = chosen[pair["id"]]
         watch.hit = False
         try:
-            state = model.get_state_for_audio_prompt(prompt["audio"])
-            speech = (
-                model.generate_audio(state, pair["cardinal"], max_tokens=args.max_tokens)
-                .detach()
-                .cpu()
-                .numpy()
-                .reshape(-1)
+            voice = tts.encode_voice(prompt["audio"], args.prompt_seconds)
+            wave = tts.synthesize(
+                pair["cardinal"],
+                voice,
+                temp=args.temp,
+                cfg=args.cfg,
+                n_steps=args.decode_steps,
+                eos_threshold=args.eos_threshold,
+                eos_countdown=args.eos_countdown,
+                max_seconds=args.max_seconds,
+                seed=_hash(args.seed, "generate", pair["id"]) % 2**31,
             )
+            if wave is None:
+                raise RuntimeError("the model ended speech at once (no frames)")
+            speech = wave.numpy()
             if watch.hit and args.drop_no_eos:
                 raise RuntimeError("no_eos: generation hit the length cap without EOS")
             row = build_row(

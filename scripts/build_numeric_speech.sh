@@ -4,7 +4,7 @@
 # The model generates one sample at a time (batch size 1) and is latency-bound, so one process
 # leaves a GPU mostly idle; several processes per GPU is the batching. Each process is a shard.
 #
-#   OUT_DIR=/tmp/numeric-canary PAIRS=... PROMPTS=... CONFIG=... CHECKPOINT=... \
+#   OUT_DIR=/tmp/numeric-canary PAIRS=... PROMPTS=... CONFIG=... \
 #   PROCS_PER_GPU=2 scripts/build_numeric_speech.sh --max-pairs 100
 #
 # Extra arguments go to every process. GPUS="0 1 2" picks GPUs (default: all).
@@ -22,7 +22,6 @@ mkdir -p "$OUT_DIR/logs"
 
 model_args=()
 [[ -n "${CONFIG:-}" ]] && model_args+=(--config "$CONFIG")
-[[ -n "${CHECKPOINT:-}" ]] && model_args+=(--checkpoint "$CHECKPOINT")
 
 pids=()
 shard=0

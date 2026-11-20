@@ -143,26 +143,18 @@ def test_build_row_names_the_exact_cut(tmp_path):
     assert sr == SR and wav.shape[-1] == int(4.2 * SR)
 
 
-class _FakeModel:
+class _FakeTTS:
     sample_rate = SR
+    calls: ClassVar[list] = []
 
-    @classmethod
-    def load_model(cls, **_):
-        return cls()
+    def encode_voice(self, path, prompt_seconds):
+        return (path, prompt_seconds)
 
-    def to(self, _):
-        return self
-
-    def eval(self):
-        return self
-
-    def get_state_for_audio_prompt(self, path):
-        return path
-
-    def generate_audio(self, state, text, max_tokens):
+    def synthesize(self, text, voice, **kwargs):
         import torch
 
         assert "143" not in text  # the model is fed the cardinal form
+        self.calls.append({"voice": voice, **kwargs})
         return torch.full((SR,), 0.1)
 
 
@@ -190,12 +182,15 @@ def _read(path):
 
 
 def test_main_writes_split_manifests_and_resumes(tmp_path, monkeypatch):
-    import pocket_tts
-
-    monkeypatch.setattr(pocket_tts, "TTSModel", _FakeModel)
+    monkeypatch.setattr(ns, "load_tts", lambda *a: _FakeTTS())
+    _FakeTTS.calls = []
     out = tmp_path / "out"
-    argv = [*_dataset(tmp_path), "--out-dir", str(out)]
+    argv = [*_dataset(tmp_path), "--out-dir", str(out), "--config", "x.yaml"]
     ns.main(argv)
+    call = _FakeTTS.calls[0]  # the requested sampler settings reach the model
+    assert call["voice"][1] == 5.0
+    assert (call["temp"], call["cfg"], call["n_steps"]) == (0.3, 2.0, 1)
+    assert (call["eos_threshold"], call["eos_countdown"], call["max_seconds"]) == (-4.0, 5, 30.0)
     train, valid = _read(out / "train.jsonl"), _read(out / "valid.jsonl")
     assert len(train) == 6 and [r["id"] for r in valid] == ["d1"]
     assert not {r["speaker"] for r in train} & {r["speaker"] for r in valid}
@@ -212,11 +207,9 @@ def _read_ok(path):
 
 
 def test_shards_partition_the_work_and_merge(tmp_path, monkeypatch):
-    import pocket_tts
-
-    monkeypatch.setattr(pocket_tts, "TTSModel", _FakeModel)
+    monkeypatch.setattr(ns, "load_tts", lambda *a: _FakeTTS())
     out = tmp_path / "out"
-    base = [*_dataset(tmp_path), "--out-dir", str(out), "--num-shards", "2"]
+    base = [*_dataset(tmp_path), "--out-dir", str(out), "--config", "x", "--num-shards", "2"]
     ns.main([*base, "--shard-index", "0"])
     ns.main([*base, "--shard-index", "1"])
     ids = [r["id"] for f in out.glob("*.shard-*.jsonl") for r in _read(f)]
@@ -260,6 +253,9 @@ def test_no_eos_warning_is_noticed():
         log.warning("something else")
         assert not watch.hit
         log.warning("Maximum generation length reached without EOS, this very often ...")
+        assert watch.hit
+        watch.hit = False
+        log.warning("hit max length (30 s): EOS never fired")
         assert watch.hit
     finally:
         log.removeHandler(watch)
