@@ -8,7 +8,9 @@
 #   PROCS_PER_GPU=2 scripts/build_numeric_speech.sh --max-pairs 100
 #
 # Extra arguments go to every process. GPUS="0 1 2" picks GPUs (default: all).
-# A rerun resumes (finished ids are skipped); logs are in $OUT_DIR/logs.
+# Interrupt-safe: Ctrl-C or `kill <launcher pid>` stops every worker and exits 130 without merging.
+# A rerun resumes (finished ids are skipped, a half-written row is redone); logs are in
+# $OUT_DIR/logs and are appended to across runs.
 set -euo pipefail
 
 : "${OUT_DIR:?}" "${PAIRS:?}" "${PROMPTS:?}"
@@ -24,13 +26,20 @@ model_args=()
 [[ -n "${CONFIG:-}" ]] && model_args+=(--config "$CONFIG")
 
 pids=()
+interrupted=0
+stop() {
+  interrupted=1
+  echo "interrupted: stopping ${#pids[@]} workers" >&2
+  kill "${pids[@]}" 2>/dev/null || true
+}
+trap stop INT TERM HUP
 shard=0
 for gpu in "${GPU_LIST[@]}"; do
   for ((p = 0; p < PROCS_PER_GPU; p++)); do
     CUDA_VISIBLE_DEVICES="$gpu" "$PY" -m hebrew_training.build_numeric_speech_manifest \
       --pairs "$PAIRS" --prompts "$PROMPTS" --out-dir "$OUT_DIR" "${model_args[@]}" \
       --device cuda --num-shards "$TOTAL" --shard-index "$shard" "$@" \
-      > "$OUT_DIR/logs/shard-$shard.log" 2>&1 &
+      >> "$OUT_DIR/logs/shard-$shard.log" 2>&1 &
     pids+=($!)
     shard=$((shard + 1))
   done
@@ -39,6 +48,11 @@ echo "started $TOTAL processes on GPUs: $GPUS (logs: $OUT_DIR/logs)"
 
 status=0
 for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+if [[ $interrupted -eq 1 ]]; then
+  wait 2>/dev/null || true
+  echo "stopped before merging; rerun the same command to resume" >&2
+  exit 130
+fi
 [[ $status -eq 0 ]] || echo "some shards failed: see $OUT_DIR/logs" >&2
 
 "$PY" -m hebrew_training.build_numeric_speech_manifest --out-dir "$OUT_DIR" --merge
