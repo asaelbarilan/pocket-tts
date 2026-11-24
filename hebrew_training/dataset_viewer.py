@@ -32,7 +32,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 try:
     import soundfile as sf
@@ -839,6 +839,25 @@ async def get_audio_slice(index: int, padding: float = Query(3.0, ge=0.0, le=10.
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/download/{index}")
+async def download_audio(index: int) -> Response:
+    """The sample's whole audio file (not the padded slice the player uses), as an attachment."""
+    st = get_state()
+    idx = st.current_index
+    if index < 0 or index >= len(idx):
+        raise HTTPException(status_code=404, detail=f"Index {index} out of range")
+
+    if st.is_calibration:
+        wav_bytes = st.calibration_dataset.get_audio_bytes(index)
+        headers = {"Content-Disposition": f'attachment; filename="calibration_{index}.wav"'}
+        return Response(content=wav_bytes, media_type="audio/wav", headers=headers)
+
+    audio_path = Path(idx.get_sample_data(index)["audio_path"])
+    if not audio_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Audio file not found: {audio_path}")
+    return FileResponse(audio_path, filename=audio_path.name)
+
+
 # ---------------------------------------------------------------------------
 # Single-Page Frontend HTML/JS/CSS
 # ---------------------------------------------------------------------------
@@ -1188,6 +1207,10 @@ HTML_UI = """<!DOCTYPE html>
           </button>
           <button id="play-target-btn" class="hidden px-3.5 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-semibold rounded-lg text-xs transition" title="Audio after the cut: what the model is trained to produce">
             ▶ Target
+          </button>
+
+          <button id="download-btn" class="px-3.5 py-2 bg-slate-600 hover:bg-slate-500 text-white font-semibold rounded-lg text-xs transition" title="Download the whole audio file of this sample">
+            ⬇ Download
           </button>
 
           <!-- Play Full with Padding -->
@@ -2619,6 +2642,14 @@ HTML_UI = """<!DOCTYPE html>
       });
       playTargetBtn.addEventListener('click', () => {
         if (hasFixedCut()) playRange(currentSample.prompt_end_audio, currentSample.sample_audio_end, 'word');
+      });
+      document.getElementById('download-btn').addEventListener('click', () => {
+        if (!currentSample) return;
+        const a = document.createElement('a');
+        a.href = `/api/download/${currentSample.index}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       });
       stopBtn.addEventListener('click', stopAudio);
 

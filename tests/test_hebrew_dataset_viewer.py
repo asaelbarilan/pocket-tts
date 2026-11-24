@@ -339,6 +339,14 @@ def test_fastapi_endpoints(temp_dataset):
     assert "X-Pre-Padding" in res.headers
     assert len(res.content) > 0
 
+    # Download: the whole file, not the padded slice
+    assert 'id="download-btn"' in client.get("/").text
+    res = client.get("/api/download/0")
+    assert res.status_code == 200
+    assert res.content == Path(sample0["audio_path"]).read_bytes()
+    assert "attachment" in res.headers["content-disposition"]
+    assert client.get("/api/download/999").status_code == 404
+
 
 def test_switch_manifest(temp_dataset, tmp_path: Path):
     dv.state = dv.ServerState(default_manifest=temp_dataset["manifest"])
