@@ -182,6 +182,16 @@ def setup(config_path: str) -> Run:
     ckpt = latest_checkpoint(run_dir)
     if ckpt is not None:
         start_step = load_checkpoint(ckpt, model, optimizer, ema)
+    elif args.init_checkpoint:
+        source = Path(args.init_checkpoint)
+        if not source.is_file():
+            raise FileNotFoundError(f"init_checkpoint not found: {source}")
+        load_checkpoint(source, model)
+        # The EMA must begin at the seeded weights, not the English model's init.
+        if ema is not None:
+            ema = EMA(model, args.ema_decay)
+        if rank == 0:
+            logger.info("initialized model from %s; optimizer and step start fresh", source)
     progress.log(
         "run_start",
         start_step,

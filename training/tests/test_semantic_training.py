@@ -406,6 +406,26 @@ def test_combined_90k_curriculum_config():
     assert args.num_ckpt_keep >= args.max_steps // args.ckpt_freq
 
 
+def test_numeric_continuation_config():
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    args = load_args(configs / "finetune_hebrew_numeric_15k.yaml")
+    assert args.init_checkpoint == "runs/finetune_hebrew_semantic_both_90k/checkpoint_00130000.pt"
+    assert not args.start_from_pretrained and not args.reset_text_embedding
+    assert [p["steps"] for p in args.data.curriculum] == [500, 748]
+    assert "numeric_speech" not in args.data.curriculum[0]["mix"]
+    assert sum(args.data.curriculum[1]["mix"].values()) == 100
+    assert args.data.curriculum[1]["mix"]["numeric_speech"] == 30
+    assert 1.5 <= 748 * 64 * 0.30 / 9566 < 1.51
+    assert args.max_steps == args.data.resolve_curriculum().total_steps == 1248
+    assert args.optim.warmup_steps == args.valid_freq == 500
+    assert args.sample_freq == 250
+    assert args.ckpt_freq == 1000
+    assert not args.data.curriculum_checkpoint_at_phase_end
+    assert len(args.semantic_conditioners) == 2
+    assert args.stats_ema_steps == 0
+    assert len(args.sample_sentences) == 8
+
+
 def test_combined_loss_equals_plain_loss_at_init(sp):
     plain, combined = trainable(sp, None), trainable(sp, combined_configs())
     combined.load_state_dict(plain.state_dict(), strict=False)

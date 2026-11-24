@@ -1,0 +1,125 @@
+# Continue the combined-semantic 24-layer model from its raw step-130000 checkpoint.
+# Fresh optimizer, step counter and EMA; Mimi stays frozen. Do not use `--resume`
+# against the old run: the curriculum here begins at step 1.
+# The five numeric listening probes below were approved by the user.
+model_config: pocket_tts/config/english_2026-04_24l.yaml
+model_overrides:
+  flow_lm.lookup_table.tokenizer_path: artifacts/tokenizer-he-en-niqqud/selected/tokenizer.model
+start_from_pretrained: false
+reset_text_embedding: false
+init_checkpoint: runs/finetune_hebrew_semantic_both_90k/checkpoint_00130000.pt
+
+semantic_conditioners:
+  - encoder: dictabert
+    model_name: dicta-il/dictabert-large
+    revision: a972ffb612c03bcfb128f10f5ef4462f7adb9844
+    hidden_size: 1024
+    first_layer: 8
+    last_layer: 20
+    gate: scalar
+    gate_hidden: 256
+    max_tokens: 512
+  - encoder: renikud_plus
+    model_name: notmax123/RenikudPlus
+    revision: 679c56ca449d41873fb8ff7711ddf7563d28198f
+    filename: model.onnx
+    hidden_size: 1024
+    first_layer: 8
+    last_layer: 20
+    gate: scalar
+    gate_hidden: 256
+    max_tokens: 2048
+    onnx_threads: 1
+    onnx_provider: cuda
+semantic_lr_scale: 3.0
+
+data:
+  datasets:
+    committee:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/committee/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/committee/valid_aligned.jsonl
+      valid_weight: 0.45
+    plenum:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/plenum/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/plenum/valid_aligned.jsonl
+      valid_weight: 0.25
+    recital:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/recital/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/recital/valid_aligned.jsonl
+      valid_weight: 0.08
+    crowd:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/train_aligned.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/crowd_transcribe_v5/valid_aligned.jsonl
+      valid_weight: 0.10
+    hifitts2:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/hifitts2/valid.jsonl
+      valid_weight: 0.07
+    libritts_r:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/libritts_r/valid.jsonl
+      valid_weight: 0.05
+    audio_v2:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/audio_v2/model3-manifest/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/audio_v2/model3-manifest/valid.jsonl
+      valid_weight: 0.10
+    numeric_speech:
+      train_jsonl: /mlspeech/hebrew/pockettts-data/numeric-speech/train.jsonl
+      valid_jsonl: /mlspeech/hebrew/pockettts-data/numeric-speech/valid.jsonl
+      valid_weight: 0.47
+  curriculum:
+    # Preserve the previous run's last mix while the new optimizer warms up.
+    - steps: 500
+      mix: {committee: 27.3255, plenum: 20.6231, crowd: 3.609, hifitts2: 1.5467, libritts_r: 0.5156, audio_v2: 45.9801, recital: 0.4}
+    # 748 * (8 GPUs * 8 examples) * 0.30 / 9566 = 1.5013 numeric epochs.
+    - steps: 748
+      mix: {numeric_speech: 30, plenum: 20, committee: 20, audio_v2: 21, crowd: 3, recital: 1, libritts_r: 3, hifitts2: 2}
+  # Save only at step 1000 and at completion; validation still runs at phase ends.
+  curriculum_checkpoint_at_phase_end: false
+  max_duration_sec: 30.0
+  max_voice_prompt_sec: 5.0
+  alt_words_sample_prob: 1.0
+  alt_word_swap_prob: 0.7
+  nikud_word_prob: 0.3
+
+flow: {type: lsd, kwargs: {}}
+optim:
+  lr: 2e-4
+  schedule: cosine
+  warmup_steps: 500
+  lr_min_ratio: 0.1
+run_dir: runs/finetune_hebrew_numeric_15k
+batch_size: 8
+grad_accum_steps: 1
+max_steps: 1248
+seed: 42
+flow_batch_multiplier: 4
+eos_loss_weight: 0.1
+text_dropout: 0.2
+voice_dropout: 0.2
+stats_ema_steps: 0
+stats_ema_decay: 0.999
+log_freq: 50
+valid_freq: 500
+compile: false
+# Numeric valid has 434 rows, enough for six full batches per rank. Twenty
+# validation batches give it a meaningful (~30%) weight without repeated rows.
+num_valid_batches: 20
+sample_freq: 250
+sample_temp: 0.3
+sample_cfg_coef: 2.0
+ckpt_freq: 1000
+num_ckpt_keep: 3
+ema_decay: 0.999
+
+# Three baseline probes retained from the previous run, plus five approved
+# out-of-distribution numeric probes. All synthetic identifiers are fictitious.
+sample_sentences:
+  - "אדוני היושב ראש, אני מבקש להעלות את 200 הנושאים לסדר היום."
+  - "הוא עבד ב-Microsoft לפני שהצטרף לצוות הפיתוח."
+  - "הילדה רצה הביתה כי התחיל לרדת גשם."
+  - "זיהינו חיוב חריג בסך 1,489.90 ₪ בכרטיס האשראי 9458-3719-6204-8514 מתאריך 29/05/2025, והעסקה הוקפאה לבדיקה."
+  - "הוראת הקבע בכרטיס 9274 6038 5192 4706 שתוקפו 09/29 תתחדש ב-01.12.2025, אלא אם תבוטל במוקד 03-509-4182."
+  - "זימון תורים למרפאה אפשרי במוקד *5840 או בהודעה לנייד 054-019-7362, בימים ראשון עד חמישי בין 07:30 ל-19:45."
+  - "עקב עבודות תשתית בכביש 431, הקטע המערבי ייחסם לתנועה בתאריכים 17-19.11 בין השעות 22:30 ל-05:00 לפנות בוקר."
+  - "ביום 24/11/2025 החליטה הוועדה להפחית את הריבית ב-0.25% לרמה של 4.25%, על רקע התמתנות האינפלציה השנתית ל-2.4%."

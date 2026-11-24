@@ -111,6 +111,9 @@ class TrainArgs:
     # Needed when the tokenizer differs from the one the weights were trained
     # with, e.g. when training for a new language.
     reset_text_embedding: bool = False
+    # Seed model weights from an earlier run's raw checkpoint without restoring its
+    # step or optimizer. The new run's curriculum and learning-rate schedule start at zero.
+    init_checkpoint: str = ""
 
     run_dir: Path = Path("runs/debug")
     batch_size: int = 8  # per GPU
